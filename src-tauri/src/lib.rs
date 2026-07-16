@@ -2,7 +2,10 @@ use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 use tauri::{Emitter, Manager};
 
@@ -15,7 +18,10 @@ struct FsEntry {
 }
 
 #[derive(Default)]
-struct PendingOpen(Mutex<Option<String>>);
+struct OpenState {
+    frontend_ready: AtomicBool,
+    pending: Mutex<Option<String>>,
+}
 
 fn file_kind(path: &Path, is_dir: bool) -> String {
     if is_dir {
@@ -155,16 +161,13 @@ fn startup_path_from_args(args: impl IntoIterator<Item = String>) -> Option<Stri
 }
 
 #[tauri::command]
-fn get_startup_path(pending: tauri::State<'_, PendingOpen>) -> Option<String> {
-    startup_path_from_args(std::env::args()).or_else(|| pending.0.lock().ok()?.take())
+fn get_startup_path(state: tauri::State<'_, OpenState>) -> Option<String> {
+    state.frontend_ready.store(true, Ordering::SeqCst);
+    startup_path_from_args(std::env::args()).or_else(|| state.pending.lock().ok()?.take())
 }
 
 fn forward_open_path(app: &tauri::AppHandle, path: PathBuf) {
     let path_string = path.to_string_lossy().into_owned();
-
-    if let Ok(mut pending) = app.state::<PendingOpen>().0.lock() {
-        *pending = Some(path_string.clone());
-    }
 
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -172,12 +175,17 @@ fn forward_open_path(app: &tauri::AppHandle, path: PathBuf) {
         let _ = window.set_focus();
     }
 
-    let _ = app.emit("open-path", path_string);
+    let state = app.state::<OpenState>();
+    if state.frontend_ready.load(Ordering::SeqCst) {
+        let _ = app.emit("open-path", path_string);
+    } else if let Ok(mut pending) = state.pending.lock() {
+        *pending = Some(path_string);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default().manage(PendingOpen::default());
+    let mut builder = tauri::Builder::default().manage(OpenState::default());
 
     #[cfg(desktop)]
     {
