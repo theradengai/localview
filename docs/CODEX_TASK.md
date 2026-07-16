@@ -236,3 +236,4 @@ Submit a focused change set that:
 3. fixes build/type/Rust errors;
 4. documents any remaining limitations honestly;
 5. does not add unrelated knowledge-management or AI features.
+

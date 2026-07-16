@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -21,6 +21,11 @@ export type DesktopEntry = {
   kind: FileKind;
 };
 
+export type TextFileSnapshot = {
+  content: string;
+  version: string;
+};
+
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
@@ -35,16 +40,20 @@ export async function listDirectory(path: string): Promise<DesktopEntry[]> {
   return invoke<DesktopEntry[]>('list_directory', { path });
 }
 
+export async function setWorkspaceRoot(path: string): Promise<string> {
+  return invoke<string>('set_workspace_root', { path });
+}
+
 export async function inspectPath(path: string): Promise<DesktopEntry> {
   return invoke<DesktopEntry>('inspect_path', { path });
 }
 
-export async function readTextFile(path: string): Promise<string> {
-  return invoke<string>('read_text_file', { path });
+export async function readTextFile(path: string): Promise<TextFileSnapshot> {
+  return invoke<TextFileSnapshot>('read_text_file', { path });
 }
 
-export async function writeTextFile(path: string, content: string): Promise<void> {
-  await invoke('write_text_file', { path, content });
+export async function writeTextFile(path: string, content: string, expectedVersion: string): Promise<string> {
+  return invoke<string>('write_text_file', { path, content, expectedVersion });
 }
 
 export async function findWorkspaceRoot(path: string): Promise<string> {
@@ -63,8 +72,20 @@ export async function listenForOpenPath(handler: (path: string) => void): Promis
   return listen<string>('open-path', (event) => handler(event.payload));
 }
 
-export function assetUrl(path: string): string {
-  return isTauriRuntime() ? convertFileSrc(path) : path;
+export function assetUrl(path: string, workspaceRoot: string): string {
+  if (!isTauriRuntime()) return path;
+
+  const root = normalizePath(workspaceRoot);
+  const target = normalizePath(path);
+  if (!root || (target !== root && !target.startsWith(`${root}/`))) {
+    throw new Error('Resource path is outside the active workspace');
+  }
+
+  const relative = target === root ? '' : target.slice(root.length + 1);
+  const encoded = relative.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return navigator.userAgent.includes('Windows')
+    ? `http://localview.localhost/${encoded}`
+    : `localview://localhost/${encoded}`;
 }
 
 export function normalizePath(path: string): string {

@@ -26,3 +26,4 @@ src-tauri/target/
 .vite/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+

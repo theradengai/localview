@@ -106,3 +106,4 @@ npm run tauri:build
 ```
 
 Preserve the browser demo fallback unless the task explicitly removes it. The browser fallback is useful for fast UI review, but real filesystem behavior must remain in Tauri.
+

@@ -14,7 +14,10 @@ LocalView browses the real filesystem without Vaults, imports, hidden workspace 
 - Markdown Edit / Split / Preview modes
 - HTML interactive preview with relative CSS, images, and JavaScript
 - Save directly to the original file with `⌘S`
+- Detect external edits, reload clean files, and block conflicting saves
+- Protect unsaved edits when switching files, changing workspaces, or closing the window
 - Preview local images and PDFs
+- Run interactive HTML in a sandbox with read-only assets scoped to the active workspace
 - Reveal the current item in Finder
 - Register `.md`, `.markdown`, `.html`, and `.htm` file associations on macOS builds
 - Reuse the running application when another associated file is opened
@@ -72,6 +75,12 @@ After installing or opening the built app once, macOS can list LocalView under *
 - No automatic full-folder content indexing
 - Folders load on demand
 - Do not redesign the interface into an IDE
+
+## Known MVP limitations
+
+- Conflict handling offers **reload disk** or **keep local**; a side-by-side diff is not included yet.
+- PDF uses the operating system webview renderer. Office formats remain restrained placeholders.
+- macOS test bundles are unsigned and unnotarized, so Gatekeeper may require an explicit first open.
 
 See `docs/MVP.md` for the detailed requirements and `prototype/local-folder-viewer-prototype.html` for the interaction and visual reference.
 

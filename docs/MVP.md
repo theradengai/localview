@@ -122,3 +122,4 @@ Architecture should allow adding:
 - Images
 
 using a renderer system.
+

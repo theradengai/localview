@@ -26,3 +26,6 @@ jobs:
 
       - name: Check Tauri crate
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Test Tauri crate
+        run: cargo test --manifest-path src-tauri/Cargo.toml

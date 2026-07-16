@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
 import { markdown } from '@codemirror/lang-markdown';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -20,6 +21,7 @@ import {
   readTextFile,
   resolveResourcePath,
   revealPath,
+  setWorkspaceRoot,
   type DesktopEntry,
   type FileKind,
   writeTextFile,
@@ -28,6 +30,21 @@ import './style.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type FileNode = DesktopEntry & { children?: FileNode[]; loaded?: boolean; demoContent?: string };
+type ModePreferences = Partial<Record<'md' | 'html' | 'text', ViewMode>>;
+
+const MODE_STORAGE_KEY = 'localview.view-modes';
+
+function loadModePreferences(): ModePreferences {
+  try {
+    return JSON.parse(window.localStorage.getItem(MODE_STORAGE_KEY) ?? '{}') as ModePreferences;
+  } catch {
+    return {};
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 const demoTree: FileNode[] = [
   {
@@ -141,7 +158,7 @@ function defaultMode(kind: FileKind): ViewMode {
   return kind === 'md' ? 'split' : 'edit';
 }
 
-const isTextKind = (kind: FileKind) => kind === 'md' || kind === 'html' || kind === 'text';
+const isTextKind = (kind: FileKind): kind is 'md' | 'html' | 'text' => kind === 'md' || kind === 'html' || kind === 'text';
 
 function injectBaseTag(source: string, href: string): string {
   if (!href || /<base\s/i.test(source)) return source;
@@ -159,6 +176,7 @@ function iconFor(kind: FileKind, open: boolean): string {
 export default function App() {
   const desktop = isTauriRuntime();
   const startupHandled = useRef(false);
+  const modePreferences = useRef<ModePreferences>(loadModePreferences());
   const [tree, setTree] = useState<FileNode[]>(desktop ? [] : demoTree);
   const [rootPath, setRootPath] = useState(desktop ? '' : '/Users/thera/project');
   const [projectName, setProjectName] = useState(desktop ? 'LOCALVIEW' : 'PROJECT');
@@ -167,12 +185,19 @@ export default function App() {
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set(desktop ? [] : ['/Users/thera/project/docs', '/Users/thera/project/prototype']));
   const [content, setContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
   const [savedContent, setSavedContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
+  const [savedVersion, setSavedVersion] = useState<string | null>(desktop ? null : 'browser-demo');
+  const [externalChange, setExternalChange] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
 
   const dirty = selected !== null && isTextKind(selected.kind) && content !== savedContent;
   const lineCount = Math.max(1, content.split('\n').length);
   const canEdit = selected ? isTextKind(selected.kind) : false;
+  const dirtyRef = useRef(dirty);
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
@@ -182,13 +207,17 @@ export default function App() {
   const loadFile = useCallback(async (node: FileNode) => {
     setLoading(true);
     try {
-      const nextContent = isTextKind(node.kind) ? (desktop ? await readTextFile(node.path) : node.demoContent ?? '') : '';
+      const snapshot = isTextKind(node.kind) && desktop ? await readTextFile(node.path) : null;
+      const nextContent = isTextKind(node.kind) ? snapshot?.content ?? node.demoContent ?? '' : '';
       setSelected(node);
       setContent(nextContent);
       setSavedContent(nextContent);
-      setMode(defaultMode(node.kind));
+      setSavedVersion(snapshot?.version ?? (desktop ? null : 'browser-demo'));
+      setExternalChange(false);
+      const remembered = isTextKind(node.kind) ? modePreferences.current[node.kind] : undefined;
+      setMode(remembered ?? defaultMode(node.kind));
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : String(error));
+      showNotice(errorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -220,7 +249,7 @@ export default function App() {
     if (dirty && !window.confirm('当前文件有未保存的修改。仍然打开新的工作区吗？')) return;
     setLoading(true);
     try {
-      const root = normalizePath(workspacePath);
+      const root = normalizePath(desktop ? await setWorkspaceRoot(workspacePath) : workspacePath);
       let nextTree = (await listDirectory(root)).map(toNode);
       let opened = new Set<string>();
       if (targetPath && normalizePath(targetPath) !== root) {
@@ -235,15 +264,17 @@ export default function App() {
       setSelected(null);
       setContent('');
       setSavedContent('');
+      setSavedVersion(null);
+      setExternalChange(false);
       if (targetPath && normalizePath(targetPath) !== root) {
         await loadFile(findNode(nextTree, targetPath) ?? toNode(await inspectPath(targetPath)));
       }
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : String(error));
+      showNotice(errorMessage(error));
     } finally {
       setLoading(false);
     }
-  }, [dirty, expandTargetInTree, loadFile, showNotice]);
+  }, [desktop, dirty, expandTargetInTree, loadFile, showNotice]);
 
   const openIncomingPath = useCallback(async (path: string) => {
     try {
@@ -251,7 +282,7 @@ export default function App() {
       if (entry.kind === 'folder') await openWorkspace(entry.path);
       else await openWorkspace(await findWorkspaceRoot(entry.path), entry.path);
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : String(error));
+      showNotice(errorMessage(error));
     }
   }, [openWorkspace, showNotice]);
 
@@ -270,13 +301,101 @@ export default function App() {
   const saveCurrent = useCallback(async () => {
     if (!selected || !isTextKind(selected.kind)) return;
     try {
-      if (desktop) await writeTextFile(selected.path, content);
+      if (desktop) {
+        if (!savedVersion) throw new Error('Missing the current disk version; reopen the file before saving.');
+        const nextVersion = await writeTextFile(selected.path, content, savedVersion);
+        setSavedVersion(nextVersion);
+      }
       setSavedContent(content);
+      setExternalChange(false);
       showNotice('已保存');
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : String(error));
+      const message = errorMessage(error);
+      if (message.startsWith('EXTERNAL_CHANGE')) {
+        setExternalChange(true);
+        const shouldReload = window.confirm('磁盘上的文件已被其他应用修改，LocalView 已阻止覆盖。\n\n确定：重新载入磁盘版本\n取消：保留当前编辑内容（不会写入磁盘）');
+        if (shouldReload) {
+          try {
+            const snapshot = await readTextFile(selected.path);
+            setContent(snapshot.content);
+            setSavedContent(snapshot.content);
+            setSavedVersion(snapshot.version);
+            setExternalChange(false);
+            showNotice('已重新载入磁盘版本');
+          } catch (reloadError) {
+            showNotice(errorMessage(reloadError));
+          }
+        } else {
+          showNotice('已保留本地修改，未覆盖磁盘文件');
+        }
+        return;
+      }
+      showNotice(message);
     }
-  }, [content, desktop, selected, showNotice]);
+  }, [content, desktop, savedVersion, selected, showNotice]);
+
+  useEffect(() => {
+    if (!desktop || !selected || !isTextKind(selected.kind) || !savedVersion) return;
+    let stopped = false;
+    let checking = false;
+
+    const checkForExternalChange = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const snapshot = await readTextFile(selected.path);
+        if (stopped || snapshot.version === savedVersion) return;
+        if (dirtyRef.current) {
+          if (!externalChange) showNotice('磁盘文件已变化；保存前需要处理冲突');
+          setExternalChange(true);
+        } else {
+          setContent(snapshot.content);
+          setSavedContent(snapshot.content);
+          setSavedVersion(snapshot.version);
+          setExternalChange(false);
+          showNotice('已重新载入磁盘修改');
+        }
+      } catch (error) {
+        if (!stopped && !externalChange) {
+          setExternalChange(true);
+          showNotice(`无法读取磁盘文件：${errorMessage(error)}`);
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    const interval = window.setInterval(() => void checkForExternalChange(), 2000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [desktop, externalChange, savedVersion, selected, showNotice]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    if (!desktop) return () => window.removeEventListener('beforeunload', onBeforeUnload);
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWindow().onCloseRequested((event) => {
+      if (dirtyRef.current && !window.confirm('当前文件有未保存的修改。仍然关闭 LocalView 吗？')) {
+        event.preventDefault();
+      }
+    }).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [desktop]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -300,7 +419,7 @@ export default function App() {
         const children = (await listDirectory(path)).map(toNode);
         setTree((current) => updateNode(current, path, (item) => ({ ...item, children, loaded: true })));
       } catch (error) {
-        showNotice(error instanceof Error ? error.message : String(error));
+        showNotice(errorMessage(error));
         return;
       }
     }
@@ -316,7 +435,7 @@ export default function App() {
     const path = normalizePath(node.path);
     const expanded = openFolders.has(path);
     return <div key={path}>
-      <button className={`tree-row ${node.kind === 'folder' ? 'folder' : ''} ${selected?.path === node.path ? 'active' : ''}`} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => void handleNodeClick(node)}>
+      <button className={`tree-row ${node.kind === 'folder' ? 'folder' : ''} ${selected && normalizePath(selected.path) === path ? 'active' : ''}`} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => void handleNodeClick(node)}>
         <span className="tree-icon">{iconFor(node.kind, expanded)}</span><span className="tree-name">{node.name}</span>
       </button>
       {node.kind === 'folder' && expanded && node.children ? renderTree(node.children, depth + 1) : null}
@@ -326,10 +445,15 @@ export default function App() {
   const markdownComponents = useMemo(() => ({
     img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
       const original = typeof src === 'string' ? src : '';
-      const resolved = selected && desktop && original && !/^(?:[a-z]+:|#|\/\/)/i.test(original) ? assetUrl(resolveResourcePath(selected.path, original)) : original;
+      const resourcePath = original.startsWith('/')
+        ? joinPath(rootPath, original.slice(1))
+        : selected ? resolveResourcePath(selected.path, original) : original;
+      const resolved = selected && desktop && original && !/^(?:[a-z]+:|#|\/\/)/i.test(original)
+        ? assetUrl(resourcePath, rootPath)
+        : original;
       return <img {...props} src={resolved} alt={alt ?? ''} />;
     },
-  }), [desktop, selected]);
+  }), [desktop, rootPath, selected]);
 
   async function handleOpenFolder() {
     if (!desktop) return void window.alert('浏览器原型使用模拟文件。Tauri 桌面版会打开系统文件夹选择器。');
@@ -341,7 +465,18 @@ export default function App() {
     const path = selected?.path || rootPath;
     if (!path) return;
     if (!desktop) return void window.alert(`桌面版将在 Finder 中显示：${path}`);
-    try { await revealPath(path); } catch (error) { showNotice(error instanceof Error ? error.message : String(error)); }
+    try { await revealPath(path); } catch (error) { showNotice(errorMessage(error)); }
+  }
+
+  function handleModeChange(nextMode: ViewMode) {
+    setMode(nextMode);
+    if (!selected || !isTextKind(selected.kind)) return;
+    modePreferences.current = { ...modePreferences.current, [selected.kind]: nextMode };
+    try {
+      window.localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(modePreferences.current));
+    } catch {
+      // Mode persistence is best-effort; the current session still updates.
+    }
   }
 
   const editor = selected ? <div className="editor-pane">
@@ -356,12 +491,12 @@ export default function App() {
     preview = <div className="preview-pane markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown></div>;
   } else if (selected.kind === 'html') {
     const useDisk = desktop && mode === 'preview' && !dirty;
-    const liveSource = desktop ? injectBaseTag(content, `${assetUrl(parentPath(selected.path))}/`) : content;
-    preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? 'disk' : content.length}`} title={selected.name} sandbox="allow-scripts allow-same-origin allow-forms allow-modals" src={useDisk ? assetUrl(selected.path) : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
+    const liveSource = desktop ? injectBaseTag(content, `${assetUrl(parentPath(selected.path), rootPath)}/`) : content;
+    preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? savedVersion ?? 'disk' : content}`} title={selected.name} sandbox="allow-scripts allow-forms allow-modals" src={useDisk ? assetUrl(selected.path, rootPath) : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
   } else if (selected.kind === 'image') {
-    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path)} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
+    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path, rootPath)} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
   } else if (selected.kind === 'pdf') {
-    preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path)} /> : null}</div>;
+    preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path, rootPath)} /> : null}</div>;
   } else if (selected.kind === 'text') {
     preview = <div className="preview-pane code-preview"><pre>{content}</pre></div>;
   } else {
@@ -377,11 +512,11 @@ export default function App() {
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-header"><span>{projectName}</span><button aria-label="Project options">•••</button></div><div className="file-tree">{tree.length ? renderTree(tree) : <div className="tree-empty">打开文件夹后显示真实目录树</div>}</div><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
       <main className="document-area">
-        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div> : null}</div>
+        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div> : null}</div>
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{selected && canEdit && (mode === 'edit' || mode === 'split') ? editor : null}{!selected || mode === 'preview' || mode === 'split' || !canEdit ? preview : null}{loading ? <div className="loading-mask">读取中…</div> : null}</div>
       </main>
     </div>
-    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span>{selected && isTextKind(selected.kind) ? <><b className={dirty ? 'dirty' : ''}>{dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</> : 'Local-first'}</span></footer>
+    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span>{selected && isTextKind(selected.kind) ? <><b className={externalChange ? 'conflict' : dirty ? 'dirty' : ''}>{externalChange ? '磁盘已变更' : dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</> : 'Local-first'}</span></footer>
     {notice ? <div className="notice">{notice}</div> : null}
   </div>;
 }
