@@ -51,13 +51,17 @@ npm install
 npm run tauri:dev
 ```
 
-## Build the macOS application
+## Build the macOS application locally
 
 ```bash
 npm run tauri:build
 ```
 
 The generated `.app` and `.dmg` are placed under `src-tauri/target/release/bundle/`.
+
+## Build a test package with GitHub Actions
+
+Open **Actions → Build LocalView for macOS → Run workflow**. After the run finishes, download the `LocalView-macOS` artifact containing the unsigned `.app` and `.dmg` test bundles.
 
 After installing or opening the built app once, macOS can list LocalView under **Open With** for Markdown and HTML files. Making it the default remains a user-controlled Finder setting.
 
