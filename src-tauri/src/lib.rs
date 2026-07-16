@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 use tauri::{Emitter, Manager};
 
@@ -12,6 +13,9 @@ struct FsEntry {
     path: String,
     kind: String,
 }
+
+#[derive(Default)]
+struct PendingOpen(Mutex<Option<String>>);
 
 fn file_kind(path: &Path, is_dir: bool) -> String {
     if is_dir {
@@ -129,37 +133,66 @@ fn find_workspace_root(file_path: String) -> Result<String, String> {
     Ok(fallback.to_string_lossy().into_owned())
 }
 
+fn argument_to_path(value: String) -> Option<PathBuf> {
+    if value.starts_with('-') {
+        return None;
+    }
+
+    let path = if let Ok(url) = url::Url::parse(&value) {
+        url.to_file_path().ok()?
+    } else {
+        PathBuf::from(value)
+    };
+
+    path.exists().then_some(path)
+}
+
 fn startup_path_from_args(args: impl IntoIterator<Item = String>) -> Option<String> {
     args.into_iter()
         .skip(1)
-        .find(|value| !value.starts_with('-') && Path::new(value).exists())
+        .find_map(argument_to_path)
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
-fn get_startup_path() -> Option<String> {
-    startup_path_from_args(std::env::args())
+fn get_startup_path(pending: tauri::State<'_, PendingOpen>) -> Option<String> {
+    startup_path_from_args(std::env::args()).or_else(|| pending.0.lock().ok()?.take())
+}
+
+fn forward_open_path(app: &tauri::AppHandle, path: PathBuf) {
+    let path_string = path.to_string_lossy().into_owned();
+
+    if let Ok(mut pending) = app.state::<PendingOpen>().0.lock() {
+        *pending = Some(path_string.clone());
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+
+    let _ = app.emit("open-path", path_string);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().manage(PendingOpen::default());
 
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(path) = args.into_iter().skip(1).find_map(argument_to_path) {
+                forward_open_path(app, path);
+            } else if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-
-            if let Some(path) = startup_path_from_args(args) {
-                let _ = app.emit("open-path", path);
-            }
         }));
     }
 
-    builder
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -170,6 +203,15 @@ pub fn run() {
             find_workspace_root,
             get_startup_path
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running LocalView");
+        .build(tauri::generate_context!())
+        .expect("error while building LocalView");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            if let Some(path) = urls.into_iter().find_map(|url| url.to_file_path().ok()) {
+                forward_open_path(app, path);
+            }
+        }
+    });
 }
