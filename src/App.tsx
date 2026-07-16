@@ -1,29 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
+import { html } from '@codemirror/lang-html';
 import { markdown } from '@codemirror/lang-markdown';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {
+  assetUrl,
+  basename,
+  chooseFolder,
+  findWorkspaceRoot,
+  getStartupPath,
+  inspectPath,
+  isTauriRuntime,
+  joinPath,
+  listDirectory,
+  listenForOpenPath,
+  normalizePath,
+  parentPath,
+  readTextFile,
+  resolveResourcePath,
+  revealPath,
+  type DesktopEntry,
+  type FileKind,
+  writeTextFile,
+} from './lib/desktop';
 import './style.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
-type FileKind = 'folder' | 'md' | 'html' | 'text' | 'image';
+type FileNode = DesktopEntry & { children?: FileNode[]; loaded?: boolean; demoContent?: string };
 
-type FileNode = {
-  id: string;
-  name: string;
-  path: string;
-  kind: FileKind;
-  content?: string;
-  children?: FileNode[];
-};
-
-const projectTree: FileNode[] = [
+const demoTree: FileNode[] = [
   {
-    id: 'readme',
-    name: 'README.md',
-    path: '/Users/thera/project/README.md',
-    kind: 'md',
-    content: `# Local Folder Viewer
+    name: 'README.md', path: '/Users/thera/project/README.md', kind: 'md',
+    demoContent: `# Local Folder Viewer
 
 这是一个**不建库、不索引**的本地文件工作台。
 
@@ -42,17 +51,11 @@ const projectTree: FileNode[] = [
 后续可以继续支持 PDF、Excel、PPT 和图片预览。`,
   },
   {
-    id: 'docs',
-    name: 'docs',
-    path: '/Users/thera/project/docs',
-    kind: 'folder',
+    name: 'docs', path: '/Users/thera/project/docs', kind: 'folder', loaded: true,
     children: [
       {
-        id: 'product-notes',
-        name: 'product-notes.md',
-        path: '/Users/thera/project/docs/product-notes.md',
-        kind: 'md',
-        content: `# Product Notes
+        name: 'product-notes.md', path: '/Users/thera/project/docs/product-notes.md', kind: 'md',
+        demoContent: `# Product Notes
 
 ## MVP
 
@@ -67,11 +70,8 @@ const projectTree: FileNode[] = [
 保持轻量，不建立知识库数据库。`,
       },
       {
-        id: 'roadmap',
-        name: 'roadmap.md',
-        path: '/Users/thera/project/docs/roadmap.md',
-        kind: 'md',
-        content: `# Roadmap
+        name: 'roadmap.md', path: '/Users/thera/project/docs/roadmap.md', kind: 'md',
+        demoContent: `# Roadmap
 
 - V0.1 Markdown / HTML
 - V0.2 PDF
@@ -82,45 +82,22 @@ const projectTree: FileNode[] = [
     ],
   },
   {
-    id: 'prototype',
-    name: 'prototype',
-    path: '/Users/thera/project/prototype',
-    kind: 'folder',
+    name: 'prototype', path: '/Users/thera/project/prototype', kind: 'folder', loaded: true,
     children: [
       {
-        id: 'prototype-html',
-        name: 'index.html',
-        path: '/Users/thera/project/prototype/index.html',
-        kind: 'html',
-        content: `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body{font-family:system-ui;margin:0;background:#f4f0e8;color:#1e1e1e}
-    main{max-width:760px;margin:80px auto;padding:0 32px}
-    .tag{display:inline-block;border:1px solid #222;border-radius:999px;padding:6px 10px;font-size:12px}
-    h1{font-size:64px;line-height:1;margin:28px 0 20px}
-    p{font-size:20px;line-height:1.6;color:#555}
-    button{margin-top:24px;border:0;background:#111;color:white;padding:14px 20px;border-radius:10px;font-size:16px}
-  </style>
-</head>
-<body>
-  <main>
-    <span class="tag">LOCAL-FIRST</span>
-    <h1>Open a file.<br>See the whole context.</h1>
-    <p>A lightweight browser for Markdown and HTML folders.</p>
-    <button onclick="this.textContent='It works'">Try interaction</button>
-  </main>
-</body>
-</html>`,
+        name: 'index.html', path: '/Users/thera/project/prototype/index.html', kind: 'html',
+        demoContent: `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+body{font-family:system-ui;margin:0;background:#f4f0e8;color:#1e1e1e}
+main{max-width:760px;margin:80px auto;padding:0 32px}
+.tag{display:inline-block;border:1px solid #222;border-radius:999px;padding:6px 10px;font-size:12px}
+h1{font-size:64px;line-height:1;margin:28px 0 20px}p{font-size:20px;line-height:1.6;color:#555}
+button{margin-top:24px;border:0;background:#111;color:white;padding:14px 20px;border-radius:10px;font-size:16px}
+</style></head><body><main><span class="tag">LOCAL-FIRST</span><h1>Open a file.<br>See the whole context.</h1><p>A lightweight browser for Markdown and HTML folders.</p><button onclick="this.textContent='It works'">Try interaction</button></main></body></html>`,
       },
       {
-        id: 'style-css',
-        name: 'style.css',
-        path: '/Users/thera/project/prototype/style.css',
-        kind: 'text',
-        content: `body {
+        name: 'style.css', path: '/Users/thera/project/prototype/style.css', kind: 'text',
+        demoContent: `body {
   font-family: system-ui;
   background: #f4f0e8;
 }`,
@@ -128,204 +105,283 @@ const projectTree: FileNode[] = [
     ],
   },
   {
-    id: 'assets',
-    name: 'assets',
-    path: '/Users/thera/project/assets',
-    kind: 'folder',
-    children: [
-      {
-        id: 'cover',
-        name: 'cover.png',
-        path: '/Users/thera/project/assets/cover.png',
-        kind: 'image',
-      },
-    ],
+    name: 'assets', path: '/Users/thera/project/assets', kind: 'folder', loaded: true,
+    children: [{ name: 'cover.png', path: '/Users/thera/project/assets/cover.png', kind: 'image' }],
   },
 ];
 
-function findFile(nodes: FileNode[], id: string): FileNode | undefined {
+const toNode = (entry: DesktopEntry): FileNode => ({ ...entry, loaded: entry.kind !== 'folder' });
+
+function findNode(nodes: FileNode[], path: string): FileNode | undefined {
+  const target = normalizePath(path);
   for (const node of nodes) {
-    if (node.id === id) return node;
+    if (normalizePath(node.path) === target) return node;
     if (node.children) {
-      const result = findFile(node.children, id);
-      if (result) return result;
+      const match = findNode(node.children, target);
+      if (match) return match;
     }
   }
   return undefined;
 }
 
-function fileTypeLabel(kind: FileKind) {
-  if (kind === 'md') return 'Markdown';
-  if (kind === 'html') return 'HTML';
-  if (kind === 'image') return 'Image';
-  return 'Text';
+function updateNode(nodes: FileNode[], path: string, updater: (node: FileNode) => FileNode): FileNode[] {
+  const target = normalizePath(path);
+  return nodes.map((node) => {
+    if (normalizePath(node.path) === target) return updater(node);
+    return node.children ? { ...node, children: updateNode(node.children, target, updater) } : node;
+  });
+}
+
+function fileTypeLabel(kind: FileKind): string {
+  return ({ folder: 'Folder', md: 'Markdown', html: 'HTML', text: 'Text', image: 'Image', pdf: 'PDF', spreadsheet: 'Spreadsheet', presentation: 'Presentation', document: 'Document', other: 'File' })[kind];
 }
 
 function defaultMode(kind: FileKind): ViewMode {
-  if (kind === 'html' || kind === 'image') return 'preview';
-  if (kind === 'md') return 'split';
-  return 'edit';
+  if (kind === 'html' || kind === 'image' || kind === 'pdf') return 'preview';
+  return kind === 'md' ? 'split' : 'edit';
+}
+
+const isTextKind = (kind: FileKind) => kind === 'md' || kind === 'html' || kind === 'text';
+
+function injectBaseTag(source: string, href: string): string {
+  if (!href || /<base\s/i.test(source)) return source;
+  const base = `<base href="${href.replace(/"/g, '&quot;')}">`;
+  return /<head(?:\s[^>]*)?>/i.test(source)
+    ? source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}\n${base}`)
+    : `${base}\n${source}`;
+}
+
+function iconFor(kind: FileKind, open: boolean): string {
+  if (kind === 'folder') return open ? '▾' : '▸';
+  return ({ md: 'M↓', html: '⌘', image: '◫', pdf: 'P', spreadsheet: 'X', presentation: 'S', document: 'W', text: '•', other: '•', folder: '' })[kind];
 }
 
 export default function App() {
-  const [selectedId, setSelectedId] = useState('readme');
+  const desktop = isTauriRuntime();
+  const startupHandled = useRef(false);
+  const [tree, setTree] = useState<FileNode[]>(desktop ? [] : demoTree);
+  const [rootPath, setRootPath] = useState(desktop ? '' : '/Users/thera/project');
+  const [projectName, setProjectName] = useState(desktop ? 'LOCALVIEW' : 'PROJECT');
+  const [selected, setSelected] = useState<FileNode | null>(desktop ? null : demoTree[0]);
   const [mode, setMode] = useState<ViewMode>('split');
-  const [openFolders, setOpenFolders] = useState(() => new Set(['docs', 'prototype']));
-  const [contents, setContents] = useState<Record<string, string>>(() => {
-    const map: Record<string, string> = {};
-    const collect = (nodes: FileNode[]) => {
-      nodes.forEach((node) => {
-        if (node.content !== undefined) map[node.id] = node.content;
-        if (node.children) collect(node.children);
-      });
-    };
-    collect(projectTree);
-    return map;
-  });
-  const [savedContents, setSavedContents] = useState(contents);
+  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set(desktop ? [] : ['/Users/thera/project/docs', '/Users/thera/project/prototype']));
+  const [content, setContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
+  const [savedContent, setSavedContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState('');
 
-  const selected = useMemo(() => findFile(projectTree, selectedId) ?? projectTree[0], [selectedId]);
-  const value = contents[selected.id] ?? '';
-  const dirty = value !== (savedContents[selected.id] ?? '');
-  const lineCount = Math.max(1, value.split('\n').length);
+  const dirty = selected !== null && isTextKind(selected.kind) && content !== savedContent;
+  const lineCount = Math.max(1, content.split('\n').length);
+  const canEdit = selected ? isTextKind(selected.kind) : false;
+
+  const showNotice = useCallback((message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(''), 2600);
+  }, []);
+
+  const loadFile = useCallback(async (node: FileNode) => {
+    setLoading(true);
+    try {
+      const nextContent = isTextKind(node.kind) ? (desktop ? await readTextFile(node.path) : node.demoContent ?? '') : '';
+      setSelected(node);
+      setContent(nextContent);
+      setSavedContent(nextContent);
+      setMode(defaultMode(node.kind));
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [desktop, showNotice]);
+
+  const selectFile = useCallback(async (node: FileNode) => {
+    if (dirty && !window.confirm('当前文件有未保存的修改。仍然切换文件吗？')) return;
+    await loadFile(node);
+  }, [dirty, loadFile]);
+
+  const expandTargetInTree = useCallback(async (initialTree: FileNode[], workspaceRoot: string, targetPath: string) => {
+    const root = normalizePath(workspaceRoot);
+    const target = normalizePath(targetPath);
+    if (!target.startsWith(`${root}/`)) return { tree: initialTree, opened: new Set<string>() };
+    const segments = target.slice(root.length).replace(/^\/+/, '').split('/').filter(Boolean);
+    const opened = new Set<string>();
+    let nextTree = initialTree;
+    let currentPath = root;
+    for (const segment of segments.slice(0, -1)) {
+      currentPath = joinPath(currentPath, segment);
+      const children = (await listDirectory(currentPath)).map(toNode);
+      nextTree = updateNode(nextTree, currentPath, (node) => ({ ...node, children, loaded: true }));
+      opened.add(currentPath);
+    }
+    return { tree: nextTree, opened };
+  }, []);
+
+  const openWorkspace = useCallback(async (workspacePath: string, targetPath?: string) => {
+    if (dirty && !window.confirm('当前文件有未保存的修改。仍然打开新的工作区吗？')) return;
+    setLoading(true);
+    try {
+      const root = normalizePath(workspacePath);
+      let nextTree = (await listDirectory(root)).map(toNode);
+      let opened = new Set<string>();
+      if (targetPath && normalizePath(targetPath) !== root) {
+        const expanded = await expandTargetInTree(nextTree, root, targetPath);
+        nextTree = expanded.tree;
+        opened = expanded.opened;
+      }
+      setRootPath(root);
+      setProjectName(basename(root).toUpperCase() || 'LOCALVIEW');
+      setTree(nextTree);
+      setOpenFolders(opened);
+      setSelected(null);
+      setContent('');
+      setSavedContent('');
+      if (targetPath && normalizePath(targetPath) !== root) {
+        await loadFile(findNode(nextTree, targetPath) ?? toNode(await inspectPath(targetPath)));
+      }
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [dirty, expandTargetInTree, loadFile, showNotice]);
+
+  const openIncomingPath = useCallback(async (path: string) => {
+    try {
+      const entry = await inspectPath(path);
+      if (entry.kind === 'folder') await openWorkspace(entry.path);
+      else await openWorkspace(await findWorkspaceRoot(entry.path), entry.path);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  }, [openWorkspace, showNotice]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenForOpenPath((path) => void openIncomingPath(path)).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
+    if (!startupHandled.current) {
+      startupHandled.current = true;
+      void getStartupPath().then((path) => path && void openIncomingPath(path));
+    }
+    return () => { cancelled = true; unlisten?.(); };
+  }, [desktop, openIncomingPath]);
+
+  const saveCurrent = useCallback(async () => {
+    if (!selected || !isTextKind(selected.kind)) return;
+    try {
+      if (desktop) await writeTextFile(selected.path, content);
+      setSavedContent(content);
+      showNotice('已保存');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  }, [content, desktop, selected, showNotice]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        if (selected.kind !== 'folder' && selected.kind !== 'image') {
-          setSavedContents((current) => ({ ...current, [selected.id]: value }));
-        }
+        void saveCurrent();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selected, value]);
+  }, [saveCurrent]);
 
-  const chooseFile = (node: FileNode) => {
-    if (node.kind === 'folder') {
-      setOpenFolders((current) => {
-        const next = new Set(current);
-        next.has(node.id) ? next.delete(node.id) : next.add(node.id);
-        return next;
-      });
+  const toggleFolder = useCallback(async (node: FileNode) => {
+    const path = normalizePath(node.path);
+    if (openFolders.has(path)) {
+      setOpenFolders((current) => { const next = new Set(current); next.delete(path); return next; });
       return;
     }
-    setSelectedId(node.id);
-    setMode(defaultMode(node.kind));
-  };
+    if (desktop && !node.loaded) {
+      try {
+        const children = (await listDirectory(path)).map(toNode);
+        setTree((current) => updateNode(current, path, (item) => ({ ...item, children, loaded: true })));
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+    setOpenFolders((current) => new Set(current).add(path));
+  }, [desktop, openFolders, showNotice]);
 
-  const renderTree = (nodes: FileNode[], depth = 0) =>
-    nodes.map((node) => {
-      const expanded = openFolders.has(node.id);
-      return (
-        <div key={node.id}>
-          <button
-            className={`tree-row ${node.kind === 'folder' ? 'folder' : ''} ${selected.id === node.id ? 'active' : ''}`}
-            style={{ paddingLeft: 8 + depth * 16 }}
-            onClick={() => chooseFile(node)}
-          >
-            <span className="tree-icon">
-              {node.kind === 'folder' ? (expanded ? '▾' : '▸') : node.kind === 'md' ? 'M↓' : node.kind === 'html' ? '⌘' : node.kind === 'image' ? '◫' : '•'}
-            </span>
-            <span className="tree-name">{node.name}</span>
-          </button>
-          {node.kind === 'folder' && expanded && node.children ? renderTree(node.children, depth + 1) : null}
-        </div>
-      );
-    });
+  const handleNodeClick = useCallback(async (node: FileNode) => {
+    if (node.kind === 'folder') await toggleFolder(node);
+    else await selectFile(node);
+  }, [selectFile, toggleFolder]);
 
-  const editor = (
-    <div className="editor-pane">
-      <CodeMirror
-        value={value}
-        height="100%"
-        extensions={selected.kind === 'md' ? [markdown()] : []}
-        onChange={(next) => setContents((current) => ({ ...current, [selected.id]: next }))}
-        basicSetup={{ lineNumbers: false, foldGutter: false, highlightActiveLine: false }}
-      />
-      {mode === 'edit' ? <div className="save-hint">⌘S 保存</div> : null}
+  const renderTree = (nodes: FileNode[], depth = 0): React.ReactNode => nodes.map((node) => {
+    const path = normalizePath(node.path);
+    const expanded = openFolders.has(path);
+    return <div key={path}>
+      <button className={`tree-row ${node.kind === 'folder' ? 'folder' : ''} ${selected?.path === node.path ? 'active' : ''}`} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => void handleNodeClick(node)}>
+        <span className="tree-icon">{iconFor(node.kind, expanded)}</span><span className="tree-name">{node.name}</span>
+      </button>
+      {node.kind === 'folder' && expanded && node.children ? renderTree(node.children, depth + 1) : null}
+    </div>;
+  });
+
+  const markdownComponents = useMemo(() => ({
+    img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
+      const original = typeof src === 'string' ? src : '';
+      const resolved = selected && desktop && original && !/^(?:[a-z]+:|#|\/\/)/i.test(original) ? assetUrl(resolveResourcePath(selected.path, original)) : original;
+      return <img {...props} src={resolved} alt={alt ?? ''} />;
+    },
+  }), [desktop, selected]);
+
+  async function handleOpenFolder() {
+    if (!desktop) return void window.alert('浏览器原型使用模拟文件。Tauri 桌面版会打开系统文件夹选择器。');
+    const path = await chooseFolder();
+    if (path) await openWorkspace(path);
+  }
+
+  async function handleReveal() {
+    const path = selected?.path || rootPath;
+    if (!path) return;
+    if (!desktop) return void window.alert(`桌面版将在 Finder 中显示：${path}`);
+    try { await revealPath(path); } catch (error) { showNotice(error instanceof Error ? error.message : String(error)); }
+  }
+
+  const editor = selected ? <div className="editor-pane">
+    <CodeMirror value={content} height="100%" extensions={selected.kind === 'md' ? [markdown()] : selected.kind === 'html' ? [html()] : []} onChange={setContent} basicSetup={{ lineNumbers: false, foldGutter: false, highlightActiveLine: false }} />
+    {mode === 'edit' ? <div className="save-hint">⌘S 保存</div> : null}
+  </div> : null;
+
+  let preview: React.ReactNode;
+  if (!selected) {
+    preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
+  } else if (selected.kind === 'md') {
+    preview = <div className="preview-pane markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown></div>;
+  } else if (selected.kind === 'html') {
+    const useDisk = desktop && mode === 'preview' && !dirty;
+    const liveSource = desktop ? injectBaseTag(content, `${assetUrl(parentPath(selected.path))}/`) : content;
+    preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? 'disk' : content.length}`} title={selected.name} sandbox="allow-scripts allow-same-origin allow-forms allow-modals" src={useDisk ? assetUrl(selected.path) : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
+  } else if (selected.kind === 'image') {
+    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path)} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
+  } else if (selected.kind === 'pdf') {
+    preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path)} /> : null}</div>;
+  } else if (selected.kind === 'text') {
+    preview = <div className="preview-pane code-preview"><pre>{content}</pre></div>;
+  } else {
+    preview = <div className="empty-state"><strong>{selected.name}</strong><span>{fileTypeLabel(selected.kind)} 预览将在后续 Renderer 中支持。</span></div>;
+  }
+
+  return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''}`}>
+    <header className="titlebar" data-tauri-drag-region>
+      <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
+      <div className="window-title" data-tauri-drag-region>{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
+      <div className="title-actions"><button onClick={() => void handleOpenFolder()}>打开文件夹</button><button disabled={!selected && !rootPath} onClick={() => void handleReveal()}>在 Finder 中显示</button></div>
+    </header>
+    <div className="workspace">
+      <aside className="sidebar"><div className="sidebar-header"><span>{projectName}</span><button aria-label="Project options">•••</button></div><div className="file-tree">{tree.length ? renderTree(tree) : <div className="tree-empty">打开文件夹后显示真实目录树</div>}</div><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
+      <main className="document-area">
+        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div> : null}</div>
+        <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{selected && canEdit && (mode === 'edit' || mode === 'split') ? editor : null}{!selected || mode === 'preview' || mode === 'split' || !canEdit ? preview : null}{loading ? <div className="loading-mask">读取中…</div> : null}</div>
+      </main>
     </div>
-  );
-
-  const preview = selected.kind === 'md' ? (
-    <div className="preview-pane markdown-body">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
-    </div>
-  ) : selected.kind === 'html' ? (
-    <div className="html-pane">
-      <iframe title={selected.name} sandbox="allow-scripts" srcDoc={value} />
-    </div>
-  ) : selected.kind === 'image' ? (
-    <div className="empty-state">
-      <div className="image-placeholder">◫</div>
-      <strong>{selected.name}</strong>
-      <span>真实图片预览将在接入本地文件系统后启用。</span>
-    </div>
-  ) : (
-    <div className="preview-pane code-preview"><pre>{value}</pre></div>
-  );
-
-  const canEdit = selected.kind === 'md' || selected.kind === 'html' || selected.kind === 'text';
-
-  return (
-    <div className="app-shell">
-      <header className="titlebar">
-        <div className="traffic-lights" aria-hidden="true">
-          <span className="traffic red" />
-          <span className="traffic yellow" />
-          <span className="traffic green" />
-        </div>
-        <div className="window-title">project / {selected.name}</div>
-        <div className="title-actions">
-          <button onClick={() => window.alert('桌面版将在这里调用系统文件夹选择器。')}>打开文件夹</button>
-          <button onClick={() => window.alert(`桌面版将在 Finder 中显示：${selected.path}`)}>在 Finder 中显示</button>
-        </div>
-      </header>
-
-      <div className="workspace">
-        <aside className="sidebar">
-          <div className="sidebar-header">
-            <span>PROJECT</span>
-            <button aria-label="Project options">•••</button>
-          </div>
-          <div className="file-tree">{renderTree(projectTree)}</div>
-          <div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div>
-        </aside>
-
-        <main className="document-area">
-          <div className="document-toolbar">
-            <div>
-              <strong>{selected.name}</strong>
-              <span>{fileTypeLabel(selected.kind)}</span>
-            </div>
-            {selected.kind !== 'image' ? (
-              <div className="mode-switcher">
-                {(['edit', 'split', 'preview'] as ViewMode[]).map((item) => (
-                  <button
-                    key={item}
-                    className={mode === item ? 'active' : ''}
-                    disabled={!canEdit && item !== 'preview'}
-                    onClick={() => setMode(item)}
-                  >
-                    {item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className={`content-area ${mode === 'split' ? 'split' : ''}`}>
-            {(mode === 'edit' || mode === 'split') && canEdit ? editor : null}
-            {(mode === 'preview' || mode === 'split' || selected.kind === 'image') ? preview : null}
-          </div>
-        </main>
-      </div>
-
-      <footer className="statusbar">
-        <span>{selected.path}</span>
-        <span><b className={dirty ? 'dirty' : ''}>{dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</span>
-      </footer>
-    </div>
-  );
+    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span>{selected && isTextKind(selected.kind) ? <><b className={dirty ? 'dirty' : ''}>{dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</> : 'Local-first'}</span></footer>
+    {notice ? <div className="notice">{notice}</div> : null}
+  </div>;
 }
