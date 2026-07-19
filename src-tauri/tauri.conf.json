@@ -33,8 +33,12 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
     "category": "Productivity",
     "shortDescription": "Open a file, see the folder context.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "fileAssociations": [
       {
         "ext": ["md", "markdown", "mdown", "mkd"],

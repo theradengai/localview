@@ -41,6 +41,12 @@ npm run dev
 
 Open the local Vite URL shown in the terminal.
 
+Run the frontend regression suite with:
+
+```bash
+npm test
+```
+
 ## Run the macOS desktop app
 
 Prerequisites:
@@ -80,7 +86,7 @@ After installing or opening the built app once, macOS can list LocalView under *
 
 - Conflict handling offers **reload disk** or **keep local**; a side-by-side diff is not included yet.
 - PDF uses the operating system webview renderer. Office formats remain restrained placeholders.
-- macOS test bundles are unsigned and unnotarized, so Gatekeeper may require an explicit first open.
+- macOS test bundles use an ad-hoc signature and are not notarized, so Gatekeeper may require an explicit first open. Public distribution still requires a Developer ID signature and notarization.
 
 See `docs/MVP.md` for the detailed requirements and `prototype/local-folder-viewer-prototype.html` for the interaction and visual reference.
 

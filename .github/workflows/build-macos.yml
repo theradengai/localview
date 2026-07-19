@@ -26,6 +26,14 @@ jobs:
       - name: Build LocalView
         run: npm run tauri:build
 
+      - name: Verify macOS bundles
+        run: |
+          APP_PATH=(src-tauri/target/release/bundle/macos/*.app)
+          DMG_PATH=(src-tauri/target/release/bundle/dmg/*.dmg)
+          test -f "${APP_PATH[0]}/Contents/Resources/icon.icns"
+          codesign --verify --deep --strict --verbose=4 "${APP_PATH[0]}"
+          hdiutil verify "${DMG_PATH[0]}"
+
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v4
         with:
