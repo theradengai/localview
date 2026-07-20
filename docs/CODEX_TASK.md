@@ -136,6 +136,21 @@ Required:
 - edit common text/code formats as plain text
 - preview common image formats
 
+### Spreadsheet and Office preview
+
+Required:
+
+- `.xls`, `.xlsx`, and `.ods` render as bounded, read-only data grids
+- `.numbers`, `.pages`, `.key`, Word, and PowerPoint use macOS Quick Look
+- Office files always use Preview mode and never participate in dirty-state or `Command-S`
+- spreadsheet parse and Quick Look thumbnail failures show their real error plus native fallback actions
+
+Explicit limitations:
+
+- no Excel editing, formula recalculation, macros, charts, or complete formatting fidelity
+- no in-app editing for Numbers, Pages, Keynote, Word, or PowerPoint
+- large, corrupt, encrypted, or limit-exceeding workbooks may fall back to Quick Look/default application
+
 ### Unsupported formats
 
 Show a restrained placeholder explaining that a future renderer will support the type. Do not pretend unsupported Office files are rendered.
@@ -164,8 +179,8 @@ Do not silently overwrite an externally changed file.
 
 Required configuration:
 
-- application bundle supports Markdown and HTML document types
-- document role is Editor
+- application bundle supports Markdown, HTML, spreadsheet, document, presentation, OpenDocument, and iWork types
+- Markdown/HTML role is Editor; Office/OpenDocument/iWork role is Viewer
 - app receives cold-start open-file events
 - app receives open-file events when already running
 - single-instance behavior forwards the path to the existing window
@@ -205,7 +220,7 @@ If Safe Preview and Interactive Preview are added, Interactive Preview may allow
 - `Command-S` writes the real file
 - clicking HTML previews its local resources
 - Finder reveal works
-- opening associated Markdown/HTML files selects the target
+- opening associated Markdown/HTML/Office/OpenDocument/iWork files selects the target
 
 ### Build review
 
@@ -236,4 +251,3 @@ Submit a focused change set that:
 3. fixes build/type/Rust errors;
 4. documents any remaining limitations honestly;
 5. does not add unrelated knowledge-management or AI features.
-

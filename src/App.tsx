@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
 import { markdown } from '@codemirror/lang-markdown';
@@ -18,6 +18,8 @@ import {
   listDirectory,
   listenForOpenPath,
   normalizePath,
+  openInDefaultApp,
+  openQuickLook,
   parentPath,
   readTextFile,
   resolveResourcePath,
@@ -28,6 +30,7 @@ import {
   type TextFileSnapshot,
   writeTextFile,
 } from './lib/desktop';
+import { rendererFor } from './renderers/registry';
 import './style.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
@@ -36,6 +39,9 @@ type ModePreferences = Partial<Record<'md' | 'html' | 'text', ViewMode>>;
 type DecisionResult = 'confirm' | 'cancel';
 
 const MODE_STORAGE_KEY = 'localview.view-modes';
+const RENDERER_STATUS_PREFIX = 'LOCALVIEW_STATUS:';
+const SpreadsheetRenderer = lazy(() => import('./renderers/SpreadsheetRenderer'));
+const SystemPreviewRenderer = lazy(() => import('./renderers/SystemPreviewRenderer'));
 
 function loadModePreferences(): ModePreferences {
   try {
@@ -157,8 +163,9 @@ function fileTypeLabel(kind: FileKind): string {
 }
 
 function defaultMode(kind: FileKind): ViewMode {
-  if (kind === 'html' || kind === 'image' || kind === 'pdf') return 'preview';
-  return kind === 'md' ? 'split' : 'edit';
+  if (kind === 'md') return 'split';
+  if (kind === 'html' || kind === 'text') return kind === 'html' ? 'preview' : 'edit';
+  return 'preview';
 }
 
 const isTextKind = (kind: FileKind): kind is 'md' | 'html' | 'text' => kind === 'md' || kind === 'html' || kind === 'text';
@@ -194,6 +201,7 @@ export default function App() {
   const [decision, setDecision] = useState<DecisionDialogConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
+  const [rendererStatus, setRendererStatus] = useState('Local-first');
 
   const dirty = selected !== null && isTextKind(selected.kind) && content !== savedContent;
   const lineCount = Math.max(1, content.split('\n').length);
@@ -212,6 +220,14 @@ export default function App() {
     setNotice(message);
     window.setTimeout(() => setNotice(''), 2600);
   }, []);
+
+  const handleRendererNotice = useCallback((message: string) => {
+    if (message.startsWith(RENDERER_STATUS_PREFIX)) {
+      setRendererStatus(message.slice(RENDERER_STATUS_PREFIX.length));
+      return;
+    }
+    showNotice(message);
+  }, [showNotice]);
 
   const requestDecision = useCallback((config: DecisionDialogConfig): Promise<DecisionResult> => {
     if (decisionResolverRef.current) {
@@ -268,6 +284,8 @@ export default function App() {
       const snapshot = isTextKind(node.kind) && desktop ? await readTextFile(node.path) : null;
       const nextContent = isTextKind(node.kind) ? snapshot?.content ?? node.demoContent ?? '' : '';
       setSelected(node);
+      const renderer = rendererFor(node);
+      setRendererStatus(renderer === 'spreadsheet-grid' ? '只读 · Spreadsheet' : renderer === 'system-preview' ? '只读 · Quick Look' : 'Local-first');
       if (snapshot) {
         applyAuthoritativeSnapshot(snapshot);
       } else {
@@ -326,6 +344,7 @@ export default function App() {
       setTree(nextTree);
       setOpenFolders(opened);
       setSelected(null);
+      setRendererStatus('Local-first');
       setContent('');
       setSavedContent('');
       savedContentRef.current = '';
@@ -595,21 +614,42 @@ export default function App() {
     {mode === 'edit' ? <div className="save-hint">⌘S 保存</div> : null}
   </div> : null;
 
+  const selectedRenderer = selected ? rendererFor(selected) : null;
   let preview: React.ReactNode;
   if (!selected) {
     preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
-  } else if (selected.kind === 'md') {
+  } else if (selectedRenderer === 'markdown') {
     preview = <div className="preview-pane markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown></div>;
-  } else if (selected.kind === 'html') {
+  } else if (selectedRenderer === 'html') {
     const useDisk = desktop && mode === 'preview' && !dirty;
     const liveSource = desktop ? injectBaseTag(content, `${assetUrl(parentPath(selected.path), rootPath)}/`) : content;
     preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? savedVersion ?? 'disk' : content}`} title={selected.name} sandbox="allow-scripts allow-forms allow-modals" src={useDisk ? assetUrl(selected.path, rootPath) : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
-  } else if (selected.kind === 'image') {
+  } else if (selectedRenderer === 'image') {
     preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path, rootPath)} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
-  } else if (selected.kind === 'pdf') {
+  } else if (selectedRenderer === 'pdf') {
     preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path, rootPath)} /> : null}</div>;
-  } else if (selected.kind === 'text') {
+  } else if (selectedRenderer === 'text') {
     preview = <div className="preview-pane code-preview"><pre>{content}</pre></div>;
+  } else if (selectedRenderer === 'spreadsheet-grid') {
+    preview = <Suspense fallback={<div className="empty-state"><strong>正在载入表格 Renderer…</strong></div>}>
+      <SpreadsheetRenderer
+        entry={selected}
+        desktop={desktop}
+        onNotice={handleRendererNotice}
+        onQuickLook={openQuickLook}
+        onOpenDefault={openInDefaultApp}
+      />
+    </Suspense>;
+  } else if (selectedRenderer === 'system-preview') {
+    preview = <Suspense fallback={<div className="empty-state"><strong>正在载入系统预览 Renderer…</strong></div>}>
+      <SystemPreviewRenderer
+        entry={selected}
+        desktop={desktop}
+        onNotice={handleRendererNotice}
+        onQuickLook={openQuickLook}
+        onOpenDefault={openInDefaultApp}
+      />
+    </Suspense>;
   } else {
     preview = <div className="empty-state"><strong>{selected.name}</strong><span>{fileTypeLabel(selected.kind)} 预览将在后续 Renderer 中支持。</span></div>;
   }
@@ -627,7 +667,7 @@ export default function App() {
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{selected && canEdit && (mode === 'edit' || mode === 'split') ? editor : null}{!selected || mode === 'preview' || mode === 'split' || !canEdit ? preview : null}{loading ? <div className="loading-mask">读取中…</div> : null}</div>
       </main>
     </div>
-    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span>{selected && isTextKind(selected.kind) ? <><b className={externalChange ? 'conflict' : dirty ? 'dirty' : ''}>{externalChange ? '磁盘已变更' : dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</> : 'Local-first'}</span></footer>
+    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span>{selected && isTextKind(selected.kind) ? <><b className={externalChange ? 'conflict' : dirty ? 'dirty' : ''}>{externalChange ? '磁盘已变更' : dirty ? '未保存' : '已保存'}</b> · UTF-8 · {lineCount} 行</> : rendererStatus}</span></footer>
     {notice ? <div className="notice">{notice}</div> : null}
     {decision ? <DecisionDialog {...decision} onConfirm={() => finishDecision('confirm')} onCancel={() => finishDecision('cancel')} /> : null}
   </div>;

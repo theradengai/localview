@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   writeTextFile: vi.fn(),
   chooseFolder: vi.fn(),
   closeWindow: vi.fn(),
+  generateSystemThumbnail: vi.fn(),
 }));
 
 vi.mock('@uiw/react-codemirror', async () => {
@@ -49,10 +50,17 @@ vi.mock('./lib/desktop', async () => {
     setWorkspaceRoot: vi.fn(async (path: string) => path),
     listDirectory: vi.fn(async (path: string) => {
       if (path === '/workspace') return [{ name: 'docs', path: '/workspace/docs', kind: 'folder' }];
-      if (path === '/workspace/docs') return [{ name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' }];
+      if (path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/docs/report.pages', kind: 'document' },
+      ];
       return [];
     }),
-    inspectPath: vi.fn(async (path: string) => ({ name: path.split('/').pop() ?? path, path, kind: 'md' })),
+    inspectPath: vi.fn(async (path: string) => ({
+      name: path.split('/').pop() ?? path,
+      path,
+      kind: path.endsWith('.pages') ? 'document' : 'md',
+    })),
     findWorkspaceRoot: vi.fn(async () => '/workspace'),
     getStartupPath: vi.fn(async () => '/workspace/docs/plan.md'),
     listenForOpenPath: vi.fn(async (handler: (path: string) => void) => {
@@ -61,6 +69,9 @@ vi.mock('./lib/desktop', async () => {
     }),
     readTextFile: mocks.readTextFile,
     writeTextFile: mocks.writeTextFile,
+    generateSystemThumbnail: mocks.generateSystemThumbnail,
+    openQuickLook: vi.fn(async () => undefined),
+    openInDefaultApp: vi.fn(async () => undefined),
     revealPath: vi.fn(async () => undefined),
   };
 });
@@ -81,6 +92,13 @@ beforeEach(() => {
   mocks.chooseFolder.mockReset();
   mocks.chooseFolder.mockResolvedValue(null);
   mocks.closeWindow.mockReset();
+  mocks.generateSystemThumbnail.mockReset();
+  mocks.generateSystemThumbnail.mockResolvedValue({
+    mimeType: 'image/png',
+    dataBase64: 'cG5n',
+    width: 800,
+    height: 600,
+  });
 });
 
 afterEach(() => {
@@ -221,5 +239,27 @@ describe('external disk changes', () => {
     await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
     await user.click(screen.getByRole('button', { name: '重新载入磁盘版本' }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# disk v2'));
+  });
+});
+
+describe('Finder incoming Office files', () => {
+  it('expands the parent, selects the file, and keeps it outside edit/save flow', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    render(<App />);
+
+    await screen.findByText('workspace / plan.md');
+    await act(async () => mocks.openPathHandler?.('/workspace/docs/report.pages'));
+
+    expect(await screen.findByText('workspace / report.pages')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /report\.pages$/ }).className).toContain('active');
+    expect(await screen.findByRole('img', { name: 'report.pages 系统预览' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '分栏' })).toBeNull();
+
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    await Promise.resolve();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(screen.getByText('只读 · Quick Look')).toBeTruthy();
   });
 });

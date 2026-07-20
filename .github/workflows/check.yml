@@ -27,6 +27,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
       - name: Check Tauri crate
         run: cargo check --manifest-path src-tauri/Cargo.toml
 

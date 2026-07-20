@@ -26,6 +26,39 @@ export type TextFileSnapshot = {
   version: string;
 };
 
+export type SpreadsheetCellKind = 'string' | 'integer' | 'number' | 'boolean' | 'date' | 'datetime' | 'duration' | 'error';
+
+export type SpreadsheetCell = {
+  sheetIndex: number;
+  row: number;
+  column: number;
+  kind: SpreadsheetCellKind;
+  displayValue: string;
+};
+
+export type SpreadsheetSheet = {
+  name: string;
+  index: number;
+  visible: boolean;
+  startRow: number;
+  startColumn: number;
+  endRow: number;
+  endColumn: number;
+};
+
+export type SpreadsheetWorkbookSnapshot = {
+  version: string;
+  sheets: SpreadsheetSheet[];
+  cells: SpreadsheetCell[];
+};
+
+export type SystemPreviewSnapshot = {
+  mimeType: string;
+  dataBase64: string;
+  width: number;
+  height: number;
+};
+
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
@@ -50,6 +83,22 @@ export async function inspectPath(path: string): Promise<DesktopEntry> {
 
 export async function readTextFile(path: string): Promise<TextFileSnapshot> {
   return invoke<TextFileSnapshot>('read_text_file', { path });
+}
+
+export async function readSpreadsheet(path: string): Promise<SpreadsheetWorkbookSnapshot> {
+  return invoke<SpreadsheetWorkbookSnapshot>('read_spreadsheet', { path });
+}
+
+export async function generateSystemThumbnail(path: string): Promise<SystemPreviewSnapshot> {
+  return invoke<SystemPreviewSnapshot>('generate_system_thumbnail', { path });
+}
+
+export async function openQuickLook(path: string): Promise<void> {
+  await invoke('open_quick_look', { path });
+}
+
+export async function openInDefaultApp(path: string): Promise<void> {
+  await invoke('open_in_default_app', { path });
 }
 
 export async function writeTextFile(path: string, content: string, expectedVersion: string): Promise<string> {

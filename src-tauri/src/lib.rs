@@ -14,6 +14,9 @@ use tauri::{
     Emitter, Manager,
 };
 
+mod quick_look;
+mod spreadsheet;
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FsEntry {
@@ -40,25 +43,44 @@ struct WorkspaceState {
     root: Mutex<Option<PathBuf>>,
 }
 
+fn extension_lowercase(path: &Path) -> String {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn is_document_bundle(path: &Path, is_dir: bool) -> bool {
+    is_dir
+        && matches!(
+            extension_lowercase(path).as_str(),
+            "numbers" | "pages" | "key"
+        )
+}
+
 fn file_kind(path: &Path, is_dir: bool) -> String {
+    if is_document_bundle(path, is_dir) {
+        return match extension_lowercase(path).as_str() {
+            "numbers" => "spreadsheet",
+            "pages" => "document",
+            "key" => "presentation",
+            _ => unreachable!("document bundle extensions are checked above"),
+        }
+        .into();
+    }
+
     if is_dir {
         return "folder".into();
     }
 
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let extension = extension_lowercase(path);
 
     match extension.as_str() {
         "md" | "markdown" | "mdown" | "mkd" => "md",
         "html" | "htm" => "html",
-        "txt" | "json" | "jsonc" | "yaml" | "yml" | "toml" | "xml" | "css" | "js"
-        | "jsx" | "ts" | "tsx" | "rs" | "py" | "sh" | "csv" | "log" => "text",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "bmp" | "ico" => {
-            "image"
-        }
+        "txt" | "json" | "jsonc" | "yaml" | "yml" | "toml" | "xml" | "css" | "js" | "jsx"
+        | "ts" | "tsx" | "rs" | "py" | "sh" | "csv" | "log" => "text",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "bmp" | "ico" => "image",
         "pdf" => "pdf",
         "xls" | "xlsx" | "ods" | "numbers" => "spreadsheet",
         "ppt" | "pptx" | "odp" | "key" => "presentation",
@@ -102,7 +124,10 @@ fn scoped_existing_path(state: &WorkspaceState, path: impl AsRef<Path>) -> Resul
 }
 
 #[tauri::command]
-fn set_workspace_root(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
+fn set_workspace_root(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
     let root = fs::canonicalize(path).map_err(|error| error.to_string())?;
     if !root.is_dir() {
         return Err("The selected workspace is not a directory".to_string());
@@ -174,7 +199,8 @@ fn read_text_file(
     }
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     let version = version_for_bytes(&bytes);
-    let content = String::from_utf8(bytes).map_err(|_| "The file is not valid UTF-8".to_string())?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| "The file is not valid UTF-8".to_string())?;
     Ok(TextFileSnapshot { content, version })
 }
 
@@ -208,7 +234,8 @@ fn create_temp_file(path: &Path, content: &[u8]) -> Result<PathBuf, String> {
         let result = (|| -> Result<(), String> {
             file.write_all(content).map_err(|error| error.to_string())?;
             file.sync_all().map_err(|error| error.to_string())?;
-            fs::set_permissions(&temp_path, permissions.clone()).map_err(|error| error.to_string())?;
+            fs::set_permissions(&temp_path, permissions.clone())
+                .map_err(|error| error.to_string())?;
             Ok(())
         })();
 
@@ -262,7 +289,8 @@ fn write_text_file(
 #[tauri::command]
 fn find_workspace_root(file_path: String) -> Result<String, String> {
     let source = fs::canonicalize(file_path).map_err(|error| error.to_string())?;
-    let start = if source.is_dir() {
+    let source_is_dir = source.is_dir();
+    let start = if source_is_dir && !is_document_bundle(&source, source_is_dir) {
         source
     } else {
         source
@@ -401,7 +429,11 @@ fn local_asset_response(state: &WorkspaceState, uri_path: &str) -> Response<Vec<
 
     match result {
         Ok((path, data)) => protocol_response(StatusCode::OK, content_type_for(&path), data),
-        Err(status) => protocol_response(status, "text/plain; charset=utf-8", b"Local asset unavailable".to_vec()),
+        Err(status) => protocol_response(
+            status,
+            "text/plain; charset=utf-8",
+            b"Local asset unavailable".to_vec(),
+        ),
     }
 }
 
@@ -438,7 +470,11 @@ pub fn run() {
             read_text_file,
             write_text_file,
             find_workspace_root,
-            get_startup_path
+            get_startup_path,
+            spreadsheet::read_spreadsheet,
+            quick_look::generate_system_thumbnail,
+            quick_look::open_quick_look,
+            quick_look::open_in_default_app
         ])
         .build(tauri::generate_context!())
         .expect("error while building LocalView");
@@ -467,6 +503,14 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_iwork_document_bundles() {
+        assert_eq!(file_kind(Path::new("Budget.numbers"), true), "spreadsheet");
+        assert_eq!(file_kind(Path::new("Draft.pages"), true), "document");
+        assert_eq!(file_kind(Path::new("Pitch.key"), true), "presentation");
+        assert_eq!(file_kind(Path::new("ordinary"), true), "folder");
+    }
+
+    #[test]
     fn versions_change_with_content() {
         assert_eq!(version_for_bytes(b"same"), version_for_bytes(b"same"));
         assert_ne!(version_for_bytes(b"same"), version_for_bytes(b"changed"));
@@ -490,8 +534,50 @@ mod tests {
         fs::write(&file, b"# Plan").expect("create test file");
 
         let found = find_workspace_root(file.to_string_lossy().into_owned()).expect("find root");
-        assert_eq!(PathBuf::from(found), fs::canonicalize(&root).expect("canonical root"));
+        assert_eq!(
+            PathBuf::from(found),
+            fs::canonicalize(&root).expect("canonical root")
+        );
 
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn uses_iwork_bundle_parent_as_workspace_fallback() {
+        let unique = format!(
+            "localview-bundle-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let numbers = root.join("Budget.numbers");
+        let pages = root.join("Draft.pages");
+        let keynote = root.join("Pitch.key");
+        fs::create_dir_all(&numbers).expect("create Numbers bundle");
+        fs::create_dir_all(&pages).expect("create Pages bundle");
+        fs::create_dir_all(&keynote).expect("create Keynote bundle");
+
+        for bundle in [&numbers, &pages, &keynote] {
+            let found = find_workspace_root(bundle.to_string_lossy().into_owned())
+                .expect("find bundle workspace root");
+            assert_eq!(
+                PathBuf::from(found),
+                fs::canonicalize(&root).expect("canonical bundle parent")
+            );
+        }
+
+        let ordinary = root.join("ordinary");
+        fs::create_dir_all(&ordinary).expect("create ordinary directory");
+        let found = find_workspace_root(ordinary.to_string_lossy().into_owned())
+            .expect("find ordinary directory workspace root");
+        assert_eq!(
+            PathBuf::from(found),
+            fs::canonicalize(&ordinary).expect("canonical ordinary directory")
+        );
+
+        fs::remove_dir_all(root).expect("remove bundle test directory");
     }
 }

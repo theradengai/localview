@@ -77,14 +77,32 @@ Support:
 - Local CSS/images
 - Interactive preview
 
+### Spreadsheet and system document preview
+
+Support:
+
+- `.xls`, `.xlsx`, and `.ods` as a read-only data grid
+- saved sheet names and typed cell display values
+- bounded parsing and bounded 200-row / 50-column pages for large workbooks
+- `.numbers`, `.pages`, `.key`, Word, and PowerPoint through macOS Quick Look
+- Preview-only behavior that never enters dirty or save state
+- visible parse/thumbnail errors with Quick Look and default-application actions
+
+Not included:
+
+- Excel editing or formula recalculation
+- macros, charts, embedded objects, or complete formatting fidelity
+- in-app editing for Numbers, Pages, Keynote, Word, or PowerPoint
+
 ### macOS integration
 
-Future MVP:
+Support:
 
-- Double click markdown/html file
+- Open supported Markdown, HTML, Office, OpenDocument, and iWork files from Finder
 - App receives file path
 - Find workspace root
 - Open tree and select file
+- Keep LocalView registered as an alternate viewer/editor; changing the default application remains an explicit Finder action by the user
 
 ---
 
@@ -111,15 +129,13 @@ Do not introduce:
 
 ---
 
-## Future Renderers
+## Renderer architecture
 
-Architecture should allow adding:
+The explicit renderer registry currently supports:
 
 - PDF
-- Excel
-- PowerPoint
-- Word
 - Images
+- Excel/ODS read-only grids
+- system Quick Look for Numbers/Pages/Keynote/Word/PowerPoint
 
-using a renderer system.
-
+Future renderers may add richer formatting and editing without changing the workspace model.
