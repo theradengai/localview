@@ -18,7 +18,7 @@ Do not start over. Audit the existing React/Tauri implementation, keep working p
 4. The left sidebar displays the real folder tree for that workspace.
 5. All ancestor folders of `docs/plan.md` are expanded.
 6. `plan.md` is selected.
-7. Markdown opens in the last-used mode, defaulting to Split.
+7. Markdown opens in Preview; Edit and Split require an explicit user action for the current file.
 8. Editing updates the preview without writing to disk.
 9. `Command-S` writes the exact current content to the original file.
 10. The status bar changes from **未保存** to **已保存**.
@@ -141,14 +141,17 @@ Required:
 Required:
 
 - `.xls`, `.xlsx`, and `.ods` render as bounded, read-only data grids
+- spreadsheet cells show complete wrapped saved values with automatic row heights instead of ellipsis truncation
 - `.numbers`, `.pages`, `.key`, Word, and PowerPoint use macOS Quick Look
+- Quick Look is embedded in the LocalView document area so provider-supported multi-page documents and presentations can use native navigation
 - Office files always use Preview mode and never participate in dirty-state or `Command-S`
-- spreadsheet parse and Quick Look thumbnail failures show their real error plus native fallback actions
+- embedded Quick Look and spreadsheet parse failures show their real error plus thumbnail/native fallback actions
 
 Explicit limitations:
 
 - no Excel editing, formula recalculation, macros, charts, or complete formatting fidelity
 - no in-app editing for Numbers, Pages, Keynote, Word, or PowerPoint
+- no Office animations or full slideshow playback
 - large, corrupt, encrypted, or limit-exceeding workbooks may fall back to Quick Look/default application
 
 ### Unsupported formats

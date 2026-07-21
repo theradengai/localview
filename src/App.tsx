@@ -35,21 +35,11 @@ import './style.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type FileNode = DesktopEntry & { children?: FileNode[]; loaded?: boolean; demoContent?: string };
-type ModePreferences = Partial<Record<'md' | 'html' | 'text', ViewMode>>;
 type DecisionResult = 'confirm' | 'cancel';
 
-const MODE_STORAGE_KEY = 'localview.view-modes';
 const RENDERER_STATUS_PREFIX = 'LOCALVIEW_STATUS:';
 const SpreadsheetRenderer = lazy(() => import('./renderers/SpreadsheetRenderer'));
 const SystemPreviewRenderer = lazy(() => import('./renderers/SystemPreviewRenderer'));
-
-function loadModePreferences(): ModePreferences {
-  try {
-    return JSON.parse(window.localStorage.getItem(MODE_STORAGE_KEY) ?? '{}') as ModePreferences;
-  } catch {
-    return {};
-  }
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -162,9 +152,7 @@ function fileTypeLabel(kind: FileKind): string {
   return ({ folder: 'Folder', md: 'Markdown', html: 'HTML', text: 'Text', image: 'Image', pdf: 'PDF', spreadsheet: 'Spreadsheet', presentation: 'Presentation', document: 'Document', other: 'File' })[kind];
 }
 
-function defaultMode(kind: FileKind): ViewMode {
-  if (kind === 'md') return 'split';
-  if (kind === 'html' || kind === 'text') return kind === 'html' ? 'preview' : 'edit';
+function defaultMode(): ViewMode {
   return 'preview';
 }
 
@@ -186,12 +174,11 @@ function iconFor(kind: FileKind, open: boolean): string {
 export default function App() {
   const desktop = isTauriRuntime();
   const startupHandled = useRef(false);
-  const modePreferences = useRef<ModePreferences>(loadModePreferences());
   const [tree, setTree] = useState<FileNode[]>(desktop ? [] : demoTree);
   const [rootPath, setRootPath] = useState(desktop ? '' : '/Users/thera/project');
   const [projectName, setProjectName] = useState(desktop ? 'LOCALVIEW' : 'PROJECT');
   const [selected, setSelected] = useState<FileNode | null>(desktop ? null : demoTree[0]);
-  const [mode, setMode] = useState<ViewMode>('split');
+  const [mode, setMode] = useState<ViewMode>('preview');
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set(desktop ? [] : ['/Users/thera/project/docs', '/Users/thera/project/prototype']));
   const [content, setContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
   const [savedContent, setSavedContent] = useState(desktop ? '' : demoTree[0].demoContent ?? '');
@@ -297,8 +284,7 @@ export default function App() {
         setExternalChange(false);
         setEditorEpoch((current) => current + 1);
       }
-      const remembered = isTextKind(node.kind) ? modePreferences.current[node.kind] : undefined;
-      setMode(remembered ?? defaultMode(node.kind));
+      setMode(defaultMode());
     } catch (error) {
       showNotice(errorMessage(error));
     } finally {
@@ -595,13 +581,6 @@ export default function App() {
 
   function handleModeChange(nextMode: ViewMode) {
     setMode(nextMode);
-    if (!selected || !isTextKind(selected.kind)) return;
-    modePreferences.current = { ...modePreferences.current, [selected.kind]: nextMode };
-    try {
-      window.localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(modePreferences.current));
-    } catch {
-      // Mode persistence is best-effort; the current session still updates.
-    }
   }
 
   function handleEditorChange(nextContent: string) {

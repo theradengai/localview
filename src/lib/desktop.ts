@@ -59,6 +59,13 @@ export type SystemPreviewSnapshot = {
   height: number;
 };
 
+export type EmbeddedPreviewBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
@@ -91,6 +98,25 @@ export async function readSpreadsheet(path: string): Promise<SpreadsheetWorkbook
 
 export async function generateSystemThumbnail(path: string): Promise<SystemPreviewSnapshot> {
   return invoke<SystemPreviewSnapshot>('generate_system_thumbnail', { path });
+}
+
+export async function showEmbeddedQuickLook(
+  path: string,
+  bounds: EmbeddedPreviewBounds,
+  generation: number,
+): Promise<void> {
+  await invoke('show_embedded_quick_look', { path, bounds, generation });
+}
+
+export async function resizeEmbeddedQuickLook(
+  bounds: EmbeddedPreviewBounds,
+  generation: number,
+): Promise<void> {
+  await invoke('resize_embedded_quick_look', { bounds, generation });
+}
+
+export async function hideEmbeddedQuickLook(generation: number): Promise<void> {
+  await invoke('hide_embedded_quick_look', { generation });
 }
 
 export async function openQuickLook(path: string): Promise<void> {

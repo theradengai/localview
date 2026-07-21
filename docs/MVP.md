@@ -63,6 +63,7 @@ Support:
 - Edit content
 - Live preview
 - Edit / Split / Preview modes
+- Preview as the default mode whenever a Markdown file is opened
 - Save back to original file
 - UTF-8
 - Relative image paths
@@ -74,6 +75,7 @@ Support:
 - Open .html files
 - Source mode
 - Preview mode
+- Preview as the default mode whenever an HTML file is opened
 - Local CSS/images
 - Interactive preview
 
@@ -83,16 +85,19 @@ Support:
 
 - `.xls`, `.xlsx`, and `.ods` as a read-only data grid
 - saved sheet names and typed cell display values
+- complete wrapped cell text with automatic row heights, including saved line breaks and long unbroken values
 - bounded parsing and bounded 200-row / 50-column pages for large workbooks
-- `.numbers`, `.pages`, `.key`, Word, and PowerPoint through macOS Quick Look
+- `.numbers`, `.pages`, `.key`, Word, and PowerPoint through an interactive macOS Quick Look view embedded in the LocalView document area
+- native Quick Look page or slide navigation when the installed provider exposes it
 - Preview-only behavior that never enters dirty or save state
-- visible parse/thumbnail errors with Quick Look and default-application actions
+- visible embedded-preview/thumbnail errors with separate Quick Look and default-application actions
 
 Not included:
 
 - Excel editing or formula recalculation
 - macros, charts, embedded objects, or complete formatting fidelity
 - in-app editing for Numbers, Pages, Keynote, Word, or PowerPoint
+- Office animations or full slideshow playback
 
 ### macOS integration
 
@@ -136,6 +141,6 @@ The explicit renderer registry currently supports:
 - PDF
 - Images
 - Excel/ODS read-only grids
-- system Quick Look for Numbers/Pages/Keynote/Word/PowerPoint
+- embedded system Quick Look for Numbers/Pages/Keynote/Word/PowerPoint, with system-thumbnail fallback
 
 Future renderers may add richer formatting and editing without changing the workspace model.

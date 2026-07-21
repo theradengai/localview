@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   chooseFolder: vi.fn(),
   closeWindow: vi.fn(),
   generateSystemThumbnail: vi.fn(),
+  showEmbeddedQuickLook: vi.fn(),
+  resizeEmbeddedQuickLook: vi.fn(),
+  hideEmbeddedQuickLook: vi.fn(),
 }));
 
 vi.mock('@uiw/react-codemirror', async () => {
@@ -70,6 +73,9 @@ vi.mock('./lib/desktop', async () => {
     readTextFile: mocks.readTextFile,
     writeTextFile: mocks.writeTextFile,
     generateSystemThumbnail: mocks.generateSystemThumbnail,
+    showEmbeddedQuickLook: mocks.showEmbeddedQuickLook,
+    resizeEmbeddedQuickLook: mocks.resizeEmbeddedQuickLook,
+    hideEmbeddedQuickLook: mocks.hideEmbeddedQuickLook,
     openQuickLook: vi.fn(async () => undefined),
     openInDefaultApp: vi.fn(async () => undefined),
     revealPath: vi.fn(async () => undefined),
@@ -77,6 +83,9 @@ vi.mock('./lib/desktop', async () => {
 });
 
 async function editCurrentDocument(value: string) {
+  if (!screen.queryByRole('textbox', { name: 'editor' })) {
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
+  }
   const editor = await screen.findByRole('textbox', { name: 'editor' });
   fireEvent.change(editor, { target: { value } });
   return editor;
@@ -99,6 +108,12 @@ beforeEach(() => {
     width: 800,
     height: 600,
   });
+  mocks.showEmbeddedQuickLook.mockReset();
+  mocks.showEmbeddedQuickLook.mockResolvedValue(undefined);
+  mocks.resizeEmbeddedQuickLook.mockReset();
+  mocks.resizeEmbeddedQuickLook.mockResolvedValue(undefined);
+  mocks.hideEmbeddedQuickLook.mockReset();
+  mocks.hideEmbeddedQuickLook.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -186,22 +201,24 @@ describe('external disk changes', () => {
       .mockResolvedValueOnce({ content: '# old disk', version: 'v1' })
       .mockResolvedValue({ content: '# new disk', version: 'v2' });
 
-    let poll: (() => void) | undefined;
-    vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
-      poll = handler as () => void;
+    let poll: (() => Promise<void>) | undefined;
+    vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 2000) poll = handler as () => Promise<void>;
       return 1;
     }) as typeof window.setInterval);
 
     render(<App />);
 
+    await screen.findByRole('heading', { name: 'old disk' });
+    fireEvent.click(screen.getByRole('button', { name: '分栏' }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# old disk'));
     expect(poll).toBeTypeOf('function');
 
     await act(async () => {
-      poll?.();
-      await Promise.resolve();
+      await poll?.();
     });
 
+    await waitFor(() => expect(mocks.readTextFile).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# new disk'));
     expect(screen.getByRole('heading', { name: 'new disk' })).toBeTruthy();
   });
@@ -212,9 +229,9 @@ describe('external disk changes', () => {
       .mockResolvedValueOnce({ content: '# disk v1', version: 'v1' })
       .mockResolvedValue({ content: '# disk v2', version: 'v2' });
 
-    let poll: (() => void) | undefined;
-    vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
-      poll = handler as () => void;
+    let poll: (() => Promise<void>) | undefined;
+    vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 2000) poll = handler as () => Promise<void>;
       return 1;
     }) as typeof window.setInterval);
 
@@ -223,9 +240,9 @@ describe('external disk changes', () => {
     await editCurrentDocument('# local edits');
 
     await act(async () => {
-      poll?.();
-      await Promise.resolve();
+      await poll?.();
     });
+    await waitFor(() => expect(mocks.readTextFile).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByText('磁盘已变更')).toBeTruthy());
     expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# local edits');
 
@@ -242,10 +259,66 @@ describe('external disk changes', () => {
   });
 });
 
+describe('default preview mode', () => {
+  it('opens Markdown, HTML, and text in Preview and resets manual Edit on file changes', async () => {
+    window.localStorage.setItem('localview.view-modes', JSON.stringify({ md: 'edit', html: 'split', text: 'edit' }));
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
+    expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Local Folder Viewer' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    expect(await screen.findByRole('textbox', { name: 'editor' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /product-notes\.md$/ }));
+    await screen.findByText('project / product-notes.md');
+    expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
+    expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /index\.html$/ }));
+    await screen.findByText('project / index.html');
+    expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
+    expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
+    expect(screen.getByTitle('index.html')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /style\.css$/ }));
+    await screen.findByText('project / style.css');
+    expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
+    expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
+    expect(screen.getByText(/font-family: system-ui/)).toBeTruthy();
+  });
+
+  it('still supports explicit Edit and Split modes', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    expect(await screen.findByRole('textbox', { name: 'editor' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Local Folder Viewer' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: '分栏' }));
+    expect(screen.getByRole('textbox', { name: 'editor' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Local Folder Viewer' })).toBeTruthy();
+  });
+});
+
 describe('Finder incoming Office files', () => {
   it('expands the parent, selects the file, and keeps it outside edit/save flow', async () => {
     mocks.desktop = true;
     mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 250,
+      y: 88,
+      left: 250,
+      top: 88,
+      width: 900,
+      height: 680,
+      right: 1150,
+      bottom: 768,
+      toJSON: () => ({}),
+    } as DOMRect);
     render(<App />);
 
     await screen.findByText('workspace / plan.md');
@@ -253,13 +326,18 @@ describe('Finder incoming Office files', () => {
 
     expect(await screen.findByText('workspace / report.pages')).toBeTruthy();
     expect(screen.getByRole('button', { name: /report\.pages$/ }).className).toContain('active');
-    expect(await screen.findByRole('img', { name: 'report.pages 系统预览' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'report.pages 内嵌系统预览' })).toBeTruthy();
+    await waitFor(() => expect(mocks.showEmbeddedQuickLook).toHaveBeenCalledWith(
+      '/workspace/docs/report.pages',
+      { x: 250, y: 88, width: 900, height: 680 },
+      expect.any(Number),
+    ));
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
     expect(screen.queryByRole('button', { name: '分栏' })).toBeNull();
 
     fireEvent.keyDown(window, { key: 's', metaKey: true });
     await Promise.resolve();
     expect(mocks.writeTextFile).not.toHaveBeenCalled();
-    expect(screen.getByText('只读 · Quick Look')).toBeTruthy();
+    expect(screen.getByText('只读 · Quick Look 交互预览')).toBeTruthy();
   });
 });

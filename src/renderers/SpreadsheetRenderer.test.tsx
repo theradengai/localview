@@ -50,6 +50,31 @@ const tenSheetSnapshot = (): SpreadsheetWorkbookSnapshot => ({
   })),
 });
 
+const wrappingSnapshot = (): SpreadsheetWorkbookSnapshot => ({
+  version: 'wrap-v1',
+  sheets: [
+    { name: 'Wrap', index: 0, visible: true, startRow: 0, startColumn: 0, endRow: 1, endColumn: 1 },
+  ],
+  cells: [
+    {
+      sheetIndex: 0,
+      row: 0,
+      column: 0,
+      kind: 'string',
+      displayValue: 'A long English sentence that must remain complete inside the spreadsheet preview.',
+    },
+    {
+      sheetIndex: 0,
+      row: 0,
+      column: 1,
+      kind: 'string',
+      displayValue: 'https://example.com/a/very/long/path/without/layout/truncation',
+    },
+    { sheetIndex: 0, row: 1, column: 0, kind: 'string', displayValue: '第一行\n第二行' },
+    { sheetIndex: 0, row: 1, column: 1, kind: 'string', displayValue: '连续中文内容也必须完整显示' },
+  ],
+});
+
 function props(file = entry('basic.xlsx')) {
   return {
     entry: file,
@@ -80,6 +105,17 @@ describe('SpreadsheetRenderer', () => {
     expect(screen.getByText('Alpha')).toBeTruthy();
     expect(mocks.readSpreadsheet).toHaveBeenCalledOnce();
     expect(rendererProps.onNotice).toHaveBeenCalledWith('LOCALVIEW_STATUS:只读 · 2 个工作表');
+  });
+
+  it('keeps long, unbroken, Chinese, and explicit multiline cell values intact', async () => {
+    const next = wrappingSnapshot();
+    mocks.readSpreadsheet.mockResolvedValue(next);
+    render(<SpreadsheetRenderer {...props()} />);
+
+    const cells = await screen.findAllByRole('gridcell');
+    const expected = next.cells.map((cell) => cell.displayValue);
+    expect(cells.map((cell) => cell.textContent)).toEqual(expected);
+    expect(cells.map((cell) => cell.getAttribute('title'))).toEqual(expected);
   });
 
   it('switches sheets with a real tab button and clamps vertical and horizontal pagination', async () => {

@@ -11,15 +11,15 @@ LocalView browses the real filesystem without Vaults, imports, hidden workspace 
 - Open any local folder
 - Lazy-load the real directory tree
 - Read and edit Markdown, HTML, and text files
-- Markdown Edit / Split / Preview modes
+- Markdown Edit / Split / Preview modes, opening in Preview by default
 - HTML interactive preview with relative CSS, images, and JavaScript
 - Save directly to the original file with `⌘S`
 - Detect external edits, reload clean files, and block conflicting saves
 - Protect unsaved edits when switching files, changing workspaces, or closing the window
 - Preview local images and PDFs
-- Read `.xls`, `.xlsx`, and `.ods` as a read-only data grid with sheet switching and bounded pagination
-- Preview Numbers, Pages, Keynote, Word, and PowerPoint documents through macOS Quick Look
-- Fall back to native Quick Look or the file's default application when a system thumbnail or spreadsheet parse is unavailable
+- Read `.xls`, `.xlsx`, and `.ods` as a read-only data grid with sheet switching, bounded pagination, and complete wrapped cell text with automatic row heights
+- Preview Numbers, Pages, Keynote, Word, and PowerPoint documents through an interactive macOS Quick Look view embedded in LocalView
+- Navigate multi-page presentations and documents with Quick Look's native controls; fall back to a system thumbnail, a separate Quick Look window, or the file's default application when embedding is unavailable
 - Run interactive HTML in a sandbox with read-only assets scoped to the active workspace
 - Reveal the current item in Finder
 - Register Markdown, HTML, spreadsheet, document, presentation, and iWork file associations on macOS builds
@@ -88,8 +88,8 @@ After installing or opening the built app once, macOS can list LocalView under *
 ## Known MVP limitations
 
 - Conflict handling offers **reload disk** or **keep local**; a side-by-side diff is not included yet.
-- Excel and ODS are data-only, read-only grids. Editing, formula calculation, macros, charts, embedded objects, and complete formatting fidelity are not implemented; formulas show only saved cached values when available.
-- Numbers, Pages, Keynote, Word, and PowerPoint use macOS Quick Look and are read-only in LocalView.
+- Excel and ODS are data-only, read-only grids. Saved cell text wraps completely with automatic row heights, but editing, formula calculation, macros, charts, embedded objects, and complete formatting fidelity are not implemented; formulas show only saved cached values when available.
+- Numbers, Pages, Keynote, Word, and PowerPoint use an embedded macOS Quick Look view and are read-only in LocalView. Multi-page navigation is available when the installed Quick Look provider exposes it; Office editing, animations, and full slideshow playback are not implemented.
 - Large workbooks, malformed files, unsupported encryption, or parser limits return a visible error and offer system preview/default-app fallback; LocalView never labels a failed parse as rendered.
 - PDF uses the operating system webview renderer.
 - macOS test bundles use an ad-hoc signature and are not notarized, so Gatekeeper may require an explicit first open. Public distribution still requires a Developer ID signature and notarization.

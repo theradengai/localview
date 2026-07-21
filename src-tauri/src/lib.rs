@@ -473,6 +473,9 @@ pub fn run() {
             get_startup_path,
             spreadsheet::read_spreadsheet,
             quick_look::generate_system_thumbnail,
+            quick_look::show_embedded_quick_look,
+            quick_look::resize_embedded_quick_look,
+            quick_look::hide_embedded_quick_look,
             quick_look::open_quick_look,
             quick_look::open_in_default_app
         ])
