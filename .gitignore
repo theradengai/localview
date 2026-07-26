@@ -18,6 +18,7 @@ src-tauri/target/
 .DS_Store
 .vscode/
 .idea/
+.playwright-cli/
 .env
 .env.*
 !.env.example
@@ -26,4 +27,3 @@ src-tauri/target/
 .vite/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
-

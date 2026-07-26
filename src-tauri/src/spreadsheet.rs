@@ -583,9 +583,12 @@ mod tests {
         fs::create_dir_all(&workspace).expect("create workspace");
         fs::write(&outside, fixture("basic.xlsx")).expect("create outside file");
         let state = WorkspaceState {
-            root: std::sync::Mutex::new(Some(
-                fs::canonicalize(&workspace).expect("canonical workspace"),
-            )),
+            context: std::sync::Mutex::new(crate::WorkspaceContext {
+                root: Some(crate::open_workspace_root(&workspace).expect("open workspace")),
+                generation: 1,
+                watcher: None,
+            }),
+            next_generation: std::sync::atomic::AtomicU64::new(1),
         };
 
         let error = spreadsheet_path(&state, &outside).expect_err("outside path should fail");

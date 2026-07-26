@@ -29,7 +29,7 @@ Non-negotiable principles:
 - no mandatory content indexing
 - no hidden project metadata
 - read folders lazily and files on demand
-- write edits back to the original file only after an explicit save
+- write edits back to the original file through the 600 ms auto-save coordinator; `Command-S` flushes immediately and external conflicts must never be overwritten
 
 ## MVP scope
 
@@ -40,7 +40,7 @@ The MVP must support:
 - opening a `.md` or `.html` file from Finder and selecting it inside its folder context
 - Markdown source editing with CodeMirror 6
 - Markdown Edit / Split / Preview modes
-- `Command-S` saving to the original file
+- 600 ms idle auto-save to the original file, with `Command-S` immediate flush
 - unsaved-state indication and protection against silent overwrite
 - HTML Source / Split / Preview modes
 - relative HTML CSS, image, font, and JavaScript resources
@@ -106,4 +106,3 @@ npm run tauri:build
 ```
 
 Preserve the browser demo fallback unless the task explicitly removes it. The browser fallback is useful for fast UI review, but real filesystem behavior must remain in Tauri.
-
