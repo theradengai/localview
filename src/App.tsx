@@ -1,20 +1,26 @@
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import DecisionDialog, { type DecisionDialogConfig } from './components/DecisionDialog';
-import FileTree, { type FileTreeNode } from './components/FileTree';
-import type { MarkdownCreateInputHandle } from './components/MarkdownCreateInput';
+import FileTree, { type FileTreeNode, type TreeCreateKind } from './components/FileTree';
+import type { TreeCreateInputHandle } from './components/TreeCreateInput';
 import {
   assetUrl,
   basename,
   chooseFolder,
+  createDirectory,
+  createWorkspaceWindow,
   createMarkdownFile,
   findWorkspaceRoot,
-  getStartupPath,
+  finishWindowStartup,
+  getWindowBootstrap,
   inspectPath,
   isTauriRuntime,
   joinPath,
   listDirectory,
+  listenForAppQuitAborts,
+  listenForAppQuitRequests,
   listenForOpenPath,
+  listenForWindowOpenFailures,
   listenForWorkspaceChanges,
   listenForWorkspaceWatchFailures,
   moveToTrash,
@@ -30,6 +36,7 @@ import {
   releaseHtmlPreview,
   revealPath,
   resolveMarkdownAssetSource,
+  respondAppQuit,
   setWorkspaceRoot,
   type CreatedTextFile,
   type DesktopEntry,
@@ -38,6 +45,7 @@ import {
   type TextFileSnapshot,
   type WorkspaceBinding,
   type WorkspaceChangeBatch,
+  type WindowBootstrap,
   writeTextFile,
 } from './lib/desktop';
 import { DirectoryRefreshCoordinator } from './lib/directoryRefreshCoordinator';
@@ -47,7 +55,9 @@ import {
   containsPath,
   loadedDirectoryPaths,
   removeTreePath,
+  replaceDirectoryWithMergedEntries,
 } from './lib/directoryTree';
+import { normalizeDirectoryName } from './lib/directoryName';
 import { reduceWorkspaceChanges } from './lib/workspaceChangeReducer';
 import { normalizeMarkdownFileName } from './lib/markdownFilename';
 import {
@@ -58,9 +68,13 @@ import {
 } from './lib/saveCoordinator';
 import {
   clearWorkspaceSession,
+  clearWorkspaceSessionIfInactive,
   flushWorkspaceSession,
+  markWorkspaceSessionActive,
   queueWorkspaceSession,
   readWorkspaceSession,
+  restoreLastActiveWorkspaceSession,
+  type WorkspaceSession,
   writeWorkspaceSession,
 } from './lib/workspaceSession';
 import { rendererFor } from './renderers/registry';
@@ -69,12 +83,19 @@ import './style.css';
 type ViewMode = 'edit' | 'split' | 'preview';
 type FileNode = FileTreeNode;
 type DecisionResult = 'confirm' | 'cancel';
-type CreateMarkdownDraft = { id: number; parentPath: string; workspaceEpoch: number };
+type CreateEntryDraft = { id: number; parentPath: string; workspaceEpoch: number; kind: TreeCreateKind };
 type WorkspaceRequest = { id: number; workspacePath: string; targetPath?: string };
 type WorkspaceTransition = { requestId: number; targetPath: string };
-type DocumentActionGate = 'idle' | 'navigating' | 'closing' | 'reloading' | 'deleting' | 'creating';
+type DocumentActionGate = 'idle' | 'navigating' | 'closing' | 'reloading' | 'deleting' | 'creating' | 'quitting';
 type DocumentSaveTarget = { key: string; path: string; workspaceEpoch: number };
-type TreeContextMenu = { node: FileNode; x: number; y: number; trigger: HTMLButtonElement | null };
+type TreeActionMenu = {
+  node: FileNode | null;
+  parentPath: string;
+  mode: 'create' | 'node';
+  x: number;
+  y: number;
+  trigger: HTMLButtonElement | null;
+};
 type CommittedWorkspaceSnapshot = {
   rootPath: string;
   projectName: string;
@@ -87,7 +108,7 @@ type CommittedWorkspaceSnapshot = {
   externalChange: boolean;
   mode: ViewMode;
   rendererStatus: string;
-  createDraft: CreateMarkdownDraft | null;
+  createDraft: CreateEntryDraft | null;
 };
 
 const RENDERER_STATUS_PREFIX = 'LOCALVIEW_STATUS:';
@@ -194,11 +215,11 @@ function sortFileNodes(nodes: FileNode[]): FileNode[] {
   });
 }
 
-function mergeCreatedNode(nodes: FileNode[] | undefined, entry: DesktopEntry): FileNode[] {
-  const path = normalizePath(entry.path);
+function mergeCreatedNode(nodes: FileNode[] | undefined, node: FileNode): FileNode[] {
+  const path = normalizePath(node.path);
   return sortFileNodes([
     ...(nodes ?? []).filter((node) => normalizePath(node.path) !== path),
-    toNode(entry),
+    node,
   ]);
 }
 
@@ -226,13 +247,13 @@ function insertCreatedNode(
   nodes: FileNode[],
   rootPath: string,
   parentPath: string,
-  entry: DesktopEntry,
+  node: FileNode,
 ): FileNode[] {
-  if (normalizePath(parentPath) === normalizePath(rootPath)) return mergeCreatedNode(nodes, entry);
+  if (normalizePath(parentPath) === normalizePath(rootPath)) return mergeCreatedNode(nodes, node);
   return updateNode(nodes, parentPath, (parent) => ({
     ...parent,
     loaded: true,
-    children: mergeCreatedNode(parent.children, entry),
+    children: mergeCreatedNode(parent.children, node),
   }));
 }
 
@@ -263,6 +284,38 @@ function classifyMarkdownCreateFailure(error: unknown): 'definitive' | 'ambiguou
   ].some((prefix) => message.startsWith(prefix)) ? 'definitive' : 'ambiguous';
 }
 
+function directoryCreateError(error: unknown): string {
+  const message = errorMessage(error);
+  if (message.startsWith('INVALID_DIRECTORY_NAME')) return '请输入有效的文件夹名称';
+  if (message.startsWith('DIRECTORY_NAME_TOO_LONG')) return '文件夹名称过长，请缩短后重试';
+  if (message.startsWith('DIRECTORY_NAME_RESERVED')) return '该名称由 LocalView 或系统保留';
+  if (message.startsWith('DIRECTORY_BUNDLE_NAME_UNSUPPORTED')) return '请不要使用 .numbers、.pages 或 .key 结尾的文件夹名';
+  if (message.startsWith('DIRECTORY_ENTRY_EXISTS')) return '同名文件或文件夹已存在';
+  if (message.startsWith('DIRECTORY_PARENT_NOT_DIRECTORY')) return '目标不是可写文件夹';
+  if (message.startsWith('DIRECTORY_PARENT_CHANGED')) return '目标文件夹已发生变化，请重试';
+  if (message.startsWith('WORKSPACE_ROOT_CHANGED')) return '工作区目录已发生变化，请重新打开';
+  if (message.startsWith('CREATE_DIRECTORY_UNSUPPORTED')) return '当前系统暂不支持安全新建文件夹';
+  if (message.startsWith('CREATE_DIRECTORY_RESULT_UNCERTAIN')) return '文件夹创建结果不确定';
+  return message.replace(/^CREATE_DIRECTORY_FAILED:\s*/, '新建文件夹失败：');
+}
+
+function classifyDirectoryCreateFailure(error: unknown): 'definitive' | 'ambiguous' {
+  const message = errorMessage(error);
+  return [
+    'INVALID_DIRECTORY_NAME',
+    'DIRECTORY_NAME_TOO_LONG',
+    'DIRECTORY_NAME_RESERVED',
+    'DIRECTORY_BUNDLE_NAME_UNSUPPORTED',
+    'DIRECTORY_ENTRY_EXISTS',
+    'DIRECTORY_PARENT_NOT_DIRECTORY',
+    'DIRECTORY_PARENT_CHANGED',
+    'WORKSPACE_ROOT_CHANGED',
+    'CREATE_DIRECTORY_UNSUPPORTED',
+    'CREATE_DIRECTORY_FAILED:',
+    'Path is outside the active workspace',
+  ].some((prefix) => message.startsWith(prefix)) ? 'definitive' : 'ambiguous';
+}
+
 function trashError(error: unknown): string {
   const message = errorMessage(error);
   if (message.startsWith('TRASH_ROOT_FORBIDDEN')) return '不能把当前工作区根目录移到废纸篓';
@@ -289,8 +342,8 @@ function normalizeWorkspaceBinding(
   fallbackGeneration: number,
 ): WorkspaceBinding {
   return typeof value === 'string'
-    ? { path: value, generation: fallbackGeneration, watching: false }
-    : value;
+    ? { path: value, generation: fallbackGeneration, watching: false, assetScope: 'browser-demo' }
+    : { ...value, assetScope: value.assetScope || `workspace-${value.generation}` };
 }
 
 function ancestorDirectoryPaths(rootPath: string, targetPath: string): string[] {
@@ -350,7 +403,7 @@ export default function App() {
   });
   const [documentActionGate, setDocumentActionGate] = useState<DocumentActionGate>('idle');
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  const [treeContextMenu, setTreeContextMenu] = useState<TreeContextMenu | null>(null);
+  const [treeActionMenu, setTreeActionMenu] = useState<TreeActionMenu | null>(null);
   const [editorEpoch, setEditorEpoch] = useState(0);
   const [decision, setDecision] = useState<DecisionDialogConfig | null>(null);
   const [loading, setLoading] = useState(false);
@@ -358,14 +411,16 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [rendererStatus, setRendererStatus] = useState('Local-first');
   const [htmlPreviewCapability, setHtmlPreviewCapability] = useState<HtmlPreviewCapability | null>(null);
-  const [createDraft, setCreateDraft] = useState<CreateMarkdownDraft | null>(null);
-  const createDraftRef = useRef<CreateMarkdownDraft | null>(null);
+  const [createDraft, setCreateDraft] = useState<CreateEntryDraft | null>(null);
+  const createDraftRef = useRef<CreateEntryDraft | null>(null);
   const [createInvalid, setCreateInvalid] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const createBusyRef = useRef<number | null>(null);
   const createOperationRef = useRef(0);
-  const createInputRef = useRef<MarkdownCreateInputHandle>(null);
+  const createInputRef = useRef<TreeCreateInputHandle>(null);
+  const [pendingTreeFocusPath, setPendingTreeFocusPath] = useState<string | null>(null);
   const [workspaceTransition, setWorkspaceTransition] = useState<WorkspaceTransition | null>(null);
+  const [windowSessionId, setWindowSessionId] = useState('');
   const workspaceTransitionRef = useRef<WorkspaceTransition | null>(null);
   const workspaceEpochRef = useRef(0);
   const workspaceBindingRef = useRef<WorkspaceBinding | null>(null);
@@ -394,7 +449,8 @@ export default function App() {
   const projectMenuItemRef = useRef<HTMLButtonElement>(null);
   const lastContextTriggerRef = useRef<HTMLButtonElement | null>(null);
   const sidebarFocusFallbackRef = useRef<HTMLButtonElement>(null);
-  const bootstrapPromiseRef = useRef<Promise<string | null> | null>(null);
+  const bootstrapPromiseRef = useRef<Promise<WindowBootstrap> | null>(null);
+  const windowSessionIdRef = useRef('');
   const explicitStartupPathRef = useRef(false);
   const sessionRootWrittenRef = useRef('');
   const watchFailureNoticeRef = useRef('');
@@ -423,6 +479,9 @@ export default function App() {
   const decisionResolverRef = useRef<((result: DecisionResult) => void) | null>(null);
   const allowCloseRef = useRef(false);
   const allowUnloadRef = useRef(false);
+  const quitGenerationRef = useRef<number | null>(null);
+  const quitFlowRef = useRef<Promise<void> | null>(null);
+  const quitDecisionGenerationRef = useRef<number | null>(null);
 
   if (!fileSnapshotCoordinatorRef.current) {
     fileSnapshotCoordinatorRef.current = new FileSnapshotCoordinator({ read: readTextFile });
@@ -443,7 +502,7 @@ export default function App() {
     rendererStatusRef.current = rendererStatus;
   }, [content, dirty, externalChange, mode, openFolders, projectName, rendererStatus, rootPath, savedContent, savedVersion, selected, tree]);
 
-  const replaceCreateDraft = useCallback((next: CreateMarkdownDraft | null) => {
+  const replaceCreateDraft = useCallback((next: CreateEntryDraft | null) => {
     createDraftRef.current = next;
     setCreateDraft(next);
     setCreateInvalid(false);
@@ -581,7 +640,7 @@ export default function App() {
       directoryRefreshCoordinatorRef.current?.cancel();
       pendingWorkspaceBatchesRef.current.clear();
       if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-      flushWorkspaceSession();
+      if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       decisionResolverRef.current?.('cancel');
       decisionResolverRef.current = null;
       workspaceMutationWaitersRef.current.splice(0).forEach((resolve) => resolve());
@@ -1003,6 +1062,7 @@ export default function App() {
               path: preparedRoot,
               generation: workspaceEpochRef.current + 1,
               watching: false,
+              assetScope: 'browser-demo',
             };
           }
           backendChanged = desktop || backendChanged;
@@ -1300,6 +1360,16 @@ export default function App() {
   }, [desktop, handleWorkspaceChangeBatch, showNotice]);
 
   useEffect(() => {
+    if (!desktop) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenForWindowOpenFailures((failure) => {
+      showNotice(`新窗口打开失败：${failure.message}`);
+    }).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
+    return () => { cancelled = true; unlisten?.(); };
+  }, [desktop, showNotice]);
+
+  useEffect(() => {
     if (!desktop || !selected || selected.kind !== 'html' || !rootPath) {
       setHtmlPreviewCapability(null);
       return;
@@ -1411,12 +1481,23 @@ export default function App() {
 
   const requestReload = useCallback(async () => {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
+    await waitForWorkspaceMutations();
+    if (workspaceTransitionRef.current) return void showTransitionNotice();
     await runWithSaveGuard('reloading', '重新载入 LocalView', async () => {
-      flushWorkspaceSession();
+      if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       allowUnloadRef.current = true;
       window.location.reload();
     });
-  }, [runWithSaveGuard, showTransitionNotice]);
+  }, [runWithSaveGuard, showTransitionNotice, waitForWorkspaceMutations]);
+
+  const handleNewWindow = useCallback(async () => {
+    setProjectMenuOpen(false);
+    try {
+      await createWorkspaceWindow();
+    } catch (error) {
+      showNotice(`新建窗口失败：${errorMessage(error)}`);
+    }
+  }, [showNotice]);
 
   useEffect(() => {
     if (workspaceTransition || !desktop || !selected || !isTextKind(selected.kind) || !savedVersion) return;
@@ -1426,7 +1507,7 @@ export default function App() {
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      flushWorkspaceSession();
+      if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       if (allowUnloadRef.current) return;
       if (!saveCoordinatorRef.current?.hasPendingChanges() && !dirtyRef.current) return;
       event.preventDefault();
@@ -1439,24 +1520,32 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void getCurrentWindow().onCloseRequested((event) => {
-      flushWorkspaceSession();
+      if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       if (allowCloseRef.current) {
         allowCloseRef.current = false;
+        if (windowSessionIdRef.current) clearWorkspaceSessionIfInactive(windowSessionIdRef.current);
         return;
       }
       const coordinator = saveCoordinatorRef.current;
-      if (!coordinator?.hasPendingChanges()) return;
+      const mutationBusy = workspaceMutationCountRef.current > 0 || createBusyRef.current !== null;
+      if (!coordinator?.hasPendingChanges() && !dirtyRef.current && !mutationBusy) {
+        if (windowSessionIdRef.current) clearWorkspaceSessionIfInactive(windowSessionIdRef.current);
+        return;
+      }
       event.preventDefault();
       if (closeFlowRef.current) return;
-      const flow = runWithSaveGuard('closing', '关闭 LocalView', async () => {
-        allowCloseRef.current = true;
-        try {
-          await getCurrentWindow().close();
-        } catch (error) {
-          allowCloseRef.current = false;
-          showNotice(`关闭失败：${errorMessage(error)}`);
-        }
-      }).then(() => undefined).finally(() => {
+      const flow = (async () => {
+        await waitForWorkspaceMutations();
+        await runWithSaveGuard('closing', '关闭 LocalView', async () => {
+          allowCloseRef.current = true;
+          try {
+            await getCurrentWindow().close();
+          } catch (error) {
+            allowCloseRef.current = false;
+            showNotice(`关闭失败：${errorMessage(error)}`);
+          }
+        });
+      })().finally(() => {
         if (closeFlowRef.current === flow) closeFlowRef.current = null;
       });
       closeFlowRef.current = flow;
@@ -1467,7 +1556,99 @@ export default function App() {
       unlisten?.();
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
-  }, [desktop, runWithSaveGuard, showNotice]);
+  }, [desktop, runWithSaveGuard, showNotice, waitForWorkspaceMutations]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let disposeRequest: (() => void) | undefined;
+    let disposeAbort: (() => void) | undefined;
+    let cancelled = false;
+
+    const releaseQuitGate = (generation: number) => {
+      if (quitGenerationRef.current !== generation) return;
+      quitGenerationRef.current = null;
+      quitDecisionGenerationRef.current = null;
+      quitFlowRef.current = null;
+      documentActionGateRef.current = 'idle';
+      if (!unmountedRef.current) setDocumentActionGate('idle');
+    };
+
+    void listenForAppQuitRequests(({ generation }) => {
+      if (quitGenerationRef.current === generation) return;
+      if (
+        workspaceTransitionRef.current
+        || documentActionGateRef.current !== 'idle'
+        || decisionResolverRef.current
+        || createBusyRef.current !== null
+        || workspaceMutationCountRef.current > 0
+      ) {
+        void respondAppQuit(generation, 'cancel');
+        return;
+      }
+      quitGenerationRef.current = generation;
+      documentActionGateRef.current = 'quitting';
+      setDocumentActionGate('quitting');
+      const flow = (async () => {
+        try {
+          const coordinator = saveCoordinatorRef.current;
+          const before = coordinator?.getState();
+          const outcome = await flushCurrentDocument();
+          if (quitGenerationRef.current !== generation) return;
+          const after = coordinator?.getState();
+          const stable = before?.documentKey === after?.documentKey
+            && outcome.documentKey === after?.documentKey
+            && outcome.revision === after?.revision;
+          if (!after?.dirty && !outcome.dirty && stable) {
+            await respondAppQuit(generation, 'saved');
+            return;
+          }
+          const terminal = outcome.kind === 'conflict'
+            ? '磁盘文件已经变化，LocalView 不会覆盖它。'
+            : outcome.kind === 'missing'
+              ? '原文件已被移走，本地编辑内容仍保留。'
+              : `自动保存失败：${outcome.error ?? '未知错误'}`;
+          quitDecisionGenerationRef.current = generation;
+          const result = await requestDecision({
+            title: '退出前无法保存',
+            message: `${terminal} 你可以继续编辑，或只授权本次退出时放弃本地修改。`,
+            confirmLabel: '退出时放弃',
+            cancelLabel: '继续编辑',
+            destructive: true,
+          });
+          quitDecisionGenerationRef.current = null;
+          if (quitGenerationRef.current !== generation) return;
+          await respondAppQuit(generation, result === 'confirm' ? 'discardApproved' : 'cancel');
+          if (result !== 'confirm') releaseQuitGate(generation);
+        } catch (error) {
+          if (quitGenerationRef.current !== generation) return;
+          try { await respondAppQuit(generation, 'cancel'); } catch { /* transaction already aborted */ }
+          releaseQuitGate(generation);
+          showNotice(`退出已取消：${errorMessage(error)}`);
+        }
+      })().finally(() => {
+        if (quitFlowRef.current === flow && quitGenerationRef.current === null) {
+          quitFlowRef.current = null;
+        }
+      });
+      quitFlowRef.current = flow;
+    }).then((dispose) => cancelled ? dispose() : (disposeRequest = dispose));
+
+    void listenForAppQuitAborts(({ generation }) => {
+      if (quitGenerationRef.current !== generation) return;
+      quitGenerationRef.current = null;
+      if (quitDecisionGenerationRef.current === generation) finishDecision('cancel');
+      quitDecisionGenerationRef.current = null;
+      quitFlowRef.current = null;
+      documentActionGateRef.current = 'idle';
+      if (!unmountedRef.current) setDocumentActionGate('idle');
+    }).then((dispose) => cancelled ? dispose() : (disposeAbort = dispose));
+
+    return () => {
+      cancelled = true;
+      disposeRequest?.();
+      disposeAbort?.();
+    };
+  }, [desktop, finishDecision, flushCurrentDocument, requestDecision, showNotice]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1477,11 +1658,14 @@ export default function App() {
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'r') {
         event.preventDefault();
         void requestReload();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        void handleNewWindow();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleExplicitSave, requestReload]);
+  }, [handleExplicitSave, handleNewWindow, requestReload]);
 
   const openCreatedMarkdown = useCallback((created: CreatedTextFile) => {
     const node = toNode(created.entry);
@@ -1519,12 +1703,11 @@ export default function App() {
     return promise;
   }, []);
 
-  const restoreWorkspaceSession = useCallback(async () => {
-    const session = readWorkspaceSession();
+  const restoreWorkspaceSession = useCallback(async (session: WorkspaceSession | null) => {
     if (!session || explicitStartupPathRef.current) return;
     await requestWorkspaceTransition(session.rootPath);
     if (normalizePath(rootPathRef.current) !== normalizePath(session.rootPath)) {
-      clearWorkspaceSession();
+      if (windowSessionIdRef.current) clearWorkspaceSession(windowSessionIdRef.current);
       return;
     }
     const workspaceEpoch = workspaceEpochRef.current;
@@ -1569,22 +1752,40 @@ export default function App() {
       explicitStartupPathRef.current = true;
       void openIncomingPath(path);
     }).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
-    bootstrapPromiseRef.current ??= getStartupPath();
-    void bootstrapPromiseRef.current.then(async (path) => {
-      if (cancelled || startupHandled.current) return;
-      startupHandled.current = true;
-      if (path) {
-        explicitStartupPathRef.current = true;
-        await openIncomingPath(path);
-      } else if (!explicitStartupPathRef.current) {
-        await restoreWorkspaceSession();
-      }
-    });
+    bootstrapPromiseRef.current ??= getWindowBootstrap();
+    void bootstrapPromiseRef.current
+      .then(async (bootstrap) => {
+        if (cancelled || startupHandled.current) return;
+        startupHandled.current = true;
+        windowSessionIdRef.current = bootstrap.sessionId;
+        setWindowSessionId(bootstrap.sessionId);
+        if (bootstrap.initialPath) {
+          explicitStartupPathRef.current = true;
+          clearWorkspaceSession(bootstrap.sessionId);
+          await openIncomingPath(bootstrap.initialPath);
+        } else if (bootstrap.restoreMode === 'self') {
+          await restoreWorkspaceSession(readWorkspaceSession(bootstrap.sessionId));
+        } else if (bootstrap.restoreMode === 'last-active') {
+          await restoreWorkspaceSession(restoreLastActiveWorkspaceSession(bootstrap.sessionId));
+        } else {
+          clearWorkspaceSession(bootstrap.sessionId);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) showNotice(`窗口初始化失败：${errorMessage(error)}`);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          void finishWindowStartup().catch((error) => {
+            if (!cancelled) showNotice(`窗口启动收尾失败：${errorMessage(error)}`);
+          });
+        }
+      });
     return () => { cancelled = true; unlisten?.(); };
-  }, [desktop, openIncomingPath, restoreWorkspaceSession]);
+  }, [desktop, openIncomingPath, restoreWorkspaceSession, showNotice]);
 
   useEffect(() => {
-    if (!desktop || !rootPath) return;
+    if (!desktop || !rootPath || !windowSessionId) return;
     const session = {
       rootPath,
       selectedPath: selected?.path ?? null,
@@ -1593,13 +1794,38 @@ export default function App() {
     };
     if (sessionRootWrittenRef.current !== rootPath) {
       sessionRootWrittenRef.current = rootPath;
-      writeWorkspaceSession(session);
+      writeWorkspaceSession(windowSessionId, session);
     } else {
-      queueWorkspaceSession(session);
+      queueWorkspaceSession(windowSessionId, session);
     }
-  }, [desktop, mode, openFolders, rootPath, selected]);
+    let cancelled = false;
+    void getCurrentWindow().isFocused().then((focused) => {
+      if (!cancelled && focused) markWorkspaceSessionActive(windowSessionId, session);
+    });
+    return () => { cancelled = true; };
+  }, [desktop, mode, openFolders, rootPath, selected, windowSessionId]);
 
-  const beginMarkdownCreate = useCallback(async (parentPath: string, parentNode?: FileNode) => {
+  useEffect(() => {
+    if (!desktop || !windowSessionId) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused || !rootPathRef.current) return;
+      markWorkspaceSessionActive(windowSessionId, {
+        rootPath: rootPathRef.current,
+        selectedPath: selectedRef.current?.path ?? null,
+        openFolders: [...openFoldersRef.current],
+        mode: modeRef.current,
+      });
+    }).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
+    return () => { cancelled = true; unlisten?.(); };
+  }, [desktop, windowSessionId]);
+
+  const beginCreate = useCallback(async (
+    kind: TreeCreateKind,
+    parentPath: string,
+    parentNode?: FileNode,
+  ) => {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     if (!rootPathRef.current || createBusyRef.current !== null) return;
     const operationId = ++createOperationRef.current;
@@ -1624,7 +1850,7 @@ export default function App() {
       || normalizePath(rootPathRef.current) !== workspace
       || workspaceTransitionRef.current
     ) return;
-    replaceCreateDraft({ id: operationId, parentPath: parent, workspaceEpoch });
+    replaceCreateDraft({ id: operationId, parentPath: parent, workspaceEpoch, kind });
     if (parent !== workspace) {
       setOpenFolders((current) => {
         const next = new Set(current).add(parent);
@@ -1634,40 +1860,53 @@ export default function App() {
     }
   }, [desktop, prepareFolder, replaceCreateDraft, showNotice, showTransitionNotice]);
 
-  const cancelMarkdownCreate = useCallback(() => {
+  const cancelCreate = useCallback(() => {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     if (createBusyRef.current !== null) return;
     createOperationRef.current += 1;
     replaceCreateDraft(null);
   }, [replaceCreateDraft, showTransitionNotice]);
 
-  const reconcileMarkdownDirectory = useCallback(async (
-    draft: CreateMarkdownDraft,
+  const reconcileCreatedEntry = useCallback(async (
+    draft: CreateEntryDraft,
     expectedPath: string,
-  ): Promise<{ found: boolean; detail: string }> => {
+  ): Promise<{ found: boolean; node: FileNode | null; detail: string }> => {
     try {
       const entries = await directoryRefreshCoordinatorRef.current!.load(draft.parentPath);
-      if (!entries) return { found: false, detail: '目录响应已过期，等待下一次刷新' };
-      const children = sortFileNodes(entries.map(toNode));
+      if (!entries) return { found: false, node: null, detail: '目录响应已过期，等待下一次刷新' };
       if (unmountedRef.current
         || workspaceEpochRef.current !== draft.workspaceEpoch
         || normalizePath(rootPathRef.current) === ''
         || createDraftRef.current?.id !== draft.id) {
-        return { found: false, detail: '当前工作区已变化' };
+        return { found: false, node: null, detail: '当前工作区已变化' };
       }
+      const next = replaceDirectoryWithMergedEntries(
+        treeRef.current,
+        rootPathRef.current,
+        draft.parentPath,
+        entries,
+      ) as FileNode[];
+      treeRef.current = next;
+      setTree(next);
       const committed = committedWorkspaceSnapshotRef.current;
-      if (committed) committed.tree = treeRef.current;
-      const found = children.some((child) => normalizePath(child.path) === normalizePath(expectedPath));
-      return { found, detail: found ? '目录已刷新，请确认' : '目录已刷新，未发现目标文件，可重试' };
+      if (committed) committed.tree = next;
+      const node = findNode(next, expectedPath) ?? null;
+      return {
+        found: node !== null,
+        node,
+        detail: node
+          ? (draft.kind === 'folder' ? '已创建并刷新目录' : '目录已刷新，请确认')
+          : '目录已刷新，未发现目标，可重试',
+      };
     } catch (error) {
-      return { found: false, detail: `目录刷新失败：${errorMessage(error)}` };
+      return { found: false, node: null, detail: `目录刷新失败：${errorMessage(error)}` };
     }
   }, []);
 
-  const submitMarkdownCreate = useCallback(async (rawName: string) => {
-    const draft = createDraftRef.current;
+  const submitMarkdownCreate = useCallback(async (draft: CreateEntryDraft, rawName: string) => {
+    if (draft.kind !== 'markdown') return;
     if (workspaceTransitionRef.current) return void showTransitionNotice();
-    if (!draft || createBusyRef.current !== null) return;
+    if (createDraftRef.current?.id !== draft.id || createBusyRef.current !== null) return;
 
     let normalizedName: string;
     try {
@@ -1709,7 +1948,7 @@ export default function App() {
             || normalizePath(rootPathRef.current) !== workspace) return;
 
           setTree((current) => {
-            const next = insertCreatedNode(current, workspace, draft.parentPath, created.entry);
+            const next = insertCreatedNode(current, workspace, draft.parentPath, toNode(created.entry));
             treeRef.current = next;
             return next;
           });
@@ -1726,7 +1965,7 @@ export default function App() {
 
           const committed = committedWorkspaceSnapshotRef.current;
           if (committed && normalizePath(committed.rootPath) === workspace) {
-            committed.tree = insertCreatedNode(committed.tree, workspace, draft.parentPath, created.entry);
+            committed.tree = insertCreatedNode(committed.tree, workspace, draft.parentPath, toNode(created.entry));
             committed.selected = toNode(created.entry);
             committed.content = created.snapshot.content;
             committed.savedContent = created.snapshot.content;
@@ -1749,7 +1988,7 @@ export default function App() {
             ? `创建结果不确定：${rawError}`
             : markdownCreateError(error);
           if (desktop && (rawError.startsWith('MARKDOWN_FILE_EXISTS') || classification === 'ambiguous')) {
-            const reconciliation = await reconcileMarkdownDirectory(
+            const reconciliation = await reconcileCreatedEntry(
               draft,
               joinPath(draft.parentPath, normalizedName),
             );
@@ -1770,10 +2009,124 @@ export default function App() {
         window.setTimeout(() => createInputRef.current?.focusAndSelect(), 0);
       }
     });
-  }, [desktop, openCreatedMarkdown, reconcileMarkdownDirectory, replaceCreateDraft, runWithSaveGuard, runWorkspaceMutation, showNotice, showTransitionNotice]);
+  }, [desktop, openCreatedMarkdown, reconcileCreatedEntry, replaceCreateDraft, runWithSaveGuard, runWorkspaceMutation, showNotice, showTransitionNotice]);
+
+  const submitDirectoryCreate = useCallback(async (draft: CreateEntryDraft, rawName: string) => {
+    if (draft.kind !== 'folder') return;
+    if (workspaceTransitionRef.current) return void showTransitionNotice();
+    if (createDraftRef.current?.id !== draft.id || createBusyRef.current !== null) return;
+
+    let normalizedName: string;
+    try {
+      normalizedName = normalizeDirectoryName(rawName);
+    } catch (error) {
+      setCreateInvalid(true);
+      showNotice(directoryCreateError(error));
+      createInputRef.current?.focusAndSelect();
+      return;
+    }
+
+    const operationId = draft.id;
+    const workspace = normalizePath(rootPathRef.current);
+    let shouldRefocus = false;
+    createBusyRef.current = operationId;
+    setCreateBusy(true);
+
+    await runWorkspaceMutation(async () => {
+      try {
+        if (desktop) directoryRefreshCoordinatorRef.current?.invalidate(draft.parentPath);
+        const entry = desktop
+          ? await createDirectory(draft.parentPath, normalizedName)
+          : (() => {
+              const path = joinPath(draft.parentPath, normalizedName);
+              if (findNode(treeRef.current, path)) throw new Error('DIRECTORY_ENTRY_EXISTS');
+              return { name: normalizedName, path, kind: 'folder' as const };
+            })();
+
+        if (unmountedRef.current
+          || createOperationRef.current !== operationId
+          || createDraftRef.current?.id !== operationId
+          || draft.workspaceEpoch !== workspaceEpochRef.current
+          || normalizePath(rootPathRef.current) !== workspace) return;
+
+        const createdNode: FileNode = { ...entry, loaded: true, children: [] };
+        setTree((current) => {
+          const next = insertCreatedNode(current, workspace, draft.parentPath, createdNode);
+          treeRef.current = next;
+          return next;
+        });
+        if (normalizePath(draft.parentPath) !== workspace) {
+          setOpenFolders((current) => {
+            const next = new Set(current).add(normalizePath(draft.parentPath));
+            openFoldersRef.current = next;
+            return next;
+          });
+        }
+        replaceCreateDraft(null);
+        setPendingTreeFocusPath(createdNode.path);
+        if (desktop) directoryRefreshCoordinatorRef.current?.request([draft.parentPath]);
+
+        const committed = committedWorkspaceSnapshotRef.current;
+        if (committed && normalizePath(committed.rootPath) === workspace) {
+          committed.tree = insertCreatedNode(committed.tree, workspace, draft.parentPath, createdNode);
+          committed.createDraft = null;
+        }
+        showNotice(desktop
+          ? `已创建文件夹 ${entry.name}`
+          : `已模拟创建文件夹 ${entry.name}；浏览器 Demo 未写入磁盘`);
+      } catch (error) {
+        if (unmountedRef.current
+          || createOperationRef.current !== operationId
+          || createDraftRef.current?.id !== operationId
+          || draft.workspaceEpoch !== workspaceEpochRef.current) return;
+        const rawError = errorMessage(error);
+        const classification = classifyDirectoryCreateFailure(error);
+        let message = classification === 'ambiguous'
+          ? `文件夹创建结果不确定：${rawError}`
+          : directoryCreateError(error);
+        if (desktop && (rawError.startsWith('DIRECTORY_ENTRY_EXISTS') || classification === 'ambiguous')) {
+          const reconciliation = await reconcileCreatedEntry(
+            draft,
+            joinPath(draft.parentPath, normalizedName),
+          );
+          if (rawError.startsWith('DIRECTORY_ENTRY_EXISTS')) {
+            message = `${message}；${reconciliation.found
+              ? '目录已刷新，已确认同名项存在'
+              : reconciliation.detail}`;
+          } else if (reconciliation.found && reconciliation.node) {
+            replaceCreateDraft(null);
+            setPendingTreeFocusPath(reconciliation.node.path);
+            message = reconciliation.detail;
+          } else {
+            message = `${message}；${reconciliation.detail}`;
+          }
+        }
+        setCreateInvalid(createDraftRef.current?.id === operationId);
+        showNotice(message);
+        if (desktop) directoryRefreshCoordinatorRef.current?.request([draft.parentPath]);
+        shouldRefocus = createDraftRef.current?.id === operationId;
+      } finally {
+        if (!unmountedRef.current && createBusyRef.current === operationId) {
+          createBusyRef.current = null;
+          setCreateBusy(false);
+        }
+      }
+    });
+    if (shouldRefocus && !workspaceTransitionRef.current) {
+      window.setTimeout(() => createInputRef.current?.focusAndSelect(), 0);
+    }
+  }, [desktop, reconcileCreatedEntry, replaceCreateDraft, runWorkspaceMutation, showNotice, showTransitionNotice]);
+
+  const submitCreate = useCallback((rawName: string) => {
+    const draft = createDraftRef.current;
+    if (!draft) return;
+    if (draft.kind === 'folder') void submitDirectoryCreate(draft, rawName);
+    else void submitMarkdownCreate(draft, rawName);
+  }, [submitDirectoryCreate, submitMarkdownCreate]);
 
   const requestTrash = useCallback(async (node: FileNode) => {
-    setTreeContextMenu(null);
+    setTreeActionMenu(null);
+    if (createBusyRef.current !== null) return;
     const targetPath = normalizePath(node.path);
     if (!rootPathRef.current || targetPath === normalizePath(rootPathRef.current)) return;
     const workspaceEpoch = workspaceEpochRef.current;
@@ -1783,6 +2136,7 @@ export default function App() {
       if (trigger?.isConnected) trigger.focus();
       else sidebarFocusFallbackRef.current?.focus();
     }, 0);
+    let trashSucceeded = false;
     try {
       const candidate = desktop ? await prepareTrash(targetPath) : null;
       if (
@@ -1827,6 +2181,12 @@ export default function App() {
           clearCurrentDocument();
         }
         directoryRefreshCoordinatorRef.current?.request([parent]);
+        trashSucceeded = true;
+        if (normalizePath(parent) !== normalizePath(rootPathRef.current) && findNode(next, parent)) {
+          setPendingTreeFocusPath(parent);
+        } else {
+          window.setTimeout(() => sidebarFocusFallbackRef.current?.focus(), 0);
+        }
         showNotice(desktop
           ? `已将 ${node.name} 移到废纸篓`
           : `浏览器 Demo 已模拟删除 ${node.name}；未移动磁盘文件`);
@@ -1855,20 +2215,20 @@ export default function App() {
     } catch (error) {
       showNotice(trashError(error));
     } finally {
-      restoreFocus();
+      if (!trashSucceeded) restoreFocus();
     }
   }, [clearCurrentDocument, desktop, requestDecision, runWithSaveGuard, runWorkspaceMutation, showNotice]);
 
   useEffect(() => {
-    if (!treeContextMenu) return;
+    if (!treeActionMenu) return;
     window.setTimeout(() => contextMenuItemRef.current?.focus(), 0);
     const close = (restoreFocus: boolean) => {
-      const trigger = treeContextMenu.trigger;
-      setTreeContextMenu(null);
+      const trigger = treeActionMenu.trigger;
+      setTreeActionMenu(null);
       if (restoreFocus) window.setTimeout(() => trigger?.isConnected && trigger.focus(), 0);
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target as Element | null)?.closest('.context-menu')) close(false);
+      if (!(event.target as Element | null)?.closest('.context-menu')) close(true);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -1882,7 +2242,7 @@ export default function App() {
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [treeContextMenu]);
+  }, [treeActionMenu]);
 
   useEffect(() => {
     if (!projectMenuOpen) return;
@@ -1909,7 +2269,7 @@ export default function App() {
 
   useEffect(() => {
     if (documentActionGate !== 'idle' || workspaceTransition) {
-      setTreeContextMenu(null);
+      setTreeActionMenu(null);
       setProjectMenuOpen(false);
     }
   }, [documentActionGate, workspaceTransition]);
@@ -1917,9 +2277,12 @@ export default function App() {
   useEffect(() => {
     const onDeleteShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key !== 'Backspace') return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, [contenteditable="true"], .cm-editor')) return;
-      const node = selectedRef.current;
+      if (createBusyRef.current !== null) return;
+      const target = event.target as Element | null;
+      const row = target?.closest<HTMLButtonElement>('.tree-row-main[data-tree-path]');
+      const path = row?.dataset.treePath;
+      if (!path) return;
+      const node = findNode(treeRef.current, path);
       if (!node || normalizePath(node.path) === normalizePath(rootPathRef.current)) return;
       event.preventDefault();
       void requestTrash(node);
@@ -1964,22 +2327,69 @@ export default function App() {
     else await selectFile(node);
   }, [selectFile, toggleFolder]);
 
-  const handleNodeContextMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FileNode) => {
+  const openTreeActionMenu = useCallback((
+    event: React.MouseEvent<HTMLButtonElement>,
+    node: FileNode | null,
+    parentPath: string,
+    mode: 'create' | 'node',
+    pointerPosition: boolean,
+  ) => {
     event.preventDefault();
-    if (workspaceTransitionRef.current || documentActionGateRef.current !== 'idle') return;
+    event.stopPropagation();
+    if (workspaceTransitionRef.current
+      || documentActionGateRef.current !== 'idle'
+      || createBusyRef.current !== null) return;
     const menuWidth = 176;
-    const menuHeight = 42;
-    setTreeContextMenu({
+    const createItems = mode === 'create' || node?.kind === 'folder';
+    const menuHeight = createItems ? (mode === 'node' ? 120 : 78) : 42;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const proposedX = pointerPosition ? event.clientX : bounds.right - menuWidth;
+    const proposedY = pointerPosition ? event.clientY : bounds.bottom + 4;
+    setProjectMenuOpen(false);
+    setTreeActionMenu({
       node,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+      parentPath: normalizePath(parentPath),
+      mode,
+      x: Math.max(8, Math.min(proposedX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(proposedY, window.innerHeight - menuHeight - 8)),
       trigger: event.currentTarget,
     });
     lastContextTriggerRef.current = event.currentTarget;
   }, []);
 
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FileNode) => {
+    openTreeActionMenu(
+      event,
+      node,
+      node.kind === 'folder' ? node.path : parentPath(node.path),
+      'node',
+      true,
+    );
+  }, [openTreeActionMenu]);
+
+  const handleOpenCreateMenu = useCallback((
+    event: React.MouseEvent<HTMLButtonElement>,
+    path: string,
+    node: FileNode,
+  ) => openTreeActionMenu(event, node, path, 'create', false), [openTreeActionMenu]);
+
+  const handleOpenNodeMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FileNode) => {
+    openTreeActionMenu(event, node, node.path, 'node', false);
+  }, [openTreeActionMenu]);
+
+  const handleRootCreateMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    openTreeActionMenu(event, null, rootPathRef.current, 'create', false);
+  }, [openTreeActionMenu]);
+
+  const beginCreateFromMenu = useCallback((kind: TreeCreateKind) => {
+    const menu = treeActionMenu;
+    if (!menu) return;
+    setTreeActionMenu(null);
+    void beginCreate(kind, menu.parentPath, menu.node?.kind === 'folder' ? menu.node : undefined);
+  }, [beginCreate, treeActionMenu]);
+
   const handleMarkdownOverlayOpen = useCallback(() => {
-    setTreeContextMenu(null);
+    setTreeActionMenu(null);
     setProjectMenuOpen(false);
   }, []);
 
@@ -1988,8 +2398,9 @@ export default function App() {
       desktop,
       rootPath,
       selectedPath: selected?.path ?? '',
+      assetScope: workspaceBindingRef.current?.assetScope ?? '',
     })
-  ), [desktop, rootPath, selected?.path]);
+  ), [desktop, rootPath, selected?.path, workspaceBindingRef.current?.assetScope]);
 
   async function handleOpenFolder() {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
@@ -2070,7 +2481,7 @@ export default function App() {
     preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button disabled={Boolean(workspaceTransition)} onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
   } else if (selectedRenderer === 'markdown') {
     preview = <Suspense fallback={<div className="empty-state"><strong>正在载入 Markdown 预览…</strong></div>}>
-      <MarkdownPreview content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path} />
+      <MarkdownPreview content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path} assetScope={workspaceBindingRef.current?.assetScope ?? ''} />
     </Suspense>;
   } else if (selectedRenderer === 'html') {
     const useDisk = desktop && mode === 'preview' && !dirty;
@@ -2091,9 +2502,9 @@ export default function App() {
       preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? savedVersion ?? 'disk' : deferredContent}`} title={selected.name} sandbox="allow-scripts allow-modals" src={useDisk ? diskUrl : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
     }
   } else if (selectedRenderer === 'image') {
-    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path, rootPath)} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
+    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path, rootPath, workspaceBindingRef.current?.assetScope ?? '')} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
   } else if (selectedRenderer === 'pdf') {
-    preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path, rootPath)} /> : null}</div>;
+    preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path, rootPath, workspaceBindingRef.current?.assetScope ?? '')} /> : null}</div>;
   } else if (selectedRenderer === 'text') {
     preview = <div className="preview-pane code-preview"><pre>{content}</pre></div>;
   } else if (selectedRenderer === 'spreadsheet-grid') {
@@ -2141,28 +2552,42 @@ export default function App() {
       ? 'dirty'
       : '';
   const interactionLocked = Boolean(workspaceTransition) || documentActionGate !== 'idle';
+  const treeLocked = interactionLocked || createBusy;
+  const handleTreeFocusHandled = () => setPendingTreeFocusPath(null);
 
   return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''}`}>
     <header className="titlebar" data-tauri-drag-region>
       <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
       <div className="window-title" data-tauri-drag-region>{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
-      <div className="title-actions"><button disabled={interactionLocked} onClick={() => void handleOpenFolder()}>打开文件夹</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>在 Finder 中显示</button></div>
+      <div className="title-actions"><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>打开文件夹</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>在 Finder 中显示</button></div>
     </header>
     <div className="workspace">
       <aside className="sidebar" aria-busy={Boolean(workspaceTransition)}><div className="sidebar-header"><span>{projectName}</span>{workspaceTransition ? <span className="sidebar-transition-status">切换中…</span> : null}<div className="sidebar-header-actions">{rootPath ? <button
         className="sidebar-root-create"
         type="button"
         disabled={createBusy || interactionLocked}
-        aria-label={`在 ${projectName} 根目录新建 Markdown`}
-        onClick={() => void beginMarkdownCreate(rootPath)}
-      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={interactionLocked} aria-label="工作区菜单" aria-expanded={projectMenuOpen} onClick={() => setProjectMenuOpen((current) => !current)}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} locked={interactionLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onBeginCreate={beginMarkdownCreate} onSubmitCreate={submitMarkdownCreate} onCancelCreate={cancelMarkdownCreate} /><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
+        aria-label={`在 ${projectName} 根目录新建`}
+        onClick={handleRootCreateMenu}
+      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={treeLocked} aria-label="工作区菜单" aria-expanded={projectMenuOpen} onClick={() => {
+        setTreeActionMenu(null);
+        setProjectMenuOpen((current) => !current);
+      }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>新建窗口</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} focusPath={pendingTreeFocusPath} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} /><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
       <main className="document-area">
         <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div> : null}</div>
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? '切换工作区…' : '读取中…'}</div> : null}</div>
       </main>
     </div>
     <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span role="status" aria-live="polite">{selected && isTextKind(selected.kind) ? <><b className={saveStatusClass}>{saveStatusLabel}</b> · UTF-8 · {lineCount} 行</> : rendererStatus}</span></footer>
-    {treeContextMenu ? <div className="context-menu" role="menu" style={{ left: treeContextMenu.x, top: treeContextMenu.y }}><button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrash(treeContextMenu.node)}>移到废纸篓</button></div> : null}
+    {treeActionMenu ? <div className="context-menu tree-action-menu" role="menu" style={{ left: treeActionMenu.x, top: treeActionMenu.y }}>
+      {treeActionMenu.mode === 'create' || treeActionMenu.node?.kind === 'folder' ? <>
+        <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('markdown')}>新建 Markdown</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('folder')}>新建文件夹</button>
+      </> : null}
+      {treeActionMenu.mode === 'node' && treeActionMenu.node ? <>
+        {treeActionMenu.node.kind === 'folder' ? <div className="context-menu-separator" role="separator" /> : null}
+        <button ref={treeActionMenu.node.kind === 'folder' ? undefined : contextMenuItemRef} type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrash(treeActionMenu.node!)}>移到废纸篓</button>
+      </> : null}
+    </div> : null}
     {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}
     {decision ? <DecisionDialog {...decision} onConfirm={() => finishDecision('confirm')} onCancel={() => finishDecision('cancel')} /> : null}
   </div>;

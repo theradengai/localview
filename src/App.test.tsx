@@ -17,15 +17,21 @@ function deferred<T>() {
 const mocks = vi.hoisted(() => ({
   desktop: false,
   closeHandler: undefined as ((event: { preventDefault: () => void }) => void) | undefined,
+  focusHandler: undefined as ((event: { payload: boolean }) => void) | undefined,
   openPathHandler: undefined as ((path: string) => void) | undefined,
+  quitRequestHandler: undefined as ((event: { generation: number }) => void) | undefined,
+  quitAbortHandler: undefined as ((event: { generation: number }) => void) | undefined,
   workspaceChangeHandler: undefined as ((batch: import('./lib/desktop').WorkspaceChangeBatch) => void) | undefined,
   workspaceFailureHandler: undefined as ((failure: import('./lib/desktop').WorkspaceWatchFailure) => void) | undefined,
   setWorkspaceRoot: vi.fn(),
   inspectPath: vi.fn(),
   findWorkspaceRoot: vi.fn(),
   listDirectory: vi.fn(),
-  getStartupPath: vi.fn(),
+  getWindowBootstrap: vi.fn(),
+  createWorkspaceWindow: vi.fn(),
+  respondAppQuit: vi.fn(),
   readTextFile: vi.fn(),
+  createDirectory: vi.fn(),
   createMarkdownFile: vi.fn(),
   writeTextFile: vi.fn(),
   prepareHtmlPreview: vi.fn(),
@@ -131,6 +137,11 @@ vi.mock('./lib/markdownLanguage', () => ({
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     close: mocks.closeWindow,
+    isFocused: vi.fn(async () => true),
+    onFocusChanged: vi.fn(async (handler: typeof mocks.focusHandler) => {
+      mocks.focusHandler = handler;
+      return () => undefined;
+    }),
     onCloseRequested: vi.fn(async (handler: typeof mocks.closeHandler) => {
       mocks.closeHandler = handler;
       return () => undefined;
@@ -148,7 +159,10 @@ vi.mock('./lib/desktop', async () => {
     listDirectory: mocks.listDirectory,
     inspectPath: mocks.inspectPath,
     findWorkspaceRoot: mocks.findWorkspaceRoot,
-    getStartupPath: mocks.getStartupPath,
+    getWindowBootstrap: mocks.getWindowBootstrap,
+    finishWindowStartup: vi.fn(async () => undefined),
+    createWorkspaceWindow: mocks.createWorkspaceWindow,
+    respondAppQuit: mocks.respondAppQuit,
     listenForOpenPath: vi.fn(async (handler: (path: string) => void) => {
       mocks.openPathHandler = handler;
       return () => undefined;
@@ -161,7 +175,17 @@ vi.mock('./lib/desktop', async () => {
       mocks.workspaceFailureHandler = handler;
       return () => undefined;
     }),
+    listenForWindowOpenFailures: vi.fn(async () => () => undefined),
+    listenForAppQuitRequests: vi.fn(async (handler: typeof mocks.quitRequestHandler) => {
+      mocks.quitRequestHandler = handler;
+      return () => undefined;
+    }),
+    listenForAppQuitAborts: vi.fn(async (handler: typeof mocks.quitAbortHandler) => {
+      mocks.quitAbortHandler = handler;
+      return () => undefined;
+    }),
     readTextFile: mocks.readTextFile,
+    createDirectory: mocks.createDirectory,
     createMarkdownFile: mocks.createMarkdownFile,
     writeTextFile: mocks.writeTextFile,
     prepareHtmlPreview: mocks.prepareHtmlPreview,
@@ -187,11 +211,30 @@ async function editCurrentDocument(value: string) {
   return editor;
 }
 
+async function beginMarkdownCreate(
+  user: ReturnType<typeof userEvent.setup>,
+  buttonName: string,
+) {
+  await user.click(screen.getByRole('button', { name: buttonName }));
+  await user.click(screen.getByRole('menuitem', { name: '新建 Markdown' }));
+}
+
+async function beginFolderCreate(
+  user: ReturnType<typeof userEvent.setup>,
+  buttonName: string,
+) {
+  await user.click(screen.getByRole('button', { name: buttonName }));
+  await user.click(screen.getByRole('menuitem', { name: '新建文件夹' }));
+}
+
 beforeEach(() => {
   localStorage.clear();
   mocks.desktop = false;
   mocks.closeHandler = undefined;
+  mocks.focusHandler = undefined;
   mocks.openPathHandler = undefined;
+  mocks.quitRequestHandler = undefined;
+  mocks.quitAbortHandler = undefined;
   mocks.workspaceChangeHandler = undefined;
   mocks.workspaceFailureHandler = undefined;
   mocks.setWorkspaceRoot.mockReset();
@@ -219,9 +262,23 @@ beforeEach(() => {
     ];
     return [];
   });
-  mocks.getStartupPath.mockReset();
-  mocks.getStartupPath.mockResolvedValue('/workspace/docs/plan.md');
+  mocks.getWindowBootstrap.mockReset();
+  mocks.getWindowBootstrap.mockResolvedValue({
+    initialPath: '/workspace/docs/plan.md',
+    sessionId: 'testprocess.0',
+    restoreMode: 'none',
+  });
+  mocks.createWorkspaceWindow.mockReset();
+  mocks.createWorkspaceWindow.mockResolvedValue('workspace-testprocess-1');
+  mocks.respondAppQuit.mockReset();
+  mocks.respondAppQuit.mockResolvedValue(undefined);
   mocks.readTextFile.mockReset();
+  mocks.createDirectory.mockReset();
+  mocks.createDirectory.mockImplementation(async (parentPath: string, name: string) => ({
+    name: name.trim(),
+    path: `${parentPath}/${name.trim()}`,
+    kind: 'folder',
+  }));
   mocks.createMarkdownFile.mockReset();
   mocks.createMarkdownFile.mockImplementation(async (parentPath: string, name: string) => {
     const trimmed = name.trim();
@@ -300,7 +357,7 @@ describe('autosave transition protection', () => {
 
     await editCurrentDocument('# local draft');
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/docs/plan.md', '# local draft', 'v1');
     expect(screen.queryByRole('alertdialog')).toBeNull();
 
@@ -314,6 +371,20 @@ describe('autosave transition protection', () => {
     await waitFor(() => expect(mocks.closeWindow).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.getByText('关闭失败：native close failed')).toBeTruthy());
     expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('lets a clean window use the native close without entering the save guard', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# clean disk', version: 'v1' });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+
+    const preventDefault = vi.fn();
+    await act(async () => mocks.closeHandler?.({ preventDefault }));
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
   });
 });
 
@@ -460,13 +531,15 @@ describe('Markdown file creation', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const rootCreate = screen.getByRole('button', { name: '在 PROJECT 根目录新建 Markdown' });
-    const folderCreate = screen.getByRole('button', { name: '在 docs 中新建 Markdown' });
+    const rootCreate = screen.getByRole('button', { name: '在 PROJECT 根目录新建' });
+    const folderCreate = screen.getByRole('button', { name: '在 docs 中新建' });
     const folderRow = folderCreate.closest('.tree-row');
-    expect(folderRow?.querySelectorAll(':scope > button')).toHaveLength(2);
+    expect(folderRow?.querySelectorAll(':scope > button')).toHaveLength(1);
+    expect(folderRow?.querySelectorAll('.tree-row-actions button')).toHaveLength(2);
     expect(folderRow?.querySelector('.tree-row-main')).toBeTruthy();
 
     await user.click(rootCreate);
+    await user.click(screen.getByRole('menuitem', { name: '新建 Markdown' }));
     const input = screen.getByRole('textbox', { name: '在 project 中新建 Markdown 文件' });
     expect(document.activeElement).toBe(input);
     await user.type(input, 'browser-note{Enter}');
@@ -492,13 +565,13 @@ describe('Markdown file creation', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '在 docs 中新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 docs 中新建');
     const nestedInput = screen.getByRole('textbox', { name: '在 docs 中新建 Markdown 文件' });
     await user.type(nestedInput, 'cancelled{Escape}');
     expect(screen.queryByRole('textbox', { name: '在 docs 中新建 Markdown 文件' })).toBeNull();
     expect(screen.queryByRole('button', { name: /cancelled\.md$/ })).toBeNull();
 
-    await user.click(screen.getByRole('button', { name: '在 PROJECT 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 PROJECT 根目录新建');
     const rootInput = screen.getByRole('textbox', { name: '在 project 中新建 Markdown 文件' });
     await user.type(rootInput, 'README.md{Enter}');
     expect(await screen.findByText(/同名 Markdown 文件已存在/)).toBeTruthy();
@@ -508,11 +581,15 @@ describe('Markdown file creation', () => {
 
   it('does not expose root creation before a desktop workspace is open', async () => {
     mocks.desktop = true;
-    mocks.getStartupPath.mockResolvedValue(null);
+    mocks.getWindowBootstrap.mockResolvedValue({
+      initialPath: null,
+      sessionId: 'testprocess.empty',
+      restoreMode: 'none',
+    });
     render(<App />);
 
-    await waitFor(() => expect(mocks.getStartupPath).toHaveBeenCalledOnce());
-    expect(screen.queryByRole('button', { name: /根目录新建 Markdown/ })).toBeNull();
+    await waitFor(() => expect(mocks.getWindowBootstrap).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('button', { name: /根目录新建/ })).toBeNull();
   });
 
   it('loads a collapsed folder, creates once, selects Edit, and saves with the initial version', async () => {
@@ -522,10 +599,16 @@ describe('Markdown file creation', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    await user.click(screen.getByRole('button', { name: '在 drafts 中新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 drafts 中新建');
     const input = await screen.findByRole('textbox', { name: '在 drafts 中新建 Markdown 文件' });
     expect(mocks.listDirectory).toHaveBeenCalledWith('/workspace/drafts');
     expect(screen.getByRole('button', { name: /older\.md$/ })).toBeTruthy();
+    mocks.listDirectory.mockImplementation(async (path: string) => path === '/workspace/drafts'
+      ? [
+          { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+          { name: 'nested-note.md', path: '/workspace/drafts/nested-note.md', kind: 'md' },
+        ]
+      : []);
 
     await user.type(input, 'nested-note.md');
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -535,10 +618,10 @@ describe('Markdown file creation', () => {
     expect(mocks.createMarkdownFile).toHaveBeenCalledWith('/workspace/drafts', 'nested-note.md');
     const created = await screen.findByRole('button', { name: /nested-note\.md$/ });
     expect(created.className).toContain('active');
-    expect(screen.getByRole('button', { name: '编辑' }).className).toContain('active');
+    expect((await screen.findByRole('button', { name: '编辑' })).className).toContain('active');
     expect(screen.getByText('已保存')).toBeTruthy();
 
-    const editor = screen.getByRole('textbox', { name: 'editor' });
+    const editor = await screen.findByRole('textbox', { name: 'editor' });
     fireEvent.change(editor, { target: { value: '# created' } });
     fireEvent.keyDown(window, { key: 's', metaKey: true });
     await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledWith(
@@ -556,7 +639,7 @@ describe('Markdown file creation', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'plan{Enter}');
 
@@ -575,7 +658,7 @@ describe('Markdown file creation', () => {
     await screen.findByText('workspace / plan.md');
     await editCurrentDocument('# unsaved');
 
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'guarded{Enter}');
     await waitFor(() => expect(mocks.createMarkdownFile).toHaveBeenCalledTimes(1));
@@ -599,7 +682,7 @@ describe('Markdown file creation', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'late{Enter}');
     await waitFor(() => expect(mocks.createMarkdownFile).toHaveBeenCalledOnce());
@@ -611,7 +694,7 @@ describe('Markdown file creation', () => {
     }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', false));
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     expect(mocks.setWorkspaceRoot).toHaveBeenCalledWith('/other');
     expect(screen.queryByRole('button', { name: /late\.md$/ })).toBeNull();
   });
@@ -630,16 +713,211 @@ describe('Markdown file creation', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    await user.click(screen.getByRole('button', { name: '在 drafts 中新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 drafts 中新建');
     await waitFor(() => expect(mocks.listDirectory).toHaveBeenCalledWith('/workspace/drafts'));
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     await act(async () => resolveDrafts?.([
       { name: 'stale.md', path: '/workspace/drafts/stale.md', kind: 'md' },
     ]));
 
     expect(screen.queryByRole('button', { name: /stale\.md$/ })).toBeNull();
     expect(screen.queryByRole('textbox', { name: /drafts 中新建 Markdown/ })).toBeNull();
+  });
+});
+
+describe('folder creation and tree action menus', () => {
+  it('exposes compact create/full menus and restores the trigger focus with Escape', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const rootCreate = screen.getByRole('button', { name: '在 PROJECT 根目录新建' });
+    await user.click(rootCreate);
+    expect(screen.getByRole('menuitem', { name: '新建 Markdown' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '新建文件夹' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '移到废纸篓' })).toBeNull();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(rootCreate));
+
+    const docs = screen.getByRole('button', { name: 'docs' });
+    fireEvent.contextMenu(docs, { clientX: 80, clientY: 100 });
+    expect(screen.getByRole('menuitem', { name: '新建 Markdown' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '新建文件夹' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '移到废纸篓' })).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(docs));
+
+    const readme = screen.getByRole('button', { name: 'README.md' });
+    fireEvent.contextMenu(readme, { clientX: 80, clientY: 100 });
+    expect(screen.queryByRole('menuitem', { name: '新建 Markdown' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '新建文件夹' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '移到废纸篓' })).toBeTruthy();
+  });
+
+  it('creates a browser folder in memory without changing or saving the dirty document', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const editor = await editCurrentDocument('# dirty browser draft');
+
+    await beginFolderCreate(user, '在 PROJECT 根目录新建');
+    const input = screen.getByRole('textbox', { name: '在 project 中新建文件夹' });
+    await user.type(input, '资料{Enter}');
+
+    const created = await screen.findByRole('button', { name: '资料' });
+    await waitFor(() => expect(document.activeElement).toBe(created));
+    expect(screen.getByText('project / README.md')).toBeTruthy();
+    expect(editor).toHaveProperty('value', '# dirty browser draft');
+    expect(editor).toHaveProperty('disabled', false);
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(mocks.createDirectory).not.toHaveBeenCalled();
+    mocks.listDirectory.mockClear();
+    await user.click(created);
+    expect(mocks.listDirectory).not.toHaveBeenCalled();
+  });
+
+  it('keeps CodeMirror editable while desktop folder creation is in flight', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
+    const creation = deferred<{ name: string; path: string; kind: 'folder' }>();
+    mocks.createDirectory.mockReturnValueOnce(creation.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    const editor = await editCurrentDocument('# unsaved folder test');
+
+    await beginFolderCreate(user, '在 WORKSPACE 根目录新建');
+    const input = screen.getByRole('textbox', { name: '在 workspace 中新建文件夹' });
+    await user.type(input, '新目录{Enter}');
+    await waitFor(() => expect(mocks.createDirectory).toHaveBeenCalledWith('/workspace', '新目录'));
+
+    expect(editor).toHaveProperty('disabled', false);
+    expect(editor).toHaveProperty('value', '# unsaved folder test');
+    expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '工作区菜单' })).toHaveProperty('disabled', true);
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+
+    await act(async () => creation.resolve({ name: '新目录', path: '/workspace/新目录', kind: 'folder' }));
+    const created = await screen.findByRole('button', { name: '新目录' });
+    await waitFor(() => expect(document.activeElement).toBe(created));
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(editor).toHaveProperty('value', '# unsaved folder test');
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps duplicate and reserved folder drafts invalid and focused', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await beginFolderCreate(user, '在 PROJECT 根目录新建');
+    const duplicate = screen.getByRole('textbox', { name: '在 project 中新建文件夹' });
+    await user.type(duplicate, 'docs{Enter}');
+    expect(await screen.findByText('同名文件或文件夹已存在')).toBeTruthy();
+    expect(duplicate).toHaveProperty('value', 'docs');
+    expect(duplicate.getAttribute('aria-invalid')).toBe('true');
+    await waitFor(() => expect(document.activeElement).toBe(duplicate));
+
+    await user.type(duplicate, '{Escape}');
+    await beginFolderCreate(user, '在 PROJECT 根目录新建');
+    const reserved = screen.getByRole('textbox', { name: '在 project 中新建文件夹' });
+    await user.type(reserved, '.DS_Store{Enter}');
+    expect(await screen.findByText('该名称由 LocalView 或系统保留')).toBeTruthy();
+    expect(reserved.getAttribute('aria-invalid')).toBe('true');
+    expect(mocks.createDirectory).not.toHaveBeenCalled();
+  });
+
+  it('does not describe a reconciled desktop duplicate as newly created', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
+    mocks.createDirectory.mockRejectedValueOnce(new Error('DIRECTORY_ENTRY_EXISTS'));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+
+    await beginFolderCreate(user, '在 WORKSPACE 根目录新建');
+    const input = screen.getByRole('textbox', { name: '在 workspace 中新建文件夹' });
+    await user.type(input, 'docs{Enter}');
+
+    expect(await screen.findByText('同名文件或文件夹已存在；目录已刷新，已确认同名项存在')).toBeTruthy();
+    expect(screen.queryByText(/已创建并刷新/)).toBeNull();
+    expect(input).toHaveProperty('value', 'docs');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('reconciles an uncertain desktop result and focuses the discovered folder', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
+    mocks.createDirectory.mockRejectedValueOnce(new Error('CREATE_DIRECTORY_RESULT_UNCERTAIN'));
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let reconcile = false;
+    mocks.listDirectory.mockImplementation((path: string) => {
+      if (path === '/workspace' && reconcile) return Promise.resolve([
+        { name: 'docs', path: '/workspace/docs', kind: 'folder' },
+        { name: 'drafts', path: '/workspace/drafts', kind: 'folder' },
+        { name: 'recovered', path: '/workspace/recovered', kind: 'folder' },
+      ]);
+      return defaultList?.(path);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    reconcile = true;
+
+    await beginFolderCreate(user, '在 WORKSPACE 根目录新建');
+    const input = screen.getByRole('textbox', { name: '在 workspace 中新建文件夹' });
+    await user.type(input, 'recovered{Enter}');
+
+    expect(await screen.findByText('已创建并刷新目录')).toBeTruthy();
+    const recovered = screen.getByRole('button', { name: 'recovered' });
+    await waitFor(() => expect(document.activeElement).toBe(recovered));
+    expect(screen.queryByRole('textbox', { name: /新建文件夹/ })).toBeNull();
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+  });
+
+  it('uses the focused tree folder for Command-Delete instead of the preview selection', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    const drafts = screen.getByRole('button', { name: 'drafts' });
+    drafts.focus();
+
+    fireEvent.keyDown(drafts, { key: 'Backspace', metaKey: true });
+    expect(await screen.findByText(/“drafts”及其中的内容/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '移到废纸篓' }));
+
+    await waitFor(() => expect(mocks.prepareTrash).toHaveBeenCalledWith('/workspace/drafts'));
+    expect(mocks.prepareTrash).not.toHaveBeenCalledWith('/workspace/docs/plan.md');
+    expect(screen.queryByRole('button', { name: 'drafts' })).toBeNull();
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'plan.md' }).getAttribute('aria-current')).toBe('page');
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: '工作区菜单' })));
+  });
+
+  it('waits to close and cancels application quit while folder creation is in flight', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
+    const creation = deferred<{ name: string; path: string; kind: 'folder' }>();
+    mocks.createDirectory.mockReturnValueOnce(creation.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await beginFolderCreate(user, '在 WORKSPACE 根目录新建');
+    await user.type(
+      screen.getByRole('textbox', { name: '在 workspace 中新建文件夹' }),
+      'slow{Enter}',
+    );
+    await waitFor(() => expect(mocks.createDirectory).toHaveBeenCalledOnce());
+
+    const preventDefault = vi.fn();
+    act(() => mocks.closeHandler?.({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    act(() => mocks.quitRequestHandler?.({ generation: 44 }));
+    await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(44, 'cancel'));
+
+    await act(async () => creation.resolve({ name: 'slow', path: '/workspace/slow', kind: 'folder' }));
+    await waitFor(() => expect(mocks.closeWindow).toHaveBeenCalledOnce());
   });
 });
 
@@ -656,8 +934,9 @@ describe('workspace transition and folder preparation races', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    const create = screen.getByRole('button', { name: '在 drafts 中新建 Markdown' });
+    const create = screen.getByRole('button', { name: '在 drafts 中新建' });
     fireEvent.click(create);
+    fireEvent.click(screen.getByRole('menuitem', { name: '新建 Markdown' }));
     fireEvent.click(create);
     expect(mocks.listDirectory.mock.calls.filter(([path]) => path === '/workspace/drafts')).toHaveLength(1);
     expect(create.getAttribute('aria-busy')).toBe('true');
@@ -691,10 +970,10 @@ describe('workspace transition and folder preparation races', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
 
-    await user.click(screen.getByRole('button', { name: '在 drafts 中新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 drafts 中新建');
     expect(await screen.findByText('temporary directory failure')).toBeTruthy();
-    await waitFor(() => expect(screen.getByRole('button', { name: '在 drafts 中新建 Markdown' })).toHaveProperty('disabled', false));
-    await user.click(screen.getByRole('button', { name: '在 drafts 中新建 Markdown' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '在 drafts 中新建' })).toHaveProperty('disabled', false));
+    await beginMarkdownCreate(user, '在 drafts 中新建');
 
     const input = await screen.findByRole('textbox', { name: '在 drafts 中新建 Markdown 文件' });
     expect(attempts).toBe(2);
@@ -712,7 +991,7 @@ describe('workspace transition and folder preparation races', () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText('workspace / plan.md');
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'stable draft');
 
@@ -728,7 +1007,7 @@ describe('workspace transition and folder preparation races', () => {
     expect(mocks.writeTextFile).not.toHaveBeenCalled();
 
     await act(async () => otherList.resolve([{ name: 'next.md', path: '/other/next.md', kind: 'md' }]));
-    expect(await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '在 OTHER 根目录新建' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: /workspace 中新建/ })).toBeNull();
     expect(screen.getByRole('complementary').getAttribute('aria-busy')).toBe('false');
   });
@@ -745,7 +1024,7 @@ describe('workspace transition and folder preparation races', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
     mocks.setWorkspaceRoot.mockClear();
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'recover me');
 
@@ -777,7 +1056,7 @@ describe('workspace transition and folder preparation races', () => {
 
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
     expect(await screen.findByText(/rollback denied/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /根目录新建 Markdown/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /根目录新建/ })).toBeNull();
     expect(screen.getByText('No folder opened')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'plan.md' })).toBeNull();
   });
@@ -855,7 +1134,7 @@ describe('workspace transition and folder preparation races', () => {
     expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', true);
 
     await act(async () => save.resolve('v2'));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     expect(mocks.setWorkspaceRoot).toHaveBeenCalledWith('/other');
   });
 
@@ -885,7 +1164,7 @@ describe('workspace transition and folder preparation races', () => {
     await waitFor(() => expect(mocks.inspectPath).toHaveBeenCalledWith('/picker'));
     await act(async () => finderList.resolve([]));
 
-    expect(await screen.findByRole('button', { name: '在 PICKER 根目录新建 Markdown' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '在 PICKER 根目录新建' })).toBeTruthy();
     expect(mocks.setWorkspaceRoot.mock.calls.map(([path]) => path)).toEqual(['/finder', '/picker']);
   });
 });
@@ -915,7 +1194,7 @@ describe('stale document reads', () => {
     await act(async () => staleRead.resolve({ content: '# second', version: 'v2' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', false));
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
 
     expect(screen.getByText('other / LocalView')).toBeTruthy();
     expect(screen.queryByText('读取中…')).toBeNull();
@@ -939,7 +1218,7 @@ describe('stale document reads', () => {
     await act(async () => { void poll?.(); });
     await waitFor(() => expect(mocks.readTextFile).toHaveBeenCalledTimes(2));
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     await act(async () => pollRead.resolve({ content: '# stale poll', version: 'v2' }));
 
     expect(screen.getByText('other / LocalView')).toBeTruthy();
@@ -963,7 +1242,7 @@ describe('stale document reads', () => {
     await waitFor(() => expect(mocks.readTextFile).toHaveBeenCalledTimes(2));
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
     await user.click(await screen.findByRole('button', { name: '放弃修改并切换文件夹' }));
-    await screen.findByRole('button', { name: '在 OTHER 根目录新建 Markdown' });
+    await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     await act(async () => conflictReload.resolve({ content: '# stale conflict', version: 'v3' }));
 
     expect(screen.getByText('other / LocalView')).toBeTruthy();
@@ -988,7 +1267,7 @@ describe('Markdown create failure classification', () => {
     await screen.findByText('workspace / plan.md');
     mocks.listDirectory.mockClear();
 
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'failed{Enter}');
 
@@ -1019,7 +1298,7 @@ describe('Markdown create failure classification', () => {
     await screen.findByText('workspace / plan.md');
     reconcile = true;
 
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     await user.type(input, 'maybe{Enter}');
 
@@ -1036,7 +1315,7 @@ describe('Markdown create failure classification', () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText('workspace / plan.md');
-    await user.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建 Markdown' }));
+    await beginMarkdownCreate(user, '在 WORKSPACE 根目录新建');
     const input = screen.getByRole('textbox', { name: '在 workspace 中新建 Markdown 文件' });
     fireEvent.change(input, { target: { value: 'a'.repeat(253) } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -1345,7 +1624,11 @@ describe('autosave, live tree, Trash, and session lifecycle', () => {
 
   it('restores a bounded workspace session once under StrictMode', async () => {
     mocks.desktop = true;
-    mocks.getStartupPath.mockResolvedValue(null);
+    mocks.getWindowBootstrap.mockResolvedValue({
+      initialPath: null,
+      sessionId: 'testprocess.restore',
+      restoreMode: 'last-active',
+    });
     mocks.readTextFile.mockResolvedValue({ content: '# restored', version: 'v1' });
     localStorage.setItem('localview.workspace-session.v1', JSON.stringify({
       version: 1,
@@ -1359,5 +1642,119 @@ describe('autosave, live tree, Trash, and session lifecycle', () => {
     expect(mocks.setWorkspaceRoot).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: '分栏' }).className).toContain('active');
     expect(screen.getByRole('button', { name: 'docs' }).getAttribute('aria-expanded')).toBe('true');
+  });
+});
+
+describe('multi-window entry and application quit coordination', () => {
+  it('opens one new window from the project menu without flushing or changing the current draft', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# local draft');
+
+    await user.click(screen.getByRole('button', { name: '工作区菜单' }));
+    await user.click(screen.getByRole('menuitem', { name: '新建窗口' }));
+
+    await waitFor(() => expect(mocks.createWorkspaceWindow).toHaveBeenCalledOnce());
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# local draft');
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('handles one Command-N event exactly once and reports builder errors in the current window', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.createWorkspaceWindow.mockRejectedValueOnce(new Error('WINDOW_CREATE_FAILED'));
+    render(<StrictMode><App /></StrictMode>);
+    await screen.findByText('workspace / plan.md');
+
+    fireEvent.keyDown(window, { key: 'n', metaKey: true });
+
+    await waitFor(() => expect(mocks.createWorkspaceWindow).toHaveBeenCalledOnce());
+    expect(await screen.findByText('新建窗口失败：WINDOW_CREATE_FAILED')).toBeTruthy();
+  });
+
+  it('replies saved for a clean window', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect(mocks.quitRequestHandler).toBeTypeOf('function'));
+
+    act(() => mocks.quitRequestHandler?.({ generation: 11 }));
+
+    await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(11, 'saved'));
+  });
+
+  it('keeps dirty content through discard approval and a later application-wide abort', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.writeTextFile.mockRejectedValue({
+      code: 'EXTERNAL_CHANGE',
+      message: 'EXTERNAL_CHANGE: disk changed',
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# keep this draft');
+
+    act(() => mocks.quitRequestHandler?.({ generation: 12 }));
+    await user.click(await screen.findByRole('button', { name: '退出时放弃' }));
+    await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(12, 'discardApproved'));
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# keep this draft');
+
+    act(() => mocks.quitAbortHandler?.({ generation: 12 }));
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('disabled', false));
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# keep this draft');
+    expect(localStorage.getItem('localview.workspace-session.v2.testprocess.0')).not.toBeNull();
+  });
+
+  it('cancels immediately while a workspace transition is in flight', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseFolder.mockResolvedValue('/other');
+    const transition = deferred<{
+      path: string;
+      generation: number;
+      watching: boolean;
+      assetScope: string;
+    }>();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    mocks.setWorkspaceRoot.mockReturnValueOnce(transition.promise);
+    await user.click(screen.getByRole('button', { name: '打开文件夹' }));
+    await waitFor(() => expect(mocks.setWorkspaceRoot).toHaveBeenCalledWith('/other'));
+
+    act(() => mocks.quitRequestHandler?.({ generation: 13 }));
+
+    await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(13, 'cancel'));
+    transition.resolve({ path: '/other', generation: 2, watching: true, assetScope: 'other-scope' });
+  });
+
+  it('invalidates a slow flush when an external open aborts the quit transaction', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const slowSave = deferred<string>();
+    mocks.writeTextFile.mockReturnValueOnce(slowSave.promise);
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# slow draft');
+
+    act(() => mocks.quitRequestHandler?.({ generation: 14 }));
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledOnce());
+    act(() => mocks.quitAbortHandler?.({ generation: 14 }));
+    slowSave.resolve('v2');
+    await act(async () => {
+      await slowSave.promise;
+      await Promise.resolve();
+    });
+
+    expect(mocks.respondAppQuit).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('disabled', false);
   });
 });

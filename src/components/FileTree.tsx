@@ -1,7 +1,16 @@
-import { memo, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import {
+  memo,
+  useLayoutEffect,
+  useRef,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import type { DesktopEntry } from '../lib/desktop';
 import { basename, normalizePath } from '../lib/desktop';
-import MarkdownCreateInput, { type MarkdownCreateInputHandle } from './MarkdownCreateInput';
+import { MAX_DIRECTORY_NAME_UTF16_UNITS } from '../lib/directoryName';
+import { MAX_MARKDOWN_FILENAME_UTF16_UNITS } from '../lib/markdownFilename';
+import TreeCreateInput, { type TreeCreateInputHandle } from './TreeCreateInput';
 
 export type FileTreeNode = DesktopEntry & {
   children?: FileTreeNode[];
@@ -9,9 +18,12 @@ export type FileTreeNode = DesktopEntry & {
   demoContent?: string;
 };
 
+export type TreeCreateKind = 'markdown' | 'folder';
+
 export type FileTreeCreateDraft = {
   id: number;
   parentPath: string;
+  kind: TreeCreateKind;
 };
 
 type Props = {
@@ -24,10 +36,13 @@ type Props = {
   createBusy: boolean;
   createInvalid: boolean;
   preparingFolders: Set<string>;
-  createInputRef: RefObject<MarkdownCreateInputHandle>;
+  createInputRef: RefObject<TreeCreateInputHandle>;
+  focusPath: string | null;
+  onFocusHandled: () => void;
   onNodeClick: (node: FileTreeNode) => void;
   onNodeContextMenu: (event: MouseEvent<HTMLButtonElement>, node: FileTreeNode) => void;
-  onBeginCreate: (path: string, node?: FileTreeNode) => void;
+  onOpenCreateMenu: (event: MouseEvent<HTMLButtonElement>, path: string, node: FileTreeNode) => void;
+  onOpenNodeMenu: (event: MouseEvent<HTMLButtonElement>, node: FileTreeNode) => void;
   onSubmitCreate: (value: string) => void;
   onCancelCreate: () => void;
 };
@@ -43,21 +58,35 @@ function FileTree({
   createInvalid,
   preparingFolders,
   createInputRef,
+  focusPath,
+  onFocusHandled,
   onNodeClick,
   onNodeContextMenu,
-  onBeginCreate,
+  onOpenCreateMenu,
+  onOpenNodeMenu,
   onSubmitCreate,
   onCancelCreate,
 }: Props) {
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  useLayoutEffect(() => {
+    if (!focusPath) return;
+    rowRefs.current.get(normalizePath(focusPath))?.focus();
+    onFocusHandled();
+  }, [focusPath, onFocusHandled, tree]);
+
   const renderCreateEditor = (depth: number) => {
     if (!createDraft) return null;
+    const folder = createDraft.kind === 'folder';
     return <div className="tree-create-editor" style={{ paddingLeft: 8 + depth * 16 }}>
-      <MarkdownCreateInput
+      <TreeCreateInput
         key={createDraft.id}
         ref={createInputRef}
-        ariaLabel={`在 ${basename(createDraft.parentPath)} 中新建 Markdown 文件`}
+        ariaLabel={`在 ${basename(createDraft.parentPath)} 中${folder ? '新建文件夹' : '新建 Markdown 文件'}`}
         disabled={createBusy || locked}
         invalid={createInvalid}
+        maxLength={folder ? MAX_DIRECTORY_NAME_UTF16_UNITS : MAX_MARKDOWN_FILENAME_UTF16_UNITS}
+        placeholder={folder ? '新建文件夹' : 'untitled.md'}
         onSubmit={onSubmitCreate}
         onCancel={onCancelCreate}
       />
@@ -71,7 +100,12 @@ function FileTree({
     return <div key={path}>
       <div className={`tree-row ${node.kind === 'folder' ? 'folder' : ''} ${active ? 'active' : ''}`}>
         <button
+          ref={(element) => {
+            if (element) rowRefs.current.set(path, element);
+            else rowRefs.current.delete(path);
+          }}
           className={`tree-row-main${active ? ' active' : ''}`}
+          data-tree-path={path}
           style={{ paddingLeft: 8 + depth * 16 }}
           disabled={locked}
           aria-expanded={node.kind === 'folder' ? expanded : undefined}
@@ -84,14 +118,23 @@ function FileTree({
             : null}
           <span className="tree-name">{node.name}</span>
         </button>
-        {node.kind === 'folder' ? <button
-          className="tree-create-button"
-          type="button"
-          disabled={createBusy || locked || preparingFolders.has(path)}
-          aria-busy={preparingFolders.has(path)}
-          aria-label={`在 ${node.name} 中新建 Markdown`}
-          onClick={() => onBeginCreate(path, node)}
-        >+</button> : null}
+        {node.kind === 'folder' ? <div className="tree-row-actions">
+          <button
+            className="tree-action-button tree-create-button"
+            type="button"
+            disabled={createBusy || locked || preparingFolders.has(path)}
+            aria-busy={preparingFolders.has(path)}
+            aria-label={`在 ${node.name} 中新建`}
+            onClick={(event) => onOpenCreateMenu(event, path, node)}
+          >+</button>
+          <button
+            className="tree-action-button tree-more-button"
+            type="button"
+            disabled={createBusy || locked}
+            aria-label={`${node.name} 文件夹操作`}
+            onClick={(event) => onOpenNodeMenu(event, node)}
+          >•••</button>
+        </div> : null}
       </div>
       {node.kind === 'folder' && expanded && createDraft?.parentPath === path
         ? renderCreateEditor(depth + 1)

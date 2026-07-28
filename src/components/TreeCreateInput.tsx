@@ -6,22 +6,31 @@ import {
   useRef,
   useState,
 } from 'react';
-import { MAX_MARKDOWN_FILENAME_UTF16_UNITS } from '../lib/markdownFilename';
 
-export type MarkdownCreateInputHandle = {
+export type TreeCreateInputHandle = {
   focusAndSelect: () => void;
 };
 
-type MarkdownCreateInputProps = {
+type TreeCreateInputProps = {
   ariaLabel: string;
   disabled: boolean;
   invalid?: boolean;
+  maxLength: number;
+  placeholder: string;
   onSubmit: (rawName: string) => void;
   onCancel: () => void;
 };
 
-const MarkdownCreateInput = memo(forwardRef<MarkdownCreateInputHandle, MarkdownCreateInputProps>(
-  function MarkdownCreateInput({ ariaLabel, disabled, invalid = false, onSubmit, onCancel }, ref) {
+const TreeCreateInput = memo(forwardRef<TreeCreateInputHandle, TreeCreateInputProps>(
+  function TreeCreateInput({
+    ariaLabel,
+    disabled,
+    invalid = false,
+    maxLength,
+    placeholder,
+    onSubmit,
+    onCancel,
+  }, ref) {
     const [value, setValue] = useState('');
     const inputRef = useRef<HTMLInputElement>(null);
     const composingRef = useRef(false);
@@ -41,8 +50,8 @@ const MarkdownCreateInput = memo(forwardRef<MarkdownCreateInputHandle, MarkdownC
       aria-invalid={invalid || undefined}
       value={value}
       disabled={disabled}
-      maxLength={MAX_MARKDOWN_FILENAME_UTF16_UNITS}
-      placeholder="untitled.md"
+      maxLength={maxLength}
+      placeholder={placeholder}
       onChange={(event) => setValue(event.target.value)}
       onCompositionStart={() => { composingRef.current = true; }}
       onCompositionEnd={() => { composingRef.current = false; }}
@@ -60,4 +69,4 @@ const MarkdownCreateInput = memo(forwardRef<MarkdownCreateInputHandle, MarkdownC
   },
 ));
 
-export default MarkdownCreateInput;
+export default TreeCreateInput;

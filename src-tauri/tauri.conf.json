@@ -53,6 +53,42 @@
         "rank": "Alternate"
       },
       {
+        "ext": [
+          "txt",
+          "json",
+          "jsonc",
+          "yaml",
+          "yml",
+          "toml",
+          "xml",
+          "css",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "rs",
+          "py",
+          "sh",
+          "csv",
+          "log"
+        ],
+        "name": "Text and Code Document",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"],
+        "name": "Image Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["pdf"],
+        "name": "PDF Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
         "ext": ["xls", "xlsx", "ods", "numbers"],
         "contentTypes": [
           "com.microsoft.excel.xls",

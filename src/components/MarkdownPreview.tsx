@@ -10,9 +10,10 @@ type Props = {
   desktop: boolean;
   rootPath: string;
   selectedPath: string;
+  assetScope: string;
 };
 
-function MarkdownPreview({ content, desktop, rootPath, selectedPath }: Props) {
+function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope }: Props) {
   const components = useMemo(() => ({
     img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
       const original = typeof src === 'string' ? src : '';
@@ -20,10 +21,11 @@ function MarkdownPreview({ content, desktop, rootPath, selectedPath }: Props) {
         desktop,
         rootPath,
         selectedPath,
+        assetScope,
       });
       return <img {...props} src={resolved} alt={alt ?? ''} />;
     },
-  }), [desktop, rootPath, selectedPath]);
+  }), [assetScope, desktop, rootPath, selectedPath]);
 
   return <div className="preview-pane markdown-body">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>

@@ -6,9 +6,12 @@ use std::{
 
 use calamine::{Data, Reader, SheetType, SheetVisible, Xls, Xlsx};
 use serde::Serialize;
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
-use crate::{extension_lowercase, scoped_existing_path, version_for_bytes, WorkspaceState};
+use crate::{
+    extension_lowercase, scoped_existing_path, version_for_bytes, workspace_for_window,
+    WorkspaceRegistry, WorkspaceState,
+};
 
 pub(crate) const MAX_SOURCE_BYTES: u64 = 25 * 1024 * 1024;
 pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 10_000;
@@ -399,8 +402,10 @@ fn spreadsheet_path(state: &WorkspaceState, path: &Path) -> Result<PathBuf, Stri
 #[tauri::command]
 pub(crate) async fn read_spreadsheet(
     path: String,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<SpreadsheetWorkbookSnapshot, String> {
+    let state = workspace_for_window(&registry, &window)?;
     let path = spreadsheet_path(&state, Path::new(&path))?;
     let extension = extension_lowercase(&path);
     let bytes = fs::read(&path).map_err(|error| error.to_string())?;
@@ -586,9 +591,11 @@ mod tests {
             context: std::sync::Mutex::new(crate::WorkspaceContext {
                 root: Some(crate::open_workspace_root(&workspace).expect("open workspace")),
                 generation: 1,
+                asset_scope: "spreadsheet-test-scope".to_string(),
                 watcher: None,
             }),
             next_generation: std::sync::atomic::AtomicU64::new(1),
+            next_asset_id: std::sync::atomic::AtomicU64::new(1),
         };
 
         let error = spreadsheet_path(&state, &outside).expect_err("outside path should fail");

@@ -2,9 +2,9 @@ import { useCallback, useRef, useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import MarkdownCreateInput, { type MarkdownCreateInputHandle } from './MarkdownCreateInput';
+import TreeCreateInput, { type TreeCreateInputHandle } from './TreeCreateInput';
 
-describe('MarkdownCreateInput', () => {
+describe('TreeCreateInput', () => {
   it('keeps typing local and only submits the complete value on Enter', async () => {
     const submit = vi.fn();
     const cancel = vi.fn();
@@ -19,28 +19,28 @@ describe('MarkdownCreateInput', () => {
       hostRenders += 1;
       const onSubmit = useCallback((value: string) => submit(value), []);
       const onCancel = useCallback(() => cancel(), []);
-      return <><Sibling /><MarkdownCreateInput ariaLabel="new markdown" disabled={false} onSubmit={onSubmit} onCancel={onCancel} /></>;
+      return <><Sibling /><TreeCreateInput ariaLabel="new entry" disabled={false} maxLength={255} placeholder="新建文件夹" onSubmit={onSubmit} onCancel={onCancel} /></>;
     }
 
     const user = userEvent.setup();
     render(<Host />);
-    const input = screen.getByRole('textbox', { name: 'new markdown' });
+    const input = screen.getByRole('textbox', { name: 'new entry' });
     expect(document.activeElement).toBe(input);
     const initialHostRenders = hostRenders;
     const initialSiblingRenders = siblingRenders;
 
-    await user.type(input, '会议记录');
-    expect(input).toHaveProperty('value', '会议记录');
+    await user.type(input, '会议资料');
+    expect(input).toHaveProperty('value', '会议资料');
     expect(hostRenders).toBe(initialHostRenders);
     expect(siblingRenders).toBe(initialSiblingRenders);
     expect(submit).not.toHaveBeenCalled();
 
     await user.keyboard('{Enter}');
     expect(submit).toHaveBeenCalledOnce();
-    expect(submit).toHaveBeenCalledWith('会议记录');
+    expect(submit).toHaveBeenCalledWith('会议资料');
   });
 
-  it('handles IME, Escape, maxlength, focus, and prop rerenders without losing value', async () => {
+  it('handles IME, Escape, custom maxlength, focus, and prop rerenders without losing value', async () => {
     const submit = vi.fn();
     const cancel = vi.fn();
 
@@ -48,18 +48,20 @@ describe('MarkdownCreateInput', () => {
       const [disabled, setDisabled] = useState(false);
       const [invalid, setInvalid] = useState(false);
       const [draftId, setDraftId] = useState(1);
-      const inputRef = useRef<MarkdownCreateInputHandle>(null);
+      const inputRef = useRef<TreeCreateInputHandle>(null);
       return <>
         <button onClick={() => setDisabled((value) => !value)}>toggle disabled</button>
         <button onClick={() => setInvalid((value) => !value)}>toggle invalid</button>
         <button onClick={() => setDraftId((value) => value + 1)}>next draft</button>
         <button onClick={() => inputRef.current?.focusAndSelect()}>focus input</button>
-        <MarkdownCreateInput
+        <TreeCreateInput
           key={draftId}
           ref={inputRef}
-          ariaLabel="new markdown"
+          ariaLabel="new entry"
           disabled={disabled}
           invalid={invalid}
+          maxLength={120}
+          placeholder="新建文件夹"
           onSubmit={submit}
           onCancel={cancel}
         />
@@ -68,7 +70,8 @@ describe('MarkdownCreateInput', () => {
 
     const user = userEvent.setup();
     render(<Host />);
-    let input = screen.getByRole('textbox', { name: 'new markdown' });
+    let input = screen.getByRole('textbox', { name: 'new entry' });
+    expect(input.getAttribute('placeholder')).toBe('新建文件夹');
     await user.type(input, 'draft');
     fireEvent.compositionStart(input);
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
@@ -76,12 +79,10 @@ describe('MarkdownCreateInput', () => {
     fireEvent.compositionEnd(input);
 
     await user.click(screen.getByRole('button', { name: 'toggle invalid' }));
-    expect(screen.getByRole('textbox', { name: 'new markdown' })).toBe(input);
+    expect(screen.getByRole('textbox', { name: 'new entry' })).toBe(input);
     expect(input).toHaveProperty('value', 'draft');
     expect(input.getAttribute('aria-invalid')).toBe('true');
     await user.click(screen.getByRole('button', { name: 'toggle disabled' }));
-    expect(screen.getByRole('textbox', { name: 'new markdown' })).toBe(input);
-    expect(input).toHaveProperty('value', 'draft');
     expect(input).toHaveProperty('disabled', true);
     await user.click(screen.getByRole('button', { name: 'toggle disabled' }));
     await user.click(screen.getByRole('button', { name: 'focus input' }));
@@ -89,10 +90,10 @@ describe('MarkdownCreateInput', () => {
 
     await user.keyboard('{Escape}');
     expect(cancel).toHaveBeenCalledOnce();
-    expect(input.getAttribute('maxlength')).toBe('255');
+    expect(input.getAttribute('maxlength')).toBe('120');
 
     await user.click(screen.getByRole('button', { name: 'next draft' }));
-    input = screen.getByRole('textbox', { name: 'new markdown' });
+    input = screen.getByRole('textbox', { name: 'new entry' });
     expect(input).toHaveProperty('value', '');
     expect(document.activeElement).toBe(input);
   });

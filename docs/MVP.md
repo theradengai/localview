@@ -52,11 +52,14 @@ Main layout:
 - Open any local folder
 - Show real directory tree
 - Create an empty Markdown file from the workspace root or any real folder
+- Create an ordinary folder inline from the workspace root or any real folder without interrupting the current document
 - Show the create control for each folder without eagerly loading its children
 - Refresh loaded tree branches in real time from workspace filesystem events
 - Reload loaded directories in place without clearing selection, expansion, editor, or scroll state
 - Move files and workspace subfolders to macOS Trash; never permanently delete or delete the workspace root
 - Restore the last root, selected file, expanded folders, and view mode without caching file bodies or the tree
+- Create an independent empty workspace window from the workspace menu or `Command-N`
+- Keep filesystem capability, watcher events, preview resources, Quick Look, edits, auto-save, dialogs, and close state isolated by window
 - No database
 - No import
 - No hidden metadata files
@@ -88,11 +91,13 @@ Live Preview does not introduce a second rich-text document model. It renders he
 
 Both formatting surfaces transform Markdown source in one undoable editor transaction. The automatic selection toolbar provides common text and list actions plus links. GFM table insertion and strict top-level row, column, deletion, and alignment actions remain in the full right-click menu. `Shift` + right-click always leaves the native macOS context-menu path available.
 
-Creation is limited to Markdown files. Folder creation, other file types, rename, move, and copy are outside this MVP. Files and workspace subfolders may be moved to Trash, but permanent deletion and workspace-root deletion are unavailable. On desktop the empty file is created immediately; later edits auto-save after 600 ms and `Command-S` flushes immediately. The browser demo mirrors these interactions only in memory.
+Creation is limited to empty Markdown files and ordinary folders. Other file types, rename, move, and copy are outside this MVP. Files and workspace subfolders may be moved to Trash, but permanent deletion and workspace-root deletion are unavailable. On desktop the selected action is created immediately; Markdown edits then auto-save after 600 ms and `Command-S` flushes immediately. Folder creation leaves the current document and dirty editor untouched. The browser demo mirrors these interactions only in memory.
 
-On macOS/Unix, the desktop command pins the canonical workspace directory, traverses each parent component without following a replacement symlink, rechecks directory identities, and performs one exclusive final create. A changed root or parent is rejected before the disk commit point. The application limit does not replace volume-specific filename rules; stricter filesystem errors remain visible.
+On macOS/Unix, the desktop commands pin the canonical workspace directory, traverse each parent component without following a replacement symlink, recheck directory identities, and perform one exclusive final create. A changed root or parent is rejected before the disk commit point. Folder names additionally reserve `.DS_Store`, LocalView temporary-file patterns, and `.numbers`/`.pages`/`.key` bundle suffixes. The application limit does not replace volume-specific filename rules; stricter filesystem errors remain visible.
 
 Workspace changes form one serialized latest-request queue shared by startup, Finder open events, and the folder picker. The old committed tree/document stays visible but locked during preparation. Success commits the new root/tree together; failure restores the previous backend root and preserves the inline draft, while a failed rollback clears the untrusted UI.
+
+LocalView remains a single process with multiple native windows. Opening a folder replaces only the current window's workspace. A running-app Finder request creates another window and never displaces an existing editor. Reload restores only the current window's private session; a complete relaunch restores the most recently active non-empty workspace in one window rather than recreating the previous window set.
 
 ### HTML
 
@@ -134,11 +139,15 @@ Not included:
 
 Support:
 
-- Open supported Markdown, HTML, Office, OpenDocument, and iWork files from Finder
+- Open every supported Markdown, HTML, text/code, image, PDF, Office, OpenDocument, and iWork extension from Finder
 - App receives file path
 - Find workspace root
 - Open tree and select file
-- Keep LocalView registered as an alternate viewer/editor; changing the default application remains an explicit Finder action by the user
+- Route each additional Finder path to a newly created workspace window in the same application process
+- Focus the last active window on Dock reopen, or create one last-active restore window when none remains
+- Treat `Command-Q` as an application-wide prepare/save transaction; any cancel aborts the whole quit without clearing another window's dirty content
+- Register Markdown, HTML, and common text/code formats with the Editor role; register images, PDF, Office, OpenDocument, and iWork formats with the Viewer role
+- Keep every association at alternate-handler rank; changing the default application remains an explicit Finder action by the user
 
 ---
 

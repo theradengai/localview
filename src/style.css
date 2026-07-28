@@ -84,3 +84,11 @@
 .markdown-selection-apply{border-color:#111!important;background:#111!important;color:#fff!important}
 .markdown-selection-error{min-width:0;max-width:110px;overflow:hidden;padding:0 4px;color:#8f2f2f;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 @media(prefers-reduced-motion:reduce){.markdown-selection-toolbar{scroll-behavior:auto}}
+.tree-row-actions{display:flex;align-items:center;gap:1px;padding-right:2px;opacity:0;pointer-events:none}
+.tree-row:hover .tree-row-actions,.tree-row:focus-within .tree-row-actions{opacity:1;pointer-events:auto}
+.tree-row-actions .tree-action-button{width:24px;height:24px;flex:0 0 24px;margin:0;border:0;border-radius:6px;background:transparent;color:#666;cursor:pointer;line-height:1;opacity:1;pointer-events:auto}
+.tree-row-actions .tree-create-button{font-size:16px}
+.tree-row-actions .tree-more-button{font-size:11px;font-weight:700;letter-spacing:-.08em}
+.tree-row-actions .tree-action-button:hover:not(:disabled),.tree-row-actions .tree-action-button:focus-visible{background:#dcdcd5;color:#111;outline:none}
+.tree-row-actions .tree-action-button:disabled{cursor:default;opacity:.38}
+.context-menu-separator{height:1px;margin:4px -4px;background:#e5e5df}

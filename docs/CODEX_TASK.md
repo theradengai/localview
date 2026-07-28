@@ -43,6 +43,14 @@ Do not start over. Audit the existing React/Tauri implementation, keep working p
 4. Read child directories when the user expands them.
 5. Never perform automatic full-text indexing or recursive content loading.
 
+### Journey D: compare independent workspaces in multiple windows
+
+1. Use **工作区菜单 → 新建窗口** or `Command-N`.
+2. A new empty LocalView window opens without flushing, changing, or closing the current editor.
+3. Each window may open a different folder, or the same file, while retaining independent tree, watcher, preview, session, and close state.
+4. An additional Finder/file-association request creates another window in the running process instead of replacing an existing workspace.
+5. `Command-Q` waits for every live window to save or explicitly approve discard. A cancel in any window aborts the whole quit and preserves all remaining dirty editor content.
+
 ---
 
 ## Workspace-root rules
@@ -123,15 +131,16 @@ Required:
 - 600 ms idle auto-save with `Command-S` immediate flush
 - line count
 - UTF-8 status
-- workspace-root and per-folder `+` controls for creating a Markdown file
-- inline filename entry where Enter creates an empty real file immediately and Escape cancels
+- workspace-root and per-folder `+` menus for creating a Markdown file or ordinary folder
+- kind-aware inline name entry where Enter creates the real item immediately and Escape cancels
 - automatic `.md` suffix when the input does not already end in `.md` (case-insensitive)
 - one shared explicit whitespace/control rule and a 255 UTF-16-code-unit limit on the final suffixed filename
 - exclusive creation that rejects a same-name file instead of overwriting it
 - pinned Unix workspace capability, no-follow parent traversal, and root/parent identity checks before the exclusive create
 - save-gated creation, followed by selecting the new saved file in Edit mode
+- folder creation outside the document save gate, preserving the current document and dirty editor
 
-Markdown creation does not include folders, non-Markdown file types, rename, move, or copy. Creating the empty file is immediate; subsequent content auto-saves after 600 ms of idle time, while `Command-S` flushes immediately. Files and workspace subfolders may be moved to macOS Trash, but permanent deletion and workspace-root deletion are unavailable. Browser development mode must use the same filename normalization, simulate creation and Trash only in memory, and never invoke desktop filesystem commands.
+Creation supports empty Markdown files and ordinary folders, but not other file types, rename, move, or copy. Creating either item is immediate; subsequent Markdown content auto-saves after 600 ms of idle time, while `Command-S` flushes immediately. Folder names reject hidden/watcher-reserved names and iWork bundle suffixes. Files and workspace subfolders may be moved to macOS Trash, but permanent deletion and workspace-root deletion are unavailable. Browser development mode must use the same name normalization, simulate creation and Trash only in memory, and never invoke desktop filesystem commands.
 
 ### HTML
 
@@ -189,6 +198,7 @@ At minimum:
 - workspace preparation keeps the old UI readable but disables editing, save, reveal, tree, and create actions
 - failed preparation rolls the backend root back and preserves the old tree/document/draft; failed rollback clears untrusted workspace state
 - closing the window with unsaved edits must not silently discard them
+- application quit must collect a per-window save/discard disposition before exiting; discard approval must not clear dirty state until exit is committed, and any cancellation must restore every window's interaction gate
 - saving is atomic where practical
 
 Required:
@@ -207,12 +217,14 @@ Do not silently overwrite an externally changed file.
 
 Required configuration:
 
-- application bundle supports Markdown, HTML, spreadsheet, document, presentation, OpenDocument, and iWork types
-- Markdown/HTML role is Editor; Office/OpenDocument/iWork role is Viewer
+- application bundle registers every extension recognized by the renderer registry: Markdown, HTML, common text/code, images, PDF, spreadsheet, document, presentation, OpenDocument, and iWork
+- Markdown/HTML/text/code role is Editor; image/PDF/Office/OpenDocument/iWork role is Viewer
+- every association uses alternate-handler rank so LocalView never silently takes over a default application
 - app receives cold-start open-file events
 - app receives open-file events when already running
-- single-instance behavior forwards the path to the existing window
-- the window is shown, focused, and unminimized
+- single-instance behavior keeps one process but creates a new window for each additional path, or an empty window for a pathless second launch
+- `Command-N` creates an empty dynamic window; Dock reopen focuses the last active live window or restores the last-active workspace when no window remains
+- each window reload restores its own private session; a full relaunch restores only the most recently active non-empty workspace in one window
 
 The user remains in control of setting LocalView as the default application in Finder.
 
@@ -253,18 +265,22 @@ If Safe Preview and Interactive Preview are added, Interactive Preview may allow
 - a 3-column × 2-data-row GFM table can be inserted without overwriting surrounding text
 - strict top-level tables support safe row, column, alignment, and table deletion; malformed or nested tables are left unchanged
 - `Shift` + right-click opens the native menu, while HTML and plain text never receive the Markdown menu
-- root and nested folder `+` create a new empty Markdown file without overwriting existing files
+- root and nested folder `+` menus create a new empty Markdown file or ordinary folder without overwriting existing entries
 - repeated `+` activation for one unloaded folder reuses one directory read; failure clears busy state and can be retried
 - workspace transitions wait for in-flight create/save mutations and ignore stale file, conflict-reload, poll, and folder responses
 - creating, switching, and closing flush pending edits first and do not show the old discard dialog after a successful save
 - a created file is selected in Edit mode and its later content auto-saves after 600 ms
 - `Command-S` immediately flushes the real file through the same serial save coordinator
 - watcher events refresh only loaded directories; manual reload preserves workspace, selection, expansion, editor, and scroll
-- right-click and `Command-Delete` move eligible nodes to macOS Trash; root and symlinks are rejected
+- folder `…`, right-click, and tree-row-focused `Command-Delete` move eligible nodes to macOS Trash; root and symlinks are rejected
 - reload/relaunch restores bounded workspace context without persisting file bodies or tree cache
 - clicking HTML previews its local resources
 - Finder reveal works
-- opening associated Markdown/HTML/Office/OpenDocument/iWork files selects the target
+- opening any associated Markdown/HTML/text/code/image/PDF/Office/OpenDocument/iWork file selects the target in its folder context
+- `Command-N` and the project menu each create exactly one independent empty window without touching the current dirty editor
+- two windows can show different folders and same-named resources without tree, watcher, asset, HTML capability, spreadsheet, or Quick Look cross-talk
+- two windows opening the same file preserve the first successful save and surface an external conflict for the stale second save
+- closing one window leaves all others running; `Command-Q` exits only after every window is ready, while one cancel preserves every window and dirty draft
 
 ### Build review
 

@@ -4,11 +4,20 @@ const { invoke, listen } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() 
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ listen }) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ revealItemInDir: vi.fn() }));
 
 import {
+  createDirectory,
+  createWorkspaceWindow,
   createMarkdownFile,
+  finishWindowStartup,
+  getWindowBootstrap,
+  listenForAppQuitAborts,
+  listenForAppQuitRequests,
+  listenForOpenPath,
+  listenForWindowOpenFailures,
   listenForWorkspaceChanges,
   listenForWorkspaceWatchFailures,
   moveToTrash,
@@ -17,6 +26,7 @@ import {
   previewAssetUrl,
   resolveMarkdownAssetSource,
   releaseHtmlPreview,
+  respondAppQuit,
   setWorkspaceRoot,
 } from './desktop';
 
@@ -24,6 +34,8 @@ describe('createMarkdownFile desktop contract', () => {
   beforeEach(() => {
     invoke.mockReset();
     listen.mockReset();
+    window.sessionStorage.clear();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it('invokes the exact Tauri command and returns its result unchanged', async () => {
@@ -41,8 +53,20 @@ describe('createMarkdownFile desktop contract', () => {
     });
   });
 
+  it('creates a directory through the exact caller-window command payload', async () => {
+    const created = { name: 'Projects', path: '/workspace/Projects', kind: 'folder' as const };
+    invoke.mockResolvedValue(created);
+
+    await expect(createDirectory('/workspace', 'Projects')).resolves.toBe(created);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith('create_directory', {
+      parentPath: '/workspace',
+      name: 'Projects',
+    });
+  });
+
   it('returns the workspace generation binding unchanged', async () => {
-    const binding = { path: '/workspace', generation: 7, watching: true };
+    const binding = { path: '/workspace', generation: 7, watching: true, assetScope: 'scope-7' };
     invoke.mockResolvedValue(binding);
     await expect(setWorkspaceRoot('/workspace')).resolves.toBe(binding);
     expect(invoke).toHaveBeenCalledWith('set_workspace_root', { path: '/workspace' });
@@ -67,6 +91,59 @@ describe('createMarkdownFile desktop contract', () => {
     failureHandler?.({ payload: failure });
     expect(onChange).toHaveBeenCalledWith(batch);
     expect(onFailure).toHaveBeenCalledWith(failure);
+  });
+
+  it('uses the current window for every window-scoped event listener', async () => {
+    const dispose = vi.fn();
+    const handlers = new Map<string, (event: { payload: unknown }) => void>();
+    listen.mockImplementation(async (name, handler) => {
+      handlers.set(name, handler);
+      return dispose;
+    });
+    const onOpenPath = vi.fn();
+    const onOpenFailure = vi.fn();
+    const onQuitRequest = vi.fn();
+    const onQuitAbort = vi.fn();
+
+    await expect(listenForOpenPath(onOpenPath)).resolves.toBe(dispose);
+    await expect(listenForWindowOpenFailures(onOpenFailure)).resolves.toBe(dispose);
+    await expect(listenForAppQuitRequests(onQuitRequest)).resolves.toBe(dispose);
+    await expect(listenForAppQuitAborts(onQuitAbort)).resolves.toBe(dispose);
+
+    handlers.get('open-path')?.({ payload: '/workspace/a.md' });
+    handlers.get('workspace-window-open-failed')?.({ payload: { path: null, message: 'failed' } });
+    handlers.get('app-quit-requested')?.({ payload: { generation: 4 } });
+    handlers.get('app-quit-aborted')?.({ payload: { generation: 4 } });
+    expect(onOpenPath).toHaveBeenCalledWith('/workspace/a.md');
+    expect(onOpenFailure).toHaveBeenCalledWith({ path: null, message: 'failed' });
+    expect(onQuitRequest).toHaveBeenCalledWith({ generation: 4 });
+    expect(onQuitAbort).toHaveBeenCalledWith({ generation: 4 });
+  });
+
+  it('invokes the private bootstrap, new-window, and app-quit commands', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
+    const bootstrap = {
+      initialPath: null,
+      sessionId: 'process.2',
+      restoreMode: 'none' as const,
+    };
+    invoke
+      .mockResolvedValueOnce(bootstrap)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('workspace-process-3')
+      .mockResolvedValueOnce(undefined);
+
+    await expect(getWindowBootstrap()).resolves.toBe(bootstrap);
+    await expect(finishWindowStartup()).resolves.toBeUndefined();
+    await expect(createWorkspaceWindow()).resolves.toBe('workspace-process-3');
+    await expect(respondAppQuit(8, 'discardApproved')).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenNthCalledWith(1, 'get_window_bootstrap');
+    expect(invoke).toHaveBeenNthCalledWith(2, 'finish_window_startup');
+    expect(invoke).toHaveBeenNthCalledWith(3, 'new_workspace_window');
+    expect(invoke).toHaveBeenNthCalledWith(4, 'respond_app_quit', {
+      generation: 8,
+      outcome: 'discardApproved',
+    });
   });
 
   it('invokes recoverable Trash and returns the resulting path', async () => {
@@ -110,7 +187,7 @@ describe('createMarkdownFile desktop contract', () => {
   });
 
   it('resolves Markdown assets consistently in browser and desktop contexts', () => {
-    const browser = { desktop: false, rootPath: '/workspace', selectedPath: '/workspace/docs/readme.md' };
+    const browser = { desktop: false, rootPath: '/workspace', selectedPath: '/workspace/docs/readme.md', assetScope: 'scope-a' };
     expect(resolveMarkdownAssetSource('../images/a.png?size=2', browser)).toBe('../images/a.png?size=2');
     expect(resolveMarkdownAssetSource('https://example.com/a.png', browser)).toBe('https://example.com/a.png');
     expect(resolveMarkdownAssetSource('data:image/png;base64,AA==', browser)).toBe('data:image/png;base64,AA==');
@@ -119,8 +196,8 @@ describe('createMarkdownFile desktop contract', () => {
 
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
     const desktop = { ...browser, desktop: true };
-    expect(resolveMarkdownAssetSource('../images/a.png', desktop)).toBe('localview://localhost/images/a.png');
-    expect(resolveMarkdownAssetSource('/images/a.png', desktop)).toBe('localview://localhost/images/a.png');
+    expect(resolveMarkdownAssetSource('../images/a.png', desktop)).toBe('localview://localhost/asset/scope-a/images/a.png');
+    expect(resolveMarkdownAssetSource('/images/a.png', desktop)).toBe('localview://localhost/asset/scope-a/images/a.png');
     expect(resolveMarkdownAssetSource('../../outside.png', desktop)).toBe('');
     expect(resolveMarkdownAssetSource('', desktop)).toBe('');
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
@@ -35,7 +36,22 @@ export type WorkspaceBinding = {
   path: string;
   generation: number;
   watching: boolean;
+  assetScope: string;
 };
+
+export type WindowBootstrap = {
+  initialPath: string | null;
+  sessionId: string;
+  restoreMode: 'none' | 'self' | 'last-active';
+};
+
+export type WindowOpenFailure = {
+  path: string | null;
+  message: string;
+};
+
+export type AppQuitEvent = { generation: number };
+export type AppQuitOutcome = 'saved' | 'discardApproved' | 'cancel';
 
 export type WorkspaceFsEventKind = 'create' | 'modify' | 'remove' | 'rename' | 'rescan' | 'other';
 
@@ -158,6 +174,7 @@ export type MarkdownAssetContext = {
   desktop: boolean;
   rootPath: string;
   selectedPath: string;
+  assetScope: string;
 };
 
 export function isTauriRuntime(): boolean {
@@ -188,6 +205,10 @@ export async function readTextFile(path: string): Promise<TextFileSnapshot> {
 
 export async function createMarkdownFile(parentPath: string, name: string): Promise<CreatedTextFile> {
   return invoke<CreatedTextFile>('create_markdown_file', { parentPath, name });
+}
+
+export async function createDirectory(parentPath: string, name: string): Promise<DesktopEntry> {
+  return invoke<DesktopEntry>('create_directory', { parentPath, name });
 }
 
 export async function readSpreadsheet(path: string): Promise<SpreadsheetWorkbookSnapshot> {
@@ -249,8 +270,33 @@ export async function findWorkspaceRoot(path: string): Promise<string> {
   return invoke<string>('find_workspace_root', { filePath: path });
 }
 
-export async function getStartupPath(): Promise<string | null> {
-  return invoke<string | null>('get_startup_path');
+export async function getWindowBootstrap(): Promise<WindowBootstrap> {
+  if (!isTauriRuntime()) {
+    let sessionId = window.sessionStorage.getItem('localview.browser-session-id');
+    if (!sessionId) {
+      sessionId = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      window.sessionStorage.setItem('localview.browser-session-id', sessionId);
+    }
+    return { initialPath: null, sessionId, restoreMode: 'self' };
+  }
+  return invoke<WindowBootstrap>('get_window_bootstrap');
+}
+
+export async function finishWindowStartup(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke('finish_window_startup');
+}
+
+export async function createWorkspaceWindow(): Promise<string> {
+  if (!isTauriRuntime()) {
+    window.open(window.location.href, '_blank', 'noopener');
+    return 'browser-window';
+  }
+  return invoke<string>('new_workspace_window');
+}
+
+export async function respondAppQuit(generation: number, outcome: AppQuitOutcome): Promise<void> {
+  await invoke('respond_app_quit', { generation, outcome });
 }
 
 export async function revealPath(path: string): Promise<void> {
@@ -258,33 +304,51 @@ export async function revealPath(path: string): Promise<void> {
 }
 
 export async function listenForOpenPath(handler: (path: string) => void): Promise<UnlistenFn> {
-  return listen<string>('open-path', (event) => handler(event.payload));
+  return getCurrentWindow().listen<string>('open-path', (event) => handler(event.payload));
 }
 
 export async function listenForWorkspaceChanges(
   handler: (batch: WorkspaceChangeBatch) => void,
 ): Promise<UnlistenFn> {
-  return listen<WorkspaceChangeBatch>('workspace-directory-changed', (event) => handler(event.payload));
+  return getCurrentWindow().listen<WorkspaceChangeBatch>('workspace-directory-changed', (event) => handler(event.payload));
 }
 
 export async function listenForWorkspaceWatchFailures(
   handler: (failure: WorkspaceWatchFailure) => void,
 ): Promise<UnlistenFn> {
-  return listen<WorkspaceWatchFailure>('workspace-watch-failed', (event) => handler(event.payload));
+  return getCurrentWindow().listen<WorkspaceWatchFailure>('workspace-watch-failed', (event) => handler(event.payload));
 }
 
-export function assetUrl(path: string, workspaceRoot: string): string {
+export async function listenForWindowOpenFailures(
+  handler: (failure: WindowOpenFailure) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWindow().listen<WindowOpenFailure>('workspace-window-open-failed', (event) => handler(event.payload));
+}
+
+export async function listenForAppQuitRequests(
+  handler: (event: AppQuitEvent) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWindow().listen<AppQuitEvent>('app-quit-requested', (event) => handler(event.payload));
+}
+
+export async function listenForAppQuitAborts(
+  handler: (event: AppQuitEvent) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWindow().listen<AppQuitEvent>('app-quit-aborted', (event) => handler(event.payload));
+}
+
+export function assetUrl(path: string, workspaceRoot: string, assetScope: string): string {
   if (!isTauriRuntime()) return path;
 
   const root = normalizePath(workspaceRoot);
   const target = normalizePath(path);
-  if (!root || (target !== root && !containsNormalizedPath(root, target))) {
+  if (!root || !assetScope || (target !== root && !containsNormalizedPath(root, target))) {
     throw new Error('Resource path is outside the active workspace');
   }
 
   const relative = target === root ? '' : target.slice(root.length + (root === '/' ? 0 : 1));
   const encoded = relative.split('/').filter(Boolean).map(encodeURIComponent).join('/');
-  return protocolUrl(encoded);
+  return protocolUrl(`asset/${encodeURIComponent(assetScope)}/${encoded}`);
 }
 
 export function previewAssetUrl(path: string, workspaceRoot: string, token: string): string {
@@ -358,7 +422,7 @@ export function resolveMarkdownAssetSource(
     const resourcePath = source.startsWith('/')
       ? joinPath(context.rootPath, source.slice(1))
       : resolveResourcePath(context.selectedPath, source);
-    return assetUrl(resourcePath, context.rootPath);
+    return assetUrl(resourcePath, context.rootPath, context.assetScope);
   } catch {
     return '';
   }

@@ -37,6 +37,10 @@ The MVP must support:
 
 - opening any local folder
 - displaying the real folder tree
+- creating empty Markdown files and ordinary folders inline from the root or any real folder
+- moving files and workspace subfolders to macOS Trash without exposing permanent or workspace-root deletion
+- opening independent workspaces in multiple windows through the workspace menu or `Command-N`
+- routing each additional Finder/file-association request to a new window in the same LocalView process
 - opening a `.md` or `.html` file from Finder and selecting it inside its folder context
 - Markdown source editing with CodeMirror 6
 - Markdown Edit / Split / Preview modes
@@ -83,9 +87,12 @@ Keep renderer selection explicit by file kind so future renderers can be added w
 
 - never silently discard unsaved edits
 - never silently overwrite a file changed externally
+- keep workspace roots, watchers, resource scopes, HTML capabilities, Quick Look state, sessions, save/close flows, and emitted events isolated by caller window; never reintroduce an app-global workspace capability
+- treat application quit as a two-phase all-window save/discard transaction; cancelling one window must preserve all windows and dirty content
 - do not expose Tauri commands to arbitrary HTML preview content
 - keep HTML preview sandboxed
 - normalize and validate paths
+- reserve `.DS_Store`, internal `.localview-*.tmp` names, and iWork bundle suffixes for folder creation
 - do not recursively scan the entire workspace on startup
 - ignore `.DS_Store`; hidden-file behavior should be deliberate
 

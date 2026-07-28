@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
-use super::{is_document_bundle, scoped_existing_path, WorkspaceState};
+use super::{
+    is_document_bundle, scoped_existing_path, workspace_for_window, WorkspaceRegistry,
+    WorkspaceState,
+};
 
 #[cfg(test)]
 const QUICK_LOOK_EXTENSIONS: &[&str] = &[
@@ -70,8 +73,10 @@ fn scoped_preview_target(state: &WorkspaceState, path: String) -> Result<PathBuf
 pub(crate) fn open_in_default_app(
     path: String,
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<(), String> {
+    let state = workspace_for_window(&registry, &window)?;
     let path = scoped_preview_target(&state, path)?;
     app.opener()
         .open_path(path.to_string_lossy().into_owned(), None::<String>)
@@ -101,6 +106,7 @@ mod platform {
     use objc2_quick_look_ui::{QLPreviewItem, QLPreviewView, QLPreviewViewStyle};
     use std::{
         cell::RefCell,
+        collections::HashMap,
         sync::{
             atomic::{AtomicBool, Ordering},
             mpsc, Arc,
@@ -118,13 +124,8 @@ mod platform {
     const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
 
     thread_local! {
-        static PREVIEW_WINDOW: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
-        static EMBEDDED_PREVIEW: RefCell<EmbeddedPreviewSlot> = const {
-            RefCell::new(EmbeddedPreviewSlot {
-                latest_generation: 0,
-                active: None,
-            })
-        };
+        static PREVIEW_WINDOWS: RefCell<HashMap<String, Retained<NSWindow>>> = RefCell::new(HashMap::new());
+        static EMBEDDED_PREVIEWS: RefCell<HashMap<String, EmbeddedPreviewSlot>> = RefCell::new(HashMap::new());
     }
 
     struct EmbeddedPreview {
@@ -245,8 +246,10 @@ mod platform {
     pub(super) async fn generate_system_thumbnail(
         path: String,
         app: AppHandle,
-        state: State<'_, WorkspaceState>,
+        window: WebviewWindow,
+        registry: State<'_, WorkspaceRegistry>,
     ) -> Result<SystemPreviewSnapshot, String> {
+        let state = workspace_for_window(&registry, &window)?;
         let path = scoped_preview_target(&state, path)?;
         let scale = thumbnail_scale(&app)?;
         tauri::async_runtime::spawn_blocking(move || {
@@ -304,9 +307,9 @@ mod platform {
             .map_err(|_| "MAIN_THREAD_TIMEOUT".to_string())?
     }
 
-    fn main_content_view(app: &AppHandle) -> Result<Retained<NSView>, String> {
+    fn window_content_view(app: &AppHandle, label: &str) -> Result<Retained<NSView>, String> {
         let window = app
-            .get_webview_window("main")
+            .get_webview_window(label)
             .ok_or_else(|| "QUICK_LOOK_WINDOW_NOT_FOUND".to_string())?;
         let view = window
             .ns_view()
@@ -322,19 +325,24 @@ mod platform {
 
     fn show_embedded_preview_on_main_thread(
         app: &AppHandle,
+        label: &str,
         path: &Path,
         bounds: EmbeddedPreviewBounds,
         generation: u64,
     ) -> Result<(), String> {
         let marker = MainThreadMarker::new().ok_or_else(|| "MAIN_THREAD_REQUIRED".to_string())?;
 
-        let is_stale = EMBEDDED_PREVIEW
-            .with(|slot| !accepts_generation(slot.borrow().latest_generation, generation));
+        let is_stale = EMBEDDED_PREVIEWS.with(|slots| {
+            slots
+                .borrow()
+                .get(label)
+                .is_some_and(|slot| !accepts_generation(slot.latest_generation, generation))
+        });
         if is_stale {
             return Ok(());
         }
 
-        let parent = main_content_view(app)?;
+        let parent = window_content_view(app, label)?;
         let frame = preview_frame(bounds, parent.bounds())?;
         let preview = unsafe {
             QLPreviewView::initWithFrame_style(marker.alloc(), frame, QLPreviewViewStyle::Normal)
@@ -349,8 +357,14 @@ mod platform {
             preview.setShouldCloseWithWindow(true);
         }
 
-        EMBEDDED_PREVIEW.with(|slot| {
-            let mut slot = slot.borrow_mut();
+        EMBEDDED_PREVIEWS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let slot = slots
+                .entry(label.to_string())
+                .or_insert_with(|| EmbeddedPreviewSlot {
+                    latest_generation: 0,
+                    active: None,
+                });
             if !accepts_generation(slot.latest_generation, generation) {
                 unsafe { preview.close() };
                 return;
@@ -374,16 +388,18 @@ mod platform {
 
     fn resize_embedded_preview_on_main_thread(
         app: &AppHandle,
+        label: &str,
         bounds: EmbeddedPreviewBounds,
         generation: u64,
     ) -> Result<(), String> {
         validate_embedded_preview_bounds(bounds)?;
-        let parent = main_content_view(app)?;
+        let parent = window_content_view(app, label)?;
         let frame = preview_frame(bounds, parent.bounds())?;
-        EMBEDDED_PREVIEW.with(|slot| {
-            let slot = slot.borrow();
-            if let Some(active) = slot
-                .active
+        EMBEDDED_PREVIEWS.with(|slots| {
+            let slots = slots.borrow();
+            if let Some(active) = slots
+                .get(label)
+                .and_then(|slot| slot.active.as_ref())
                 .as_ref()
                 .filter(|active| active.generation == generation)
             {
@@ -393,10 +409,13 @@ mod platform {
         Ok(())
     }
 
-    fn hide_embedded_preview_on_main_thread(generation: u64) -> Result<(), String> {
+    fn hide_embedded_preview_on_main_thread(label: &str, generation: u64) -> Result<(), String> {
         MainThreadMarker::new().ok_or_else(|| "MAIN_THREAD_REQUIRED".to_string())?;
-        EMBEDDED_PREVIEW.with(|slot| {
-            let mut slot = slot.borrow_mut();
+        EMBEDDED_PREVIEWS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let Some(slot) = slots.get_mut(label) else {
+                return;
+            };
             slot.latest_generation = slot.latest_generation.max(generation);
             if slot
                 .active
@@ -416,13 +435,16 @@ mod platform {
         bounds: EmbeddedPreviewBounds,
         generation: u64,
         app: AppHandle,
-        state: State<'_, WorkspaceState>,
+        window: WebviewWindow,
+        registry: State<'_, WorkspaceRegistry>,
     ) -> Result<(), String> {
         validate_embedded_preview_bounds(bounds)?;
+        let state = workspace_for_window(&registry, &window)?;
         let path = scoped_preview_target(&state, path)?;
+        let label = window.label().to_string();
         let main_app = app.clone();
         run_on_main_thread(&app, move || {
-            show_embedded_preview_on_main_thread(&main_app, &path, bounds, generation)
+            show_embedded_preview_on_main_thread(&main_app, &label, &path, bounds, generation)
         })
     }
 
@@ -430,21 +452,28 @@ mod platform {
         bounds: EmbeddedPreviewBounds,
         generation: u64,
         app: AppHandle,
+        window: WebviewWindow,
     ) -> Result<(), String> {
         validate_embedded_preview_bounds(bounds)?;
+        let label = window.label().to_string();
         let main_app = app.clone();
         run_on_main_thread(&app, move || {
-            resize_embedded_preview_on_main_thread(&main_app, bounds, generation)
+            resize_embedded_preview_on_main_thread(&main_app, &label, bounds, generation)
         })
     }
 
-    pub(super) fn hide_embedded_quick_look(generation: u64, app: AppHandle) -> Result<(), String> {
+    pub(super) fn hide_embedded_quick_look(
+        generation: u64,
+        app: AppHandle,
+        window: WebviewWindow,
+    ) -> Result<(), String> {
+        let label = window.label().to_string();
         run_on_main_thread(&app, move || {
-            hide_embedded_preview_on_main_thread(generation)
+            hide_embedded_preview_on_main_thread(&label, generation)
         })
     }
 
-    fn show_preview_on_main_thread(path: &Path) -> Result<(), String> {
+    fn show_preview_on_main_thread(label: &str, path: &Path) -> Result<(), String> {
         let marker = MainThreadMarker::new().ok_or_else(|| "MAIN_THREAD_REQUIRED".to_string())?;
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(900.0, 680.0));
         let preview = unsafe { QLPreviewView::initWithFrame(marker.alloc(), frame) }
@@ -462,9 +491,9 @@ mod platform {
             preview.setShouldCloseWithWindow(true);
         }
 
-        PREVIEW_WINDOW.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let window = slot.get_or_insert_with(|| {
+        PREVIEW_WINDOWS.with(|windows| {
+            let mut windows = windows.borrow_mut();
+            let window = windows.entry(label.to_string()).or_insert_with(|| {
                 let window = unsafe {
                     NSWindow::initWithContentRect_styleMask_backing_defer(
                         marker.alloc(),
@@ -496,16 +525,19 @@ mod platform {
     pub(super) fn open_quick_look(
         path: String,
         app: AppHandle,
-        state: State<'_, WorkspaceState>,
+        window: WebviewWindow,
+        registry: State<'_, WorkspaceRegistry>,
     ) -> Result<(), String> {
+        let state = workspace_for_window(&registry, &window)?;
         let path = scoped_preview_target(&state, path)?;
+        let label = window.label().to_string();
         if MainThreadMarker::new().is_some() {
-            return autoreleasepool(|_| show_preview_on_main_thread(&path));
+            return autoreleasepool(|_| show_preview_on_main_thread(&label, &path));
         }
 
         let (sender, receiver) = mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
-            let result = autoreleasepool(|_| show_preview_on_main_thread(&path));
+            let result = autoreleasepool(|_| show_preview_on_main_thread(&label, &path));
             let _ = sender.send(result);
         })
         .map_err(|error| format!("MAIN_THREAD_DISPATCH_FAILED: {error}"))?;
@@ -514,6 +546,25 @@ mod platform {
             .recv_timeout(MAIN_THREAD_TIMEOUT)
             .map_err(|_| "MAIN_THREAD_TIMEOUT".to_string())?
     }
+
+    pub(super) fn cleanup_window_previews(app: &AppHandle, label: &str) {
+        let label = label.to_string();
+        let _ = run_on_main_thread(app, move || {
+            EMBEDDED_PREVIEWS.with(|slots| {
+                if let Some(mut slot) = slots.borrow_mut().remove(&label) {
+                    if let Some(active) = slot.active.take() {
+                        close_embedded_preview(active);
+                    }
+                }
+            });
+            PREVIEW_WINDOWS.with(|windows| {
+                if let Some(window) = windows.borrow_mut().remove(&label) {
+                    window.close();
+                }
+            });
+            Ok(())
+        });
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -521,9 +572,10 @@ mod platform {
 pub(crate) async fn generate_system_thumbnail(
     path: String,
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<SystemPreviewSnapshot, String> {
-    platform::generate_system_thumbnail(path, app, state).await
+    platform::generate_system_thumbnail(path, app, window, registry).await
 }
 
 #[cfg(target_os = "macos")]
@@ -533,9 +585,10 @@ pub(crate) fn show_embedded_quick_look(
     bounds: EmbeddedPreviewBounds,
     generation: u64,
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<(), String> {
-    platform::show_embedded_quick_look(path, bounds, generation, app, state)
+    platform::show_embedded_quick_look(path, bounds, generation, app, window, registry)
 }
 
 #[cfg(target_os = "macos")]
@@ -544,14 +597,19 @@ pub(crate) fn resize_embedded_quick_look(
     bounds: EmbeddedPreviewBounds,
     generation: u64,
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<(), String> {
-    platform::resize_embedded_quick_look(bounds, generation, app)
+    platform::resize_embedded_quick_look(bounds, generation, app, window)
 }
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub(crate) fn hide_embedded_quick_look(generation: u64, app: AppHandle) -> Result<(), String> {
-    platform::hide_embedded_quick_look(generation, app)
+pub(crate) fn hide_embedded_quick_look(
+    generation: u64,
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<(), String> {
+    platform::hide_embedded_quick_look(generation, app, window)
 }
 
 #[cfg(target_os = "macos")]
@@ -559,9 +617,15 @@ pub(crate) fn hide_embedded_quick_look(generation: u64, app: AppHandle) -> Resul
 pub(crate) fn open_quick_look(
     path: String,
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<(), String> {
-    platform::open_quick_look(path, app, state)
+    platform::open_quick_look(path, app, window, registry)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cleanup_window_previews(app: &AppHandle, label: &str) {
+    platform::cleanup_window_previews(app, label);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -569,8 +633,10 @@ pub(crate) fn open_quick_look(
 pub(crate) async fn generate_system_thumbnail(
     path: String,
     _app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<SystemPreviewSnapshot, String> {
+    let state = workspace_for_window(&registry, &window)?;
     let _ = scoped_preview_target(&state, path)?;
     Err("QUICK_LOOK_UNAVAILABLE".to_string())
 }
@@ -582,8 +648,10 @@ pub(crate) fn show_embedded_quick_look(
     bounds: EmbeddedPreviewBounds,
     _generation: u64,
     _app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<(), String> {
+    let state = workspace_for_window(&registry, &window)?;
     let _ = scoped_preview_target(&state, path)?;
     validate_embedded_preview_bounds(bounds)?;
     Err("QUICK_LOOK_UNAVAILABLE".to_string())
@@ -595,6 +663,7 @@ pub(crate) fn resize_embedded_quick_look(
     bounds: EmbeddedPreviewBounds,
     _generation: u64,
     _app: AppHandle,
+    _window: WebviewWindow,
 ) -> Result<(), String> {
     validate_embedded_preview_bounds(bounds)?;
     Err("QUICK_LOOK_UNAVAILABLE".to_string())
@@ -602,7 +671,11 @@ pub(crate) fn resize_embedded_quick_look(
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-pub(crate) fn hide_embedded_quick_look(_generation: u64, _app: AppHandle) -> Result<(), String> {
+pub(crate) fn hide_embedded_quick_look(
+    _generation: u64,
+    _app: AppHandle,
+    _window: WebviewWindow,
+) -> Result<(), String> {
     Err("QUICK_LOOK_UNAVAILABLE".to_string())
 }
 
@@ -611,11 +684,16 @@ pub(crate) fn hide_embedded_quick_look(_generation: u64, _app: AppHandle) -> Res
 pub(crate) fn open_quick_look(
     path: String,
     _app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    window: WebviewWindow,
+    registry: State<'_, WorkspaceRegistry>,
 ) -> Result<(), String> {
+    let state = workspace_for_window(&registry, &window)?;
     let _ = scoped_preview_target(&state, path)?;
     Err("QUICK_LOOK_UNAVAILABLE".to_string())
 }
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn cleanup_window_previews(_app: &AppHandle, _label: &str) {}
 
 #[cfg(test)]
 mod tests {
