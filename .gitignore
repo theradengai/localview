@@ -18,6 +18,7 @@ src-tauri/target/
 .DS_Store
 .vscode/
 .idea/
+.playwright-cli/
 .env
 .env.*
 !.env.example

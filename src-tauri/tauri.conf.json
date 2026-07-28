@@ -27,18 +27,18 @@
       }
     ],
     "security": {
-      "csp": null,
-      "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
-      }
+      "csp": null
     }
   },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
     "category": "Productivity",
     "shortDescription": "Open a file, see the folder context.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "fileAssociations": [
       {
         "ext": ["md", "markdown", "mdown", "mkd"],
@@ -50,6 +50,79 @@
         "ext": ["html", "htm"],
         "name": "HTML Document",
         "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "txt",
+          "json",
+          "jsonc",
+          "yaml",
+          "yml",
+          "toml",
+          "xml",
+          "css",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "rs",
+          "py",
+          "sh",
+          "csv",
+          "log"
+        ],
+        "name": "Text and Code Document",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"],
+        "name": "Image Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["pdf"],
+        "name": "PDF Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["xls", "xlsx", "ods", "numbers"],
+        "contentTypes": [
+          "com.microsoft.excel.xls",
+          "org.openxmlformats.spreadsheetml.sheet",
+          "org.oasis-open.opendocument.spreadsheet",
+          "com.apple.iwork.numbers.sffnumbers"
+        ],
+        "name": "Spreadsheet Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["doc", "docx", "odt", "rtf", "pages"],
+        "contentTypes": [
+          "com.microsoft.word.doc",
+          "org.openxmlformats.wordprocessingml.document",
+          "org.oasis-open.opendocument.text",
+          "public.rtf",
+          "com.apple.iwork.pages.sffpages"
+        ],
+        "name": "Document Viewer",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["ppt", "pptx", "odp", "key"],
+        "contentTypes": [
+          "com.microsoft.powerpoint.ppt",
+          "org.openxmlformats.presentationml.presentation",
+          "org.oasis-open.opendocument.presentation",
+          "com.apple.iwork.keynote.sffkey"
+        ],
+        "name": "Presentation Viewer",
+        "role": "Viewer",
         "rank": "Alternate"
       }
     ]

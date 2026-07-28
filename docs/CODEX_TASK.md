@@ -18,10 +18,12 @@ Do not start over. Audit the existing React/Tauri implementation, keep working p
 4. The left sidebar displays the real folder tree for that workspace.
 5. All ancestor folders of `docs/plan.md` are expanded.
 6. `plan.md` is selected.
-7. Markdown opens in the last-used mode, defaulting to Split.
-8. Editing updates the preview without writing to disk.
-9. `Command-S` writes the exact current content to the original file.
-10. The status bar changes from **未保存** to **已保存**.
+7. Markdown opens in Preview; Edit and Split require an explicit user action for the current file.
+8. Edit uses source-preserving Live Preview. Split keeps the full preview on the left and softly wrapped raw source on the right. Editing schedules a single auto-save after 600 ms of idle time.
+9. Selecting text shows a compact horizontal Markdown toolbar without moving focus or collapsing the selection. A normal right-click opens the full source-formatting menu; `Shift` + right-click retains the native macOS menu.
+10. Each toolbar, context-menu, task-checkbox, or GFM table action is one CodeMirror transaction, one undo step, one preview update, and one auto-save update.
+11. Auto-save writes the exact latest content to the original file; `Command-S` flushes immediately.
+12. The status bar shows **等待自动保存 / 正在保存 / 已保存** or a terminal conflict, missing-file, or error state.
 
 ### Journey B: open an HTML file from Finder
 
@@ -40,6 +42,14 @@ Do not start over. Audit the existing React/Tauri implementation, keep working p
 3. Show only its immediate children initially.
 4. Read child directories when the user expands them.
 5. Never perform automatic full-text indexing or recursive content loading.
+
+### Journey D: compare independent workspaces in multiple windows
+
+1. Use **工作区菜单 → 新建窗口** or `Command-N`.
+2. A new empty LocalView window opens without flushing, changing, or closing the current editor.
+3. Each window may open a different folder, or the same file, while retaining independent tree, watcher, preview, session, and close state.
+4. An additional Finder/file-association request creates another window in the running process instead of replacing an existing workspace.
+5. `Command-Q` waits for every live window to save or explicitly approve discard. A cancel in any window aborts the whole quit and preserves all remaining dirty editor content.
 
 ---
 
@@ -111,11 +121,26 @@ Required:
 - `.md`, `.markdown`, `.mdown`, `.mkd`
 - CodeMirror editing
 - GitHub-flavored tables and task lists
-- Edit / Split / Preview
+- Edit as source-preserving Live Preview; Split as left full preview plus right softly wrapped raw source; Preview as the default reading mode
 - relative images
-- explicit save
+- automatic single-line formatting toolbar for non-empty selections, with headings, paragraph, inline styles, links, quotes, fenced code, and lists
+- right-click source formatting for headings, paragraph, bold, italic, strikethrough, inline code, links, quotes, fenced code, and lists
+- `Shift` + right-click native-menu fallback
+- bounded GFM table insertion and strict top-level row, column, deletion, and alignment operations
+- one transaction and one undo step per formatting action
+- 600 ms idle auto-save with `Command-S` immediate flush
 - line count
 - UTF-8 status
+- workspace-root and per-folder `+` menus for creating a Markdown file or ordinary folder
+- kind-aware inline name entry where Enter creates the real item immediately and Escape cancels
+- automatic `.md` suffix when the input does not already end in `.md` (case-insensitive)
+- one shared explicit whitespace/control rule and a 255 UTF-16-code-unit limit on the final suffixed filename
+- exclusive creation that rejects a same-name file instead of overwriting it
+- pinned Unix workspace capability, no-follow parent traversal, and root/parent identity checks before the exclusive create
+- save-gated creation, followed by selecting the new saved file in Edit mode
+- folder creation outside the document save gate, preserving the current document and dirty editor
+
+Creation supports empty Markdown files and ordinary folders, but not other file types, rename, move, or copy. Creating either item is immediate; subsequent Markdown content auto-saves after 600 ms of idle time, while `Command-S` flushes immediately. Folder names reject hidden/watcher-reserved names and iWork bundle suffixes. Files and workspace subfolders may be moved to macOS Trash, but permanent deletion and workspace-root deletion are unavailable. Browser development mode must use the same name normalization, simulate creation and Trash only in memory, and never invoke desktop filesystem commands.
 
 ### HTML
 
@@ -128,6 +153,10 @@ Required:
 - interactive JavaScript
 - refresh when source changes
 - default Preview mode
+- per-document preview capabilities bound to the current workspace generation
+- capability-scoped local CSS, image, font, media, and JavaScript resources
+- sandbox and CSP enforcement that block external network access, forms, nested frames, objects, and top-level navigation
+- HTTP 403 for missing, stale, released, wrong-generation, or out-of-scope preview capabilities, with no workspace-wide fallback or wildcard CORS
 
 ### Text and images
 
@@ -135,6 +164,24 @@ Required:
 
 - edit common text/code formats as plain text
 - preview common image formats
+
+### Spreadsheet and Office preview
+
+Required:
+
+- `.xls`, `.xlsx`, and `.ods` render as bounded, read-only data grids
+- spreadsheet cells show complete wrapped saved values with automatic row heights instead of ellipsis truncation
+- `.numbers`, `.pages`, `.key`, Word, and PowerPoint use macOS Quick Look
+- Quick Look is embedded in the LocalView document area so provider-supported multi-page documents and presentations can use native navigation
+- Office files always use Preview mode and never participate in dirty-state or `Command-S`
+- embedded Quick Look and spreadsheet parse failures show their real error plus thumbnail/native fallback actions
+
+Explicit limitations:
+
+- no Excel editing, formula recalculation, macros, charts, or complete formatting fidelity
+- no in-app editing for Numbers, Pages, Keynote, Word, or PowerPoint
+- no Office animations or full slideshow playback
+- large, corrupt, encrypted, or limit-exceeding workbooks may fall back to Quick Look/default application
 
 ### Unsupported formats
 
@@ -146,13 +193,19 @@ Show a restrained placeholder explaining that a future renderer will support the
 
 At minimum:
 
-- changing files or workspaces with unsaved edits requires confirmation
+- changing files or workspaces first flushes pending edits; only a save error, missing file, or external conflict requires a discard decision
+- all startup, Finder, and picker workspace requests use one serialized latest-request transition
+- workspace preparation keeps the old UI readable but disables editing, save, reveal, tree, and create actions
+- failed preparation rolls the backend root back and preserves the old tree/document/draft; failed rollback clears untrusted workspace state
 - closing the window with unsaved edits must not silently discard them
+- application quit must collect a per-window save/discard disposition before exiting; discard approval must not clear dirty state until exit is committed, and any cancellation must restore every window's interaction gate
 - saving is atomic where practical
 
-Preferred before MVP release:
+Required:
 
-- watch the current file for external modification
+- watch the workspace for external create, modify, remove, rename, and rescan events
+- refresh only already-loaded directory branches and keep a 5-second selected-file consistency fallback
+- provide an in-place manual reload when the watcher is unavailable or misses an event
 - when disk content changes and the editor is clean, reload it
 - when disk content changes and the editor is dirty, show choices: reload disk, keep local, compare
 
@@ -164,12 +217,14 @@ Do not silently overwrite an externally changed file.
 
 Required configuration:
 
-- application bundle supports Markdown and HTML document types
-- document role is Editor
+- application bundle registers every extension recognized by the renderer registry: Markdown, HTML, common text/code, images, PDF, spreadsheet, document, presentation, OpenDocument, and iWork
+- Markdown/HTML/text/code role is Editor; image/PDF/Office/OpenDocument/iWork role is Viewer
+- every association uses alternate-handler rank so LocalView never silently takes over a default application
 - app receives cold-start open-file events
 - app receives open-file events when already running
-- single-instance behavior forwards the path to the existing window
-- the window is shown, focused, and unminimized
+- single-instance behavior keeps one process but creates a new window for each additional path, or an empty window for a pathless second launch
+- `Command-N` creates an empty dynamic window; Dock reopen focuses the last active live window or restores the last-active workspace when no window remains
+- each window reload restores its own private session; a full relaunch restores only the most recently active non-empty workspace in one window
 
 The user remains in control of setting LocalView as the default application in Finder.
 
@@ -196,16 +251,36 @@ If Safe Preview and Interactive Preview are added, Interactive Preview may allow
 - Markdown editing and live preview work
 - HTML demo interaction works
 - mode buttons and selected tree rows work
+- root and folder Markdown-create controls update only the in-memory demo tree
 
 ### Desktop functional review
 
 - opening a folder shows real files
 - expanding folders loads children lazily
 - clicking Markdown reads the real file
-- `Command-S` writes the real file
+- Markdown formatting preserves the selected range, updates Split preview immediately, and remains one undo step
+- Markdown Edit renders supported inactive syntax in place without changing source; entering the syntax reveals its exact Markdown again
+- selecting text shows a clamped single-line toolbar without stealing focus; formatting closes it and one undo restores the prior source
+- Split keeps the preview on the left and a vertically scrolling, softly wrapped source editor on the right without ordinary paragraph-level horizontal scrolling
+- a 3-column × 2-data-row GFM table can be inserted without overwriting surrounding text
+- strict top-level tables support safe row, column, alignment, and table deletion; malformed or nested tables are left unchanged
+- `Shift` + right-click opens the native menu, while HTML and plain text never receive the Markdown menu
+- root and nested folder `+` menus create a new empty Markdown file or ordinary folder without overwriting existing entries
+- repeated `+` activation for one unloaded folder reuses one directory read; failure clears busy state and can be retried
+- workspace transitions wait for in-flight create/save mutations and ignore stale file, conflict-reload, poll, and folder responses
+- creating, switching, and closing flush pending edits first and do not show the old discard dialog after a successful save
+- a created file is selected in Edit mode and its later content auto-saves after 600 ms
+- `Command-S` immediately flushes the real file through the same serial save coordinator
+- watcher events refresh only loaded directories; manual reload preserves workspace, selection, expansion, editor, and scroll
+- folder `…`, right-click, and tree-row-focused `Command-Delete` move eligible nodes to macOS Trash; root and symlinks are rejected
+- reload/relaunch restores bounded workspace context without persisting file bodies or tree cache
 - clicking HTML previews its local resources
 - Finder reveal works
-- opening associated Markdown/HTML files selects the target
+- opening any associated Markdown/HTML/text/code/image/PDF/Office/OpenDocument/iWork file selects the target in its folder context
+- `Command-N` and the project menu each create exactly one independent empty window without touching the current dirty editor
+- two windows can show different folders and same-named resources without tree, watcher, asset, HTML capability, spreadsheet, or Quick Look cross-talk
+- two windows opening the same file preserve the first successful save and surface an external conflict for the stale second save
+- closing one window leaves all others running; `Command-Q` exits only after every window is ready, while one cancel preserves every window and dirty draft
 
 ### Build review
 

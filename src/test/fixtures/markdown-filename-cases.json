@@ -1,0 +1,102 @@
+[
+  {
+    "input": "notes",
+    "expected": "notes.md"
+  },
+  {
+    "input": " notes.md ",
+    "expected": "notes.md"
+  },
+  {
+    "input": "笔记.MD",
+    "expected": "笔记.MD"
+  },
+  {
+    "input": "release.txt",
+    "expected": "release.txt.md"
+  },
+  {
+    "input": " notes　",
+    "expected": "notes.md"
+  },
+  {
+    "input": "notes",
+    "expected": "notes.md"
+  },
+  {
+    "input": "\nnotes\t",
+    "expected": "notes.md"
+  },
+  {
+    "input": "﻿notes",
+    "expected": "﻿notes.md"
+  },
+  {
+    "input": "",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "   ",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": ".",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "..",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": ".md",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": ".MD",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "nested/name",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "nested\\name",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "line\nbreak",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "bad\u007fname",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "badname",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "badname",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "nul\u0000name",
+    "error": "INVALID_MARKDOWN_NAME"
+  },
+  {
+    "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md"
+  },
+  {
+    "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "MARKDOWN_NAME_TOO_LONG"
+  },
+  {
+    "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+    "expected": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀.md"
+  },
+  {
+    "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+    "error": "MARKDOWN_NAME_TOO_LONG"
+  }
+]

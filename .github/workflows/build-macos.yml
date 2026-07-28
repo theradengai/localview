@@ -2,6 +2,7 @@ name: Build LocalView for macOS
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - "v*"
@@ -24,6 +25,35 @@ jobs:
 
       - name: Build LocalView
         run: npm run tauri:build
+
+      - name: Verify macOS bundles
+        run: |
+          APP_PATH=(src-tauri/target/release/bundle/macos/*.app)
+          DMG_PATH=(src-tauri/target/release/bundle/dmg/*.dmg)
+          PLIST_PATH="${APP_PATH[0]}/Contents/Info.plist"
+          test -f "${APP_PATH[0]}/Contents/Resources/icon.icns"
+          codesign --verify --deep --strict --verbose=4 "${APP_PATH[0]}"
+          hdiutil verify "${DMG_PATH[0]}"
+          DOCUMENT_TYPES=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes" "$PLIST_PATH")
+          for EXTENSION in xls xlsx ods numbers doc docx odt rtf pages ppt pptx odp key; do
+            grep -Eq "^[[:space:]]+$EXTENSION$" <<< "$DOCUMENT_TYPES"
+          done
+          for CONTENT_TYPE in \
+            com.microsoft.excel.xls \
+            org.openxmlformats.spreadsheetml.sheet \
+            org.oasis-open.opendocument.spreadsheet \
+            com.apple.iwork.numbers.sffnumbers \
+            com.microsoft.word.doc \
+            org.openxmlformats.wordprocessingml.document \
+            org.oasis-open.opendocument.text \
+            public.rtf \
+            com.apple.iwork.pages.sffpages \
+            com.microsoft.powerpoint.ppt \
+            org.openxmlformats.presentationml.presentation \
+            org.oasis-open.opendocument.presentation \
+            com.apple.iwork.keynote.sffkey; do
+            grep -Fq "$CONTENT_TYPE" <<< "$DOCUMENT_TYPES"
+          done
 
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v4

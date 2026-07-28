@@ -29,7 +29,7 @@ Non-negotiable principles:
 - no mandatory content indexing
 - no hidden project metadata
 - read folders lazily and files on demand
-- write edits back to the original file only after an explicit save
+- write edits back to the original file through the 600 ms auto-save coordinator; `Command-S` flushes immediately and external conflicts must never be overwritten
 
 ## MVP scope
 
@@ -37,10 +37,14 @@ The MVP must support:
 
 - opening any local folder
 - displaying the real folder tree
+- creating empty Markdown files and ordinary folders inline from the root or any real folder
+- moving files and workspace subfolders to macOS Trash without exposing permanent or workspace-root deletion
+- opening independent workspaces in multiple windows through the workspace menu or `Command-N`
+- routing each additional Finder/file-association request to a new window in the same LocalView process
 - opening a `.md` or `.html` file from Finder and selecting it inside its folder context
 - Markdown source editing with CodeMirror 6
 - Markdown Edit / Split / Preview modes
-- `Command-S` saving to the original file
+- 600 ms idle auto-save to the original file, with `Command-S` immediate flush
 - unsaved-state indication and protection against silent overwrite
 - HTML Source / Split / Preview modes
 - relative HTML CSS, image, font, and JavaScript resources
@@ -83,9 +87,12 @@ Keep renderer selection explicit by file kind so future renderers can be added w
 
 - never silently discard unsaved edits
 - never silently overwrite a file changed externally
+- keep workspace roots, watchers, resource scopes, HTML capabilities, Quick Look state, sessions, save/close flows, and emitted events isolated by caller window; never reintroduce an app-global workspace capability
+- treat application quit as a two-phase all-window save/discard transaction; cancelling one window must preserve all windows and dirty content
 - do not expose Tauri commands to arbitrary HTML preview content
 - keep HTML preview sandboxed
 - normalize and validate paths
+- reserve `.DS_Store`, internal `.localview-*.tmp` names, and iWork bundle suffixes for folder creation
 - do not recursively scan the entire workspace on startup
 - ignore `.DS_Store`; hidden-file behavior should be deliberate
 

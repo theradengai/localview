@@ -12,3 +12,4 @@ Keep these elements:
 - minimal black and white aesthetic
 
 The production app should preserve this interaction model while replacing mock data with the real filesystem.
+
