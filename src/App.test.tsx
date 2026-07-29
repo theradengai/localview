@@ -63,7 +63,7 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
   return {
     ...actual,
     EditorView,
-    default: ({
+    default: React.forwardRef(({
       value,
       onChange,
       editable = true,
@@ -73,9 +73,44 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
       onChange?: (value: string) => void;
       editable?: boolean;
       extensions?: Array<{ __domEventHandlers?: Record<string, (...args: any[]) => boolean> }>;
-    }) => {
+    }, forwardedRef) => {
       const [document, setDocument] = React.useState(value);
       const handlers = extensions.find((extension) => extension?.__domEventHandlers)?.__domEventHandlers;
+      const view = React.useMemo(() => {
+        const doc = {
+          length: document.length,
+          toString: () => document,
+          eq: (other: unknown) => other === doc,
+          lineAt: (position: number) => {
+            const safe = Math.max(0, Math.min(position, document.length));
+            const from = document.lastIndexOf('\n', safe - 1) + 1;
+            const nextBreak = document.indexOf('\n', safe);
+            const to = nextBreak === -1 ? document.length : nextBreak;
+            return { from, to, text: document.slice(from, to) };
+          },
+        };
+        const selection = {
+          ranges: [{}],
+          main: {
+            anchor: 0,
+            head: Math.min(1, document.length),
+            from: 0,
+            to: Math.min(1, document.length),
+            empty: document.length === 0,
+          },
+          eq: (other: unknown) => other === selection,
+        };
+        return {
+          state: {
+            doc,
+            selection,
+            sliceDoc: (from: number, to: number) => document.slice(from, to),
+          },
+          dispatch: vi.fn(),
+          focus: vi.fn(),
+        };
+      }, [document]);
+      React.useImperativeHandle(forwardedRef, () => ({ view }), [view]);
       return <>
         <textarea
           aria-label="editor"
@@ -91,31 +126,6 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
           data-testid="mock-markdown-context"
           style={{ display: 'none' }}
           onClick={() => {
-            const doc = {
-              toString: () => document,
-              eq: (other: unknown) => other === doc,
-            };
-            const selection = {
-              ranges: [{}],
-              main: {
-                anchor: 0,
-                head: Math.min(1, document.length),
-                from: 0,
-                to: Math.min(1, document.length),
-                empty: document.length === 0,
-              },
-              eq: (other: unknown) => other === selection,
-            };
-            const view = {
-              state: {
-                doc,
-                selection,
-                sliceDoc: (from: number, to: number) => document.slice(from, to),
-              },
-              posAtCoords: () => 0,
-              dispatch: vi.fn(),
-              focus: vi.fn(),
-            };
             handlers.contextmenu({
               shiftKey: false,
               clientX: 20,
@@ -125,7 +135,7 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
           }}
         /> : null}
       </>;
-    },
+    }),
   };
 });
 
@@ -1508,13 +1518,13 @@ describe('autosave, live tree, Trash, and session lifecycle', () => {
     expect(screen.getByText('workspace / plan.md')).toBeTruthy();
   });
 
-  it('closes tree and project menus when the Markdown style menu opens', async () => {
+  it('closes tree and project menus when the Markdown table tools open', async () => {
     mocks.desktop = true;
     mocks.readTextFile.mockResolvedValue({ content: '# plan', version: 'v1' });
     render(<App />);
     await screen.findByText('workspace / plan.md');
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
-    const trigger = await screen.findByTestId('mock-markdown-context');
+    const trigger = await screen.findByRole('button', { name: '表格' });
 
     fireEvent.contextMenu(screen.getByRole('button', { name: 'plan.md' }), {
       clientX: 80,
@@ -1522,12 +1532,14 @@ describe('autosave, live tree, Trash, and session lifecycle', () => {
     });
     expect(screen.getByRole('menuitem', { name: '移到废纸篓' })).toBeTruthy();
     fireEvent.click(trigger);
+    expect(await screen.findByRole('menu', { name: 'Markdown 表格' })).toBeTruthy();
     expect(screen.queryByRole('menuitem', { name: '移到废纸篓' })).toBeNull();
 
     fireEvent.keyDown(window, { key: 'Escape' });
     fireEvent.click(screen.getByRole('button', { name: '工作区菜单' }));
     expect(screen.getByRole('menuitem', { name: '重新载入目录' })).toBeTruthy();
     fireEvent.click(trigger);
+    expect(await screen.findByRole('menu', { name: 'Markdown 表格' })).toBeTruthy();
     expect(screen.queryByRole('menuitem', { name: '重新载入目录' })).toBeNull();
   });
 

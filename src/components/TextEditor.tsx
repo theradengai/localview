@@ -1,7 +1,9 @@
 import {
+  forwardRef,
   memo,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -18,6 +20,7 @@ import type { FileKind } from '../lib/desktop';
 import {
   applyMarkdownCommand,
   getMarkdownCommandAvailability,
+  inspectMarkdownInlineStyleSelection,
   isMarkdownTableCommand,
   parseEditableGfmTableRange,
   type MarkdownCommand,
@@ -32,7 +35,7 @@ import {
   createMarkdownLivePreviewExtension,
   type LivePreviewPresentation,
 } from '../lib/markdownLivePreview';
-import MarkdownContextMenu from './MarkdownContextMenu';
+import MarkdownTableMenu from './MarkdownTableMenu';
 import MarkdownSelectionToolbar, {
   type MarkdownSelectionToolbarHandle,
   type MarkdownToolbarAnchor,
@@ -50,6 +53,12 @@ type Props = {
   onMarkdownOverlayOpen?: () => void;
 };
 
+export type MarkdownTableToolsAnchor = { x: number; y: number };
+
+export type TextEditorHandle = {
+  openMarkdownTableTools: (anchor: MarkdownTableToolsAnchor) => boolean;
+};
+
 type SurfaceSnapshot = {
   key: string;
   documentKey: string;
@@ -58,7 +67,7 @@ type SurfaceSnapshot = {
   context: MarkdownCommandContext;
 };
 
-type MenuSnapshot = SurfaceSnapshot & { x: number; y: number };
+type TableMenuSnapshot = SurfaceSnapshot & { x: number; y: number };
 type ToolbarState = { snapshot: SurfaceSnapshot; anchor: MarkdownToolbarAnchor };
 
 const TABLE_MAX_CHARACTERS = 64 * 1024;
@@ -69,7 +78,7 @@ const BASIC_SETUP = {
   highlightActiveLine: false,
 } as const;
 
-function TextEditor({
+const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   documentKey,
   kind,
   value,
@@ -79,15 +88,16 @@ function TextEditor({
   resolveMarkdownImageSource,
   onChange,
   onMarkdownOverlayOpen,
-}: Props) {
+}: Props, forwardedRef) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
-  const menuSnapshotRef = useRef<MenuSnapshot | null>(null);
+  const tableMenuSnapshotRef = useRef<TableMenuSnapshot | null>(null);
   const toolbarSnapshotRef = useRef<SurfaceSnapshot | null>(null);
   const toolbarStateRef = useRef<ToolbarState | null>(null);
   const toolbarRef = useRef<MarkdownSelectionToolbarHandle>(null);
   const focusFrameRef = useRef<number | null>(null);
   const toolbarMeasureKeyRef = useRef({});
   const pointerGestureRef = useRef(false);
+  const contextMenuSuppressedRef = useRef(false);
   const composingRef = useRef(false);
   const sequenceRef = useRef(0);
   const latestRef = useRef({
@@ -102,7 +112,7 @@ function TextEditor({
     editable,
     onMarkdownOverlayOpen,
   };
-  const [menu, setMenu] = useState<MenuSnapshot | null>(null);
+  const [tableMenu, setTableMenu] = useState<TableMenuSnapshot | null>(null);
   const [toolbar, setToolbar] = useState<ToolbarState | null>(null);
 
   const cancelFocusFrame = useCallback(() => {
@@ -121,9 +131,9 @@ function TextEditor({
     });
   }, [cancelFocusFrame]);
 
-  const closeMenu = useCallback((restoreFocus = true) => {
-    menuSnapshotRef.current = null;
-    setMenu(null);
+  const closeTableMenu = useCallback((restoreFocus = true) => {
+    tableMenuSnapshotRef.current = null;
+    setTableMenu(null);
     if (restoreFocus) restoreEditorFocus();
   }, [restoreEditorFocus]);
 
@@ -164,6 +174,23 @@ function TextEditor({
         selectedText: view.state.sliceDoc(main.from, main.to),
         contextPosition,
         table,
+        inlineStyle: (() => {
+          const line = view.state.doc.lineAt(main.from);
+          if (main.to > line.to) return {
+            highlightSafe: false,
+            colorSafe: false,
+            directColor: null,
+          };
+          const inspected = inspectMarkdownInlineStyleSelection(
+            line.text,
+            { anchor: main.anchor - line.from, head: main.head - line.from },
+          );
+          return {
+            highlightSafe: inspected.highlightSafe,
+            colorSafe: inspected.colorSafe,
+            directColor: inspected.directColor,
+          };
+        })(),
       },
     };
   }, []);
@@ -175,6 +202,7 @@ function TextEditor({
       || !current.editable
       || selection.ranges.length !== 1
       || selection.main.empty
+      || contextMenuSuppressedRef.current
       || composingRef.current
       || view.composing
       || view.compositionStarted) {
@@ -229,6 +257,7 @@ function TextEditor({
           || latestRef.current.kind !== 'md'
           || currentView.state.doc !== snapshot.doc
           || !currentView.state.selection.eq(snapshot.selection)
+          || contextMenuSuppressedRef.current
           || composingRef.current
           || currentView.composing
           || currentView.compositionStarted) {
@@ -255,51 +284,32 @@ function TextEditor({
     });
   }, [closeToolbar, createSurfaceSnapshot]);
 
-  const openMenu = useCallback((
-    view: EditorView,
-    x: number,
-    y: number,
-    contextPosition: number,
-  ) => {
+  const openMarkdownTableTools = useCallback((anchor: MarkdownTableToolsAnchor) => {
+    const view = editorRef.current?.view;
     const current = latestRef.current;
-    const baseSnapshot = createSurfaceSnapshot(view, contextPosition);
+    if (!view || current.kind !== 'md' || !current.editable) return false;
+    const baseSnapshot = createSurfaceSnapshot(view, view.state.selection.main.head);
     if (!baseSnapshot) return false;
     cancelFocusFrame();
     closeToolbar(false);
     current.onMarkdownOverlayOpen?.();
-    const snapshot: MenuSnapshot = {
-      ...baseSnapshot,
-      x,
-      y,
-    };
-    menuSnapshotRef.current = snapshot;
-    setMenu(snapshot);
+    const snapshot: TableMenuSnapshot = { ...baseSnapshot, ...anchor };
+    tableMenuSnapshotRef.current = snapshot;
+    setTableMenu(snapshot);
     return true;
   }, [cancelFocusFrame, closeToolbar, createSurfaceSnapshot]);
 
-  const markdownContextExtension = useMemo(() => {
+  useImperativeHandle(forwardedRef, () => ({ openMarkdownTableTools }), [openMarkdownTableTools]);
+
+  const markdownInteractionExtension = useMemo(() => {
     if (kind !== 'md' || !editable) return [];
     return EditorView.domEventHandlers({
-      contextmenu(event, view) {
-        if (event.shiftKey) {
-          closeToolbar(false);
-          return false;
-        }
-        if (view.state.selection.ranges.length !== 1) return false;
+      contextmenu() {
+        contextMenuSuppressedRef.current = true;
         closeToolbar(false);
-        const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
-        if (position === null) return false;
-        const selection = view.state.selection.main;
-        if (selection.empty || position < selection.from || position >= selection.to) {
-          view.dispatch({
-            selection: EditorSelection.cursor(position),
-            userEvent: 'select.pointer',
-          });
-        }
-        event.preventDefault();
-        return openMenu(view, event.clientX, event.clientY, position);
+        return false;
       },
-      keydown(event, view) {
+      keydown(event) {
         if (event.altKey && event.key === 'F10' && toolbarStateRef.current) {
           const focused = toolbarRef.current?.focusFirst() ?? false;
           if (focused) event.preventDefault();
@@ -307,14 +317,23 @@ function TextEditor({
         }
         const isContextKey = event.key === 'ContextMenu'
           || (event.key === 'F10' && event.shiftKey);
-        if (!isContextKey || view.state.selection.ranges.length !== 1) return false;
-        const coordinates = view.coordsAtPos(view.state.selection.main.head);
-        if (!coordinates) return false;
-        event.preventDefault();
-        return openMenu(view, coordinates.left, coordinates.bottom, view.state.selection.main.head);
+        if (isContextKey) {
+          contextMenuSuppressedRef.current = true;
+          closeToolbar(false);
+        } else {
+          contextMenuSuppressedRef.current = false;
+        }
+        return false;
       },
       pointerdown(event) {
-        if (event.button !== 0) return false;
+        if (event.button !== 0) {
+          if (event.button === 2) {
+            contextMenuSuppressedRef.current = true;
+            closeToolbar(false);
+          }
+          return false;
+        }
+        contextMenuSuppressedRef.current = false;
         pointerGestureRef.current = true;
         closeToolbar(false);
         return false;
@@ -338,7 +357,7 @@ function TextEditor({
         return false;
       },
     });
-  }, [closeToolbar, editable, kind, openMenu, scheduleToolbarMeasure]);
+  }, [closeToolbar, editable, kind, scheduleToolbarMeasure]);
 
   const livePreviewExtension = useMemo(
     () => kind === 'md' && markdownPresentation === 'live'
@@ -355,31 +374,32 @@ function TextEditor({
         MARKDOWN_GFM_EXTENSION,
         EditorView.lineWrapping,
         livePreviewExtension,
-        markdownContextExtension,
+        markdownInteractionExtension,
       ]
       : kind === 'html'
         ? [html()]
         : [],
-    [kind, livePreviewExtension, markdownContextExtension],
+    [kind, livePreviewExtension, markdownInteractionExtension],
   );
 
-  const handleUpdate = useCallback((update: ViewUpdate) => {
-    const snapshot = menuSnapshotRef.current;
+  const handleTableMenuUpdate = useCallback((update: ViewUpdate) => {
+    const snapshot = tableMenuSnapshotRef.current;
     if (!snapshot) return;
     if (update.docChanged || !update.state.selection.eq(snapshot.selection)) {
-      closeMenu();
+      closeTableMenu();
     }
-  }, [closeMenu]);
+  }, [closeTableMenu]);
 
   const handleEditorUpdate = useCallback((update: ViewUpdate) => {
-    handleUpdate(update);
+    handleTableMenuUpdate(update);
     if (update.docChanged) {
       closeToolbar(false);
       return;
     }
     if (update.selectionSet) {
-      if (menuSnapshotRef.current) closeMenu(false);
-      if (pointerGestureRef.current
+      if (tableMenuSnapshotRef.current) closeTableMenu(false);
+      if (contextMenuSuppressedRef.current
+        || pointerGestureRef.current
         || composingRef.current
         || update.view.composing
         || update.view.compositionStarted) closeToolbar(false);
@@ -389,7 +409,7 @@ function TextEditor({
     if ((update.viewportChanged || update.geometryChanged) && toolbarSnapshotRef.current) {
       scheduleToolbarMeasure(update.view);
     }
-  }, [closeMenu, closeToolbar, handleUpdate, scheduleToolbarMeasure]);
+  }, [closeTableMenu, closeToolbar, handleTableMenuUpdate, scheduleToolbarMeasure]);
 
   const applySnapshotCommand = useCallback((
     snapshot: SurfaceSnapshot,
@@ -415,10 +435,10 @@ function TextEditor({
     if (!result) return false;
 
     cancelFocusFrame();
-    menuSnapshotRef.current = null;
+    tableMenuSnapshotRef.current = null;
     toolbarSnapshotRef.current = null;
     toolbarStateRef.current = null;
-    setMenu(null);
+    setTableMenu(null);
     setToolbar(null);
     view.dispatch({
       changes: result.change,
@@ -430,15 +450,15 @@ function TextEditor({
     return true;
   }, [cancelFocusFrame]);
 
-  const handleMenuCommand = useCallback((
+  const handleTableMenuCommand = useCallback((
     command: MarkdownCommand,
     argument?: MarkdownCommandArgument,
   ) => {
-    const snapshot = menuSnapshotRef.current;
+    const snapshot = tableMenuSnapshotRef.current;
     if (snapshot && applySnapshotCommand(snapshot, command, argument)) return true;
-    closeMenu();
+    closeTableMenu();
     return false;
-  }, [applySnapshotCommand, closeMenu]);
+  }, [applySnapshotCommand, closeTableMenu]);
 
   const handleToolbarCommand = useCallback((
     command: MarkdownCommand,
@@ -449,11 +469,12 @@ function TextEditor({
   }, [applySnapshotCommand]);
 
   useEffect(() => {
-    closeMenu(false);
+    closeTableMenu(false);
     closeToolbar(false);
     composingRef.current = false;
     pointerGestureRef.current = false;
-  }, [closeMenu, closeToolbar, documentKey, editable, kind, markdownPresentation]);
+    contextMenuSuppressedRef.current = false;
+  }, [closeTableMenu, closeToolbar, documentKey, editable, kind, markdownPresentation]);
 
   useEffect(() => {
     if (kind !== 'md' || !editable) return;
@@ -484,17 +505,17 @@ function TextEditor({
   }, [closeToolbar, editable, kind, scheduleToolbarMeasure]);
 
   useEffect(() => {
-    if (!menu) return;
+    if (!tableMenu) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Node
-        && document.querySelector('.markdown-context-menu')?.contains(target)) return;
-      closeMenu();
+        && document.querySelector('.markdown-table-menu')?.contains(target)) return;
+      closeTableMenu();
     };
-    const handleScroll = () => closeMenu();
-    const handleResize = () => closeMenu();
+    const handleScroll = () => closeTableMenu();
+    const handleResize = () => closeTableMenu();
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeMenu();
+      if (event.key === 'Escape') closeTableMenu();
     };
     window.addEventListener('pointerdown', handlePointerDown, true);
     window.addEventListener('scroll', handleScroll, true);
@@ -506,7 +527,7 @@ function TextEditor({
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [closeMenu, menu]);
+  }, [closeTableMenu, tableMenu]);
 
   useEffect(() => {
     if (!toolbar) return;
@@ -540,12 +561,14 @@ function TextEditor({
 
   useEffect(() => () => {
     cancelFocusFrame();
-    menuSnapshotRef.current = null;
+    tableMenuSnapshotRef.current = null;
     toolbarSnapshotRef.current = null;
     toolbarStateRef.current = null;
   }, [cancelFocusFrame]);
 
-  const availability = menu ? getMarkdownCommandAvailability(menu.context) : null;
+  const tableAvailability = tableMenu
+    ? getMarkdownCommandAvailability(tableMenu.context)
+    : null;
 
   return <div
     className="editor-pane"
@@ -563,23 +586,24 @@ function TextEditor({
       basicSetup={BASIC_SETUP}
     />
     {hint ? <div className="save-hint">{hint}</div> : null}
-    {menu && availability ? <MarkdownContextMenu
-      key={menu.key}
-      x={menu.x}
-      y={menu.y}
-      availability={availability}
-      onCommand={handleMenuCommand}
-      onClose={closeMenu}
+    {tableMenu && tableAvailability ? <MarkdownTableMenu
+      key={tableMenu.key}
+      x={tableMenu.x}
+      y={tableMenu.y}
+      availability={tableAvailability}
+      onCommand={handleTableMenuCommand}
+      onClose={closeTableMenu}
     /> : null}
     {toolbar ? <MarkdownSelectionToolbar
       ref={toolbarRef}
       key={toolbar.snapshot.key}
       anchor={toolbar.anchor}
       availability={getMarkdownCommandAvailability(toolbar.snapshot.context)}
+      activeColor={toolbar.snapshot.context.inlineStyle?.directColor?.color ?? null}
       onCommand={handleToolbarCommand}
       onClose={() => closeToolbar(true)}
     /> : null}
   </div>;
-}
+});
 
 export default memo(TextEditor);

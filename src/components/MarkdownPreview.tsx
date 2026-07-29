@@ -4,6 +4,9 @@ import remarkGfm from 'remark-gfm';
 import {
   resolveMarkdownAssetSource,
 } from '../lib/desktop';
+import { remarkLocalInlineStyles } from '../lib/markdownInlineStyles';
+
+const LOCALVIEW_REMARK_PLUGINS = [remarkGfm, remarkLocalInlineStyles];
 
 type Props = {
   content: string;
@@ -28,7 +31,7 @@ function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope 
   }), [assetScope, desktop, rootPath, selectedPath]);
 
   return <div className="preview-pane markdown-body">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={LOCALVIEW_REMARK_PLUGINS} components={components}>{content}</ReactMarkdown>
   </div>;
 }
 

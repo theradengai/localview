@@ -148,6 +148,42 @@ describe('Markdown Live Preview decorations', () => {
     editor.destroy();
   });
 
+  it('renders exact LocalView highlight and color pairs and reveals nested source when active', () => {
+    const source = '<span data-localview-color="blue"><mark>bright **bold**</mark></span> after';
+    const editor = mountLiveEditor(source, source.length);
+    expect(editor.parent.querySelector('.cm-live-color-blue')).toBeTruthy();
+    expect(editor.parent.querySelector('.cm-live-highlight')).toBeTruthy();
+    expect(editor.view.dom.textContent).not.toContain('<mark>');
+    expect(editor.view.dom.textContent).not.toContain('data-localview-color');
+
+    const bright = source.indexOf('bright');
+    editor.view.dispatch({ selection: { anchor: bright + 2 } });
+    expect(editor.view.dom.textContent).toContain('<mark>bright bold</mark>');
+    expect(editor.view.dom.textContent).toContain('<span data-localview-color="blue">');
+    expect(editor.parent.querySelector('.cm-live-highlight')).toBeNull();
+    expect(editor.parent.querySelector('.cm-live-color-blue')).toBeNull();
+    expect(editor.view.state.doc.toString()).toBe(source);
+    expect(editor.updates).toHaveLength(0);
+    editor.destroy();
+  });
+
+  it('fails closed for LocalView tags in code, malformed pairs, and unknown colors', () => {
+    const fixtures = [
+      '`<mark>code</mark>`',
+      '<mark>unclosed',
+      '<mark><span data-localview-color="red">cross</mark></span>',
+      '<span data-localview-color="pink">unknown</span>',
+    ];
+    fixtures.forEach((source) => {
+      const editor = mountLiveEditor(source, source.length);
+      expect(editor.parent.querySelector('.cm-live-highlight')).toBeNull();
+      expect(editor.parent.querySelector('[class*="cm-live-color-"]')).toBeNull();
+      expect(editor.view.state.doc.toString()).toBe(source);
+      expect(editor.updates).toHaveLength(0);
+      editor.destroy();
+    });
+  });
+
   it('reveals nested ancestor markers at endpoints and keeps sibling syntax rendered', () => {
     const source = '**bold *italic*** and ~~sibling~~';
     const editor = mountLiveEditor(source, source.indexOf('italic') + 2);

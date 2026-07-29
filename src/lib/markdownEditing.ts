@@ -1,3 +1,10 @@
+import {
+  inspectLocalInlineStyleSelection,
+  MARKDOWN_INLINE_COLORS,
+  type LocalInlineStyleSelection,
+  type MarkdownInlineColorToken,
+} from './markdownInlineStyles';
+
 export type MarkdownCommand =
   | 'heading1'
   | 'heading2'
@@ -14,6 +21,8 @@ export type MarkdownCommand =
   | 'taskList'
   | 'clearList'
   | 'link'
+  | 'highlight'
+  | 'fontColor'
   | 'insertTable'
   | 'tableAddRowAbove'
   | 'tableAddRowBelow'
@@ -43,6 +52,8 @@ export const MARKDOWN_COMMANDS: MarkdownCommand[] = [
   'taskList',
   'clearList',
   'link',
+  'highlight',
+  'fontColor',
   'insertTable',
   'tableAddRowAbove',
   'tableAddRowBelow',
@@ -70,7 +81,8 @@ export type MarkdownChange = {
 
 export type MarkdownCommandArgument =
   | { url: string }
-  | { columns: number; rows: number };
+  | { columns: number; rows: number }
+  | { color: MarkdownInlineColorToken | null };
 
 export type MarkdownCommandContext = {
   selection: MarkdownSelection;
@@ -78,6 +90,10 @@ export type MarkdownCommandContext = {
   selectedText: string;
   contextPosition: number;
   table: GfmTableModel | null;
+  inlineStyle?: Pick<
+    LocalInlineStyleSelection,
+    'highlightSafe' | 'colorSafe' | 'directColor'
+  >;
 };
 
 export type MarkdownCommandInput = MarkdownCommandContext & {
@@ -177,6 +193,99 @@ function lineAt(source: string, position: number): LineInfo {
   const nextBreak = source.indexOf('\n', safePosition);
   const to = nextBreak === -1 ? source.length : nextBreak;
   return { from, to, text: source.slice(from, to) };
+}
+
+export function inspectMarkdownInlineStyleSelection(
+  source: string,
+  selection: MarkdownSelection,
+): LocalInlineStyleSelection {
+  const { from, to } = orderedSelection(selection);
+  if (from === to || source.slice(from, to).includes('\n')) {
+    return {
+      highlightSafe: false,
+      colorSafe: false,
+      directHighlight: null,
+      directColor: null,
+    };
+  }
+  const line = lineAt(source, from);
+  if (to > line.to) {
+    return {
+      highlightSafe: false,
+      colorSafe: false,
+      directHighlight: null,
+      directColor: null,
+    };
+  }
+  return inspectLocalInlineStyleSelection(
+    source.slice(line.from, line.to),
+    from - line.from,
+    to - line.from,
+  );
+}
+
+function transformLocalInlineStyle(
+  source: string,
+  selection: MarkdownSelection,
+  kind: 'highlight' | 'color',
+  argument?: MarkdownCommandArgument,
+): MarkdownEditResult | null {
+  const ordered = orderedSelection(selection);
+  const { from, to, reversed } = ordered;
+  if (from === to || source.slice(from, to).includes('\n')) return null;
+  const line = lineAt(source, from);
+  if (to > line.to) return null;
+  const localFrom = from - line.from;
+  const localTo = to - line.from;
+  const inspection = inspectLocalInlineStyleSelection(
+    source.slice(line.from, line.to),
+    localFrom,
+    localTo,
+  );
+  const content = source.slice(from, to);
+
+  if (kind === 'highlight') {
+    if (!inspection.highlightSafe) return null;
+    const direct = inspection.directHighlight;
+    if (direct) {
+      const changeFrom = line.from + direct.from;
+      return {
+        change: { from: changeFrom, to: line.from + direct.to, insert: content },
+        selection: orientedSelection(changeFrom, changeFrom + content.length, reversed),
+      };
+    }
+    const open = '<mark>';
+    return {
+      change: { from, to, insert: `${open}${content}</mark>` },
+      selection: orientedSelection(from + open.length, from + open.length + content.length, reversed),
+    };
+  }
+
+  if (!inspection.colorSafe
+    || !argument
+    || !('color' in argument)
+    || (argument.color !== null && !(argument.color in MARKDOWN_INLINE_COLORS))) return null;
+  const direct = inspection.directColor;
+  if (direct) {
+    if (argument.color === direct.color) return null;
+    const changeFrom = line.from + direct.from;
+    const replacement = argument.color === null
+      ? content
+      : `<span data-localview-color="${argument.color}">${content}</span>`;
+    const selectionFrom = argument.color === null
+      ? changeFrom
+      : changeFrom + `<span data-localview-color="${argument.color}">`.length;
+    return {
+      change: { from: changeFrom, to: line.from + direct.to, insert: replacement },
+      selection: orientedSelection(selectionFrom, selectionFrom + content.length, reversed),
+    };
+  }
+  if (argument.color === null) return null;
+  const open = `<span data-localview-color="${argument.color}">`;
+  return {
+    change: { from, to, insert: `${open}${content}</span>` },
+    selection: orientedSelection(from + open.length, from + open.length + content.length, reversed),
+  };
 }
 
 function selectedLineRange(source: string, selection: MarkdownSelection) {
@@ -820,13 +929,19 @@ export function getMarkdownCommandAvailability(input: MarkdownCommandContext) {
   availability.strikethrough = singleLine;
   availability.inlineCode = singleLine;
   availability.link = singleLine;
+  availability.highlight = singleLine
+    && !empty
+    && (input.inlineStyle?.highlightSafe ?? true);
+  availability.fontColor = singleLine
+    && !empty
+    && (input.inlineStyle?.colorSafe ?? true);
   availability.blockquote = true;
   availability.codeBlock = true;
   availability.unorderedList = true;
   availability.orderedList = true;
   availability.taskList = true;
   availability.clearList = true;
-  availability.insertTable = empty;
+  availability.insertTable = empty && !input.table;
 
   const table = input.table;
   if (!table) return availability;
@@ -868,6 +983,12 @@ export function applyMarkdownCommand(input: MarkdownCommandInput): MarkdownEditR
   else if (input.command === 'taskList') result = transformList(source, input.selection, 'task');
   else if (input.command === 'clearList') result = transformList(source, input.selection, 'clear');
   else if (input.command === 'link') result = transformLink(source, input.selection, input.argument);
+  else if (input.command === 'highlight') {
+    result = transformLocalInlineStyle(source, input.selection, 'highlight', input.argument);
+  }
+  else if (input.command === 'fontColor') {
+    result = transformLocalInlineStyle(source, input.selection, 'color', input.argument);
+  }
   else if (input.command === 'insertTable') result = insertTable(source, input.selection, input.argument);
 
   if (!result

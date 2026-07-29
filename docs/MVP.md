@@ -73,9 +73,9 @@ Support:
 - Source-preserving Live Preview in Edit mode: CodeMirror still owns and saves the original Markdown bytes while inactive syntax is rendered through reversible decorations
 - Edit / Split / Preview modes; Split is the full reading preview on the left and softly wrapped raw Markdown source on the right
 - Preview as the default mode whenever a Markdown file is opened
-- Context-menu formatting in Edit and Split for headings, paragraph text, inline styles, links, quotes, code blocks, and lists
-- Compact single-line formatting toolbar after a non-empty selection, without stealing editor focus; table insertion and table structure actions remain in the full right-click menu
-- `Shift` + right-click preserves the native macOS context menu
+- Compact single-line formatting toolbar after a non-empty selection, without stealing editor focus; it is the only LocalView Markdown formatting surface and includes source styles, highlight, six fixed font colors, links, quotes, code blocks, and lists
+- Native operating-system context menus for ordinary right-click, `Shift` + right-click, the Context Menu key, and `Shift` + `F10`; LocalView does not intercept those paths for formatting
+- Document-toolbar **表格** control in Edit and Split for table insertion and table structure actions
 - GFM table insertion plus bounded top-level row, column, and alignment editing
 - Save back to original file
 - Auto-save after 600 ms of editing idle time; `Command-S` flushes immediately
@@ -89,7 +89,7 @@ Support:
 
 Live Preview does not introduce a second rich-text document model. It renders headings, emphasis, links, quotes, lists, tasks, fenced code, images, bounded top-level tables, and thematic breaks directly over Markdown source; entering an active structure reveals its source again. Unknown, malformed, nested, or oversized structures fail closed to source. Table widget cells are plain text in Live Preview, while the complete Markdown rendering remains available in Preview and Split.
 
-Both formatting surfaces transform Markdown source in one undoable editor transaction. The automatic selection toolbar provides common text and list actions plus links. GFM table insertion and strict top-level row, column, deletion, and alignment actions remain in the full right-click menu. `Shift` + right-click always leaves the native macOS context-menu path available.
+The automatic selection toolbar transforms Markdown source in one undoable editor transaction and provides common text and list actions, links, highlight, and six fixed font colors. Highlight uses exact `<mark>...</mark>` source; color uses exact `<span data-localview-color="red|orange|green|blue|purple|gray">...</span>` source. Only balanced LocalView-owned pairs within the parser bounds render specially; arbitrary raw HTML remains escaped, and malformed, unknown, crossing, nested-too-deep, or oversized markers fail closed to editable source. GFM table insertion and strict top-level row, column, deletion, and alignment actions are opened by the document-toolbar **表格** control in Edit and Split. Every mouse and keyboard context-menu path remains native.
 
 Creation is limited to empty Markdown files and ordinary folders. Other file types, rename, move, and copy are outside this MVP. Files and workspace subfolders may be moved to Trash, but permanent deletion and workspace-root deletion are unavailable. On desktop the selected action is created immediately; Markdown edits then auto-save after 600 ms and `Command-S` flushes immediately. Folder creation leaves the current document and dirty editor untouched. The browser demo mirrors these interactions only in memory.
 

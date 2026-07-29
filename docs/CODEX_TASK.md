@@ -20,8 +20,8 @@ Do not start over. Audit the existing React/Tauri implementation, keep working p
 6. `plan.md` is selected.
 7. Markdown opens in Preview; Edit and Split require an explicit user action for the current file.
 8. Edit uses source-preserving Live Preview. Split keeps the full preview on the left and softly wrapped raw source on the right. Editing schedules a single auto-save after 600 ms of idle time.
-9. Selecting text shows a compact horizontal Markdown toolbar without moving focus or collapsing the selection. A normal right-click opens the full source-formatting menu; `Shift` + right-click retains the native macOS menu.
-10. Each toolbar, context-menu, task-checkbox, or GFM table action is one CodeMirror transaction, one undo step, one preview update, and one auto-save update.
+9. Selecting text shows the only LocalView Markdown formatting surface: a compact horizontal toolbar with source styles, highlight, and fixed font colors, without moving focus or collapsing the selection. Ordinary right-click, `Shift` + right-click, the Context Menu key, and `Shift` + `F10` remain native operating-system paths.
+10. Each selection-toolbar, task-checkbox, or document-toolbar GFM table action is one CodeMirror transaction, one undo step, one preview update, and one auto-save update.
 11. Auto-save writes the exact latest content to the original file; `Command-S` flushes immediately.
 12. The status bar shows **等待自动保存 / 正在保存 / 已保存** or a terminal conflict, missing-file, or error state.
 
@@ -123,10 +123,10 @@ Required:
 - GitHub-flavored tables and task lists
 - Edit as source-preserving Live Preview; Split as left full preview plus right softly wrapped raw source; Preview as the default reading mode
 - relative images
-- automatic single-line formatting toolbar for non-empty selections, with headings, paragraph, inline styles, links, quotes, fenced code, and lists
-- right-click source formatting for headings, paragraph, bold, italic, strikethrough, inline code, links, quotes, fenced code, and lists
-- `Shift` + right-click native-menu fallback
-- bounded GFM table insertion and strict top-level row, column, deletion, and alignment operations
+- automatic single-line formatting toolbar for non-empty selections, with headings, paragraph, inline styles, highlight, six fixed font colors, links, quotes, fenced code, and lists
+- exact `<mark>...</mark>` highlight source and exact `<span data-localview-color="red|orange|green|blue|purple|gray">...</span>` color source, with bounded balanced-pair parsing and arbitrary raw HTML kept escaped
+- native operating-system menus for ordinary right-click, `Shift` + right-click, the Context Menu key, and `Shift` + `F10`
+- document-toolbar **表格** control in Edit and Split for bounded GFM table insertion and strict top-level row, column, deletion, and alignment operations
 - one transaction and one undo step per formatting action
 - 600 ms idle auto-save with `Command-S` immediate flush
 - line count
@@ -264,7 +264,7 @@ If Safe Preview and Interactive Preview are added, Interactive Preview may allow
 - Split keeps the preview on the left and a vertically scrolling, softly wrapped source editor on the right without ordinary paragraph-level horizontal scrolling
 - a 3-column × 2-data-row GFM table can be inserted without overwriting surrounding text
 - strict top-level tables support safe row, column, alignment, and table deletion; malformed or nested tables are left unchanged
-- `Shift` + right-click opens the native menu, while HTML and plain text never receive the Markdown menu
+- ordinary right-click, `Shift` + right-click, the Context Menu key, and `Shift` + `F10` leave CodeMirror's native operating-system menu path untouched; HTML and plain text also receive no LocalView context menu
 - root and nested folder `+` menus create a new empty Markdown file or ordinary folder without overwriting existing entries
 - repeated `+` activation for one unloaded folder reuses one directory read; failure clears busy state and can be retried
 - workspace transitions wait for in-flight create/save mutations and ignore stale file, conflict-reload, poll, and folder responses

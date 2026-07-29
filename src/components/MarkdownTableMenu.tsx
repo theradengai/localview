@@ -10,7 +10,6 @@ import type {
   MarkdownCommand,
   MarkdownCommandArgument,
 } from '../lib/markdownEditing';
-import { normalizeMarkdownLinkUrl } from '../lib/markdownEditing';
 
 type Props = {
   x: number;
@@ -25,26 +24,6 @@ type MenuEntry = {
   label: string;
   destructive?: boolean;
 };
-
-const TEXT_ENTRIES: MenuEntry[] = [
-  { command: 'heading1', label: '标题 1' },
-  { command: 'heading2', label: '标题 2' },
-  { command: 'heading3', label: '标题 3' },
-  { command: 'paragraph', label: '段落' },
-  { command: 'bold', label: '粗体' },
-  { command: 'italic', label: '斜体' },
-  { command: 'strikethrough', label: '删除线' },
-  { command: 'inlineCode', label: '行内代码' },
-];
-
-const BLOCK_ENTRIES: MenuEntry[] = [
-  { command: 'blockquote', label: '引用' },
-  { command: 'codeBlock', label: '代码块' },
-  { command: 'unorderedList', label: '无序列表' },
-  { command: 'orderedList', label: '有序列表' },
-  { command: 'taskList', label: '任务列表' },
-  { command: 'clearList', label: '取消列表' },
-];
 
 const TABLE_ENTRIES: MenuEntry[] = [
   { command: 'tableAddRowAbove', label: '在上方添加行' },
@@ -91,12 +70,12 @@ function MenuButton({
     aria-disabled={!enabled}
     disabled={!enabled}
     tabIndex={-1}
-    className={`markdown-context-menu-item${entry.destructive ? ' destructive' : ''}`}
+    className={`markdown-table-menu-item${entry.destructive ? ' destructive' : ''}`}
     onClick={() => enabled && onCommand(entry.command)}
   >{entry.label}</button>;
 }
 
-export default function MarkdownContextMenu({
+export default function MarkdownTableMenu({
   x,
   y,
   availability,
@@ -104,14 +83,12 @@ export default function MarkdownContextMenu({
   onClose,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const linkInputRef = useRef<HTMLInputElement>(null);
   const tableGridRef = useRef<HTMLDivElement>(null);
-  const tableFocusFrameRef = useRef<number | null>(null);
+  const focusFrameRef = useRef<number | null>(null);
   const [position, setPosition] = useState({ x, y });
-  const [panel, setPanel] = useState<'main' | 'link' | 'table'>('main');
-  const [url, setUrl] = useState('');
-  const [linkError, setLinkError] = useState('');
+  const [panel, setPanel] = useState<'main' | 'size'>('main');
   const [tableSize, setTableSize] = useState({ columns: 3, rows: 2 });
+  const hasTableContext = TABLE_ENTRIES.some((entry) => availability[entry.command]);
 
   useLayoutEffect(() => {
     const menu = menuRef.current;
@@ -127,62 +104,35 @@ export default function MarkdownContextMenu({
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      if (panel === 'link') linkInputRef.current?.focus();
-      else if (panel === 'table') {
+      if (panel === 'size') {
         tableGridRef.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+      } else {
+        focusRovingMenuItem(menuRef.current, enabledMenuItems(menuRef.current)[0]);
       }
-      else focusRovingMenuItem(menuRef.current, enabledMenuItems(menuRef.current)[0]);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [panel]);
 
-  const cancelTableFocusFrame = () => {
-    if (tableFocusFrameRef.current === null) return;
-    window.cancelAnimationFrame(tableFocusFrameRef.current);
-    tableFocusFrameRef.current = null;
-  };
-
   const focusTableCell = (columns: number, rows: number) => {
-    cancelTableFocusFrame();
-    tableFocusFrameRef.current = window.requestAnimationFrame(() => {
-      tableFocusFrameRef.current = null;
+    if (focusFrameRef.current !== null) window.cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = window.requestAnimationFrame(() => {
+      focusFrameRef.current = null;
       tableGridRef.current
         ?.querySelector<HTMLElement>(`[data-table-cell="${columns}-${rows}"]`)
         ?.focus();
     });
   };
 
-  useEffect(() => () => cancelTableFocusFrame(), []);
+  useEffect(() => () => {
+    if (focusFrameRef.current !== null) window.cancelAnimationFrame(focusFrameRef.current);
+  }, []);
 
-  const execute = (command: MarkdownCommand, argument?: MarkdownCommandArgument) => {
-    onCommand(command, argument);
-  };
-
-  const openLink = () => {
-    if (!availability.link) return;
-    setPanel('link');
-    setLinkError('');
-  };
-
-  const submitLink = () => {
-    const normalized = normalizeMarkdownLinkUrl(url);
-    if (!normalized) {
-      setLinkError('请输入有效链接');
-      return;
-    }
-    if (!onCommand('link', { url: normalized })) setLinkError('当前选区已变化');
-  };
-
-  const submitTable = () => {
-    onCommand('insertTable', tableSize);
-  };
-
-  const handleMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      if (panel === 'main') onClose();
-      else setPanel('main');
+      if (panel === 'size') setPanel('main');
+      else onClose();
       return;
     }
     if (panel !== 'main') return;
@@ -201,12 +151,6 @@ export default function MarkdownContextMenu({
   };
 
   const handleTableKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      setPanel('main');
-      return;
-    }
     const delta = event.key === 'ArrowLeft'
       ? { columns: -1, rows: 0 }
       : event.key === 'ArrowRight'
@@ -226,56 +170,27 @@ export default function MarkdownContextMenu({
       focusTableCell(next.columns, next.rows);
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      submitTable();
+      onCommand('insertTable', tableSize);
     }
   };
 
-  const style = {
-    left: position.x,
-    top: position.y,
-  } satisfies CSSProperties;
-  const hasTableContext = TABLE_ENTRIES.some((entry) => availability[entry.command]);
+  const style = { left: position.x, top: position.y } satisfies CSSProperties;
 
   return <div
     ref={menuRef}
-    className="markdown-context-menu"
+    className="markdown-table-menu"
     role={panel === 'main' ? 'menu' : 'dialog'}
-    aria-label={panel === 'main' ? 'Markdown 样式' : panel === 'link' ? '插入链接' : '插入表格'}
+    aria-label={panel === 'main' ? 'Markdown 表格' : '插入表格'}
     style={style}
-    onKeyDown={handleMenuKeyDown}
+    onKeyDown={handleKeyDown}
   >
-    {panel === 'link' ? <div className="markdown-context-subpanel">
-      <div className="markdown-context-subpanel-head">
-        <button type="button" onClick={() => setPanel('main')} aria-label="返回样式菜单">‹</button>
-        <strong>插入链接</strong>
-      </div>
-      <input
-        ref={linkInputRef}
-        type="text"
-        value={url}
-        aria-label="链接地址"
-        aria-invalid={Boolean(linkError)}
-        placeholder="https:// 或相对路径"
-        onChange={(event) => {
-          setUrl(event.target.value);
-          setLinkError('');
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            submitLink();
-          }
-        }}
-      />
-      {linkError ? <span className="markdown-context-error" role="alert">{linkError}</span> : null}
-      <button type="button" className="markdown-context-primary" onClick={submitLink}>应用链接</button>
-    </div> : panel === 'table' ? <div
-      className="markdown-context-subpanel"
+    {panel === 'size' ? <div
+      className="markdown-table-subpanel"
       tabIndex={-1}
       onKeyDown={handleTableKeyDown}
     >
-      <div className="markdown-context-subpanel-head">
-        <button type="button" onClick={() => setPanel('main')} aria-label="返回样式菜单">‹</button>
+      <div className="markdown-table-subpanel-head">
+        <button type="button" onClick={() => setPanel('main')} aria-label="返回表格菜单">‹</button>
         <strong>插入表格</strong>
       </div>
       <div className="markdown-table-size-label" aria-live="polite">
@@ -293,61 +208,30 @@ export default function MarkdownContextMenu({
             data-table-cell={`${column + 1}-${row + 1}`}
             tabIndex={row === tableSize.rows - 1 && column === tableSize.columns - 1 ? 0 : -1}
             onMouseMove={() => setTableSize({ columns: column + 1, rows: row + 1 })}
-            onFocus={() => {
-              if (tableSize.columns !== column + 1 || tableSize.rows !== row + 1) {
-                setTableSize({ columns: column + 1, rows: row + 1 });
-              }
-            }}
+            onFocus={() => setTableSize({ columns: column + 1, rows: row + 1 })}
             onClick={() => onCommand('insertTable', { columns: column + 1, rows: row + 1 })}
           />;
         }))}
       </div>
     </div> : <>
-      <div className="markdown-context-menu-section">
-        {TEXT_ENTRIES.map((entry) => <MenuButton
-          key={entry.command}
-          entry={entry}
-          enabled={availability[entry.command]}
-          onCommand={execute}
-        />)}
-      </div>
-      <div className="markdown-context-menu-section">
-        {BLOCK_ENTRIES.map((entry) => <MenuButton
-          key={entry.command}
-          entry={entry}
-          enabled={availability[entry.command]}
-          onCommand={execute}
-        />)}
-      </div>
-      <div className="markdown-context-menu-section">
-        <button
-          type="button"
-          role="menuitem"
-          aria-disabled={!availability.link}
-          disabled={!availability.link}
-          tabIndex={-1}
-          className="markdown-context-menu-item"
-          onClick={openLink}
-        >插入链接…</button>
-        <button
-          type="button"
-          role="menuitem"
-          aria-disabled={!availability.insertTable}
-          disabled={!availability.insertTable}
-          tabIndex={-1}
-          className="markdown-context-menu-item"
-          onClick={() => availability.insertTable && setPanel('table')}
-        >插入表格…</button>
-      </div>
-      {hasTableContext ? <div className="markdown-context-menu-section table-actions">
+      {availability.insertTable ? <button
+        type="button"
+        role="menuitem"
+        tabIndex={-1}
+        className="markdown-table-menu-item"
+        onClick={() => setPanel('size')}
+      >插入表格…</button> : null}
+      {hasTableContext ? <div className="markdown-table-menu-section">
         {TABLE_ENTRIES.map((entry) => <MenuButton
           key={entry.command}
           entry={entry}
           enabled={availability[entry.command]}
-          onCommand={execute}
+          onCommand={(command) => onCommand(command)}
         />)}
       </div> : null}
-      <div className="markdown-context-native-hint">Shift + 右键打开系统菜单</div>
+      {!availability.insertTable && !hasTableContext ? <div className="markdown-table-menu-empty">
+        将光标放在空白位置或表格内
+      </div> : null}
     </>}
   </div>;
 }

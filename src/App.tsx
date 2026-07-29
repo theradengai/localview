@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import DecisionDialog, { type DecisionDialogConfig } from './components/DecisionDialog';
 import FileTree, { type FileTreeNode, type TreeCreateKind } from './components/FileTree';
 import type { TreeCreateInputHandle } from './components/TreeCreateInput';
+import type { TextEditorHandle } from './components/TextEditor';
 import {
   assetUrl,
   basename,
@@ -418,6 +419,7 @@ export default function App() {
   const createBusyRef = useRef<number | null>(null);
   const createOperationRef = useRef(0);
   const createInputRef = useRef<TreeCreateInputHandle>(null);
+  const textEditorRef = useRef<TextEditorHandle>(null);
   const [pendingTreeFocusPath, setPendingTreeFocusPath] = useState<string | null>(null);
   const [workspaceTransition, setWorkspaceTransition] = useState<WorkspaceTransition | null>(null);
   const [windowSessionId, setWindowSessionId] = useState('');
@@ -2461,6 +2463,7 @@ export default function App() {
 
   const editor = selected ? <Suspense fallback={<div className="editor-pane editor-loading">正在载入编辑器…</div>}>
     <TextEditor
+      ref={textEditorRef}
       documentKey={`${selected.path}:${editorEpoch}`}
       kind={selected.kind}
       value={content}
@@ -2555,6 +2558,11 @@ export default function App() {
   const treeLocked = interactionLocked || createBusy;
   const handleTreeFocusHandled = () => setPendingTreeFocusPath(null);
 
+  const handleOpenMarkdownTableTools = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    textEditorRef.current?.openMarkdownTableTools({ x: rect.right, y: rect.bottom });
+  };
+
   return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''}`}>
     <header className="titlebar" data-tauri-drag-region>
       <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
@@ -2573,7 +2581,7 @@ export default function App() {
         setProjectMenuOpen((current) => !current);
       }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>新建窗口</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} focusPath={pendingTreeFocusPath} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} /><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
       <main className="document-area">
-        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div> : null}</div>
+        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? '切换工作区…' : '读取中…'}</div> : null}</div>
       </main>
     </div>

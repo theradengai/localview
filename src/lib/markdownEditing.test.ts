@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyMarkdownCommand,
   getMarkdownCommandAvailability,
+  inspectMarkdownInlineStyleSelection,
   parseEditableGfmTableRange,
   normalizeMarkdownLinkUrl,
   serializeGfmTable,
@@ -40,6 +41,7 @@ function contextFor(
     selectedText: source.slice(from, to),
     contextPosition,
     table,
+    inlineStyle: inspectMarkdownInlineStyleSelection(source, selection),
   };
 }
 
@@ -126,6 +128,8 @@ describe('Markdown inline editing', () => {
       { anchor: 0, head: 7 },
     ));
     expect(multiline.bold).toBe(false);
+    expect(multiline.highlight).toBe(false);
+    expect(multiline.fontColor).toBe(false);
     expect(multiline.codeBlock).toBe(true);
 
     const multiple = getMarkdownCommandAvailability(contextFor(
@@ -135,6 +139,36 @@ describe('Markdown inline editing', () => {
       2,
     ));
     expect(Object.values(multiple).every((value) => value === false)).toBe(true);
+  });
+
+  it('toggles highlight and changes or removes a fixed font color in one change', () => {
+    const highlighted = run('hello', { anchor: 5, head: 0 }, 'highlight');
+    expect(highlighted?.source).toBe('<mark>hello</mark>');
+    expect(highlighted?.selection).toEqual({ anchor: 11, head: 6 });
+    expect(run(highlighted!.source, highlighted!.selection, 'highlight')?.source).toBe('hello');
+
+    const blue = run('hello', { anchor: 0, head: 5 }, 'fontColor', { color: 'blue' });
+    expect(blue?.source).toBe('<span data-localview-color="blue">hello</span>');
+    const purple = run(blue!.source, blue!.selection, 'fontColor', { color: 'purple' });
+    expect(purple?.source).toBe('<span data-localview-color="purple">hello</span>');
+    expect(run(purple!.source, purple!.selection, 'fontColor', { color: null })?.source)
+      .toBe('hello');
+    expect(run(blue!.source, blue!.selection, 'fontColor', { color: 'blue' })).toBeNull();
+  });
+
+  it('allows highlight and color nesting but fails closed on same-style partial ranges', () => {
+    const colored = run('**bold**', { anchor: 0, head: 8 }, 'fontColor', { color: 'red' });
+    expect(colored?.source).toBe('<span data-localview-color="red">**bold**</span>');
+    const nested = run(colored!.source, colored!.selection, 'highlight');
+    expect(nested?.source).toBe(
+      '<span data-localview-color="red"><mark>**bold**</mark></span>',
+    );
+
+    expect(run('<mark>hello</mark>', { anchor: 7, head: 10 }, 'highlight')).toBeNull();
+    const colorSource = '<span data-localview-color="green">hello</span>';
+    expect(run(colorSource, { anchor: 39, head: 42 }, 'fontColor', { color: 'blue' })).toBeNull();
+    expect(run('one\ntwo', { anchor: 0, head: 7 }, 'highlight')).toBeNull();
+    expect(run('hello', { anchor: 0, head: 5 }, 'fontColor', { color: 'pink' as 'red' })).toBeNull();
   });
 });
 

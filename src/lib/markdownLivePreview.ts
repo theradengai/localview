@@ -14,6 +14,10 @@ import {
 import type { Range } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { parseEditableGfmTableRange, type GfmTableModel } from './markdownEditing';
+import {
+  scanLocalInlineStylePairs,
+  type LocalInlineStylePair,
+} from './markdownInlineStyles';
 
 export type LivePreviewPresentation = 'live' | 'source';
 
@@ -72,6 +76,18 @@ function childNodes(node: SyntaxNode) {
   const nodes: SyntaxNode[] = [];
   for (let child = node.firstChild; child; child = child.nextSibling) nodes.push(child);
   return nodes;
+}
+
+function descendantNodes(node: SyntaxNode, name: string) {
+  const matches: SyntaxNode[] = [];
+  const visit = (parent: SyntaxNode) => {
+    for (let child = parent.firstChild; child; child = child.nextSibling) {
+      if (child.name === name) matches.push(child);
+      visit(child);
+    }
+  };
+  visit(node);
+  return matches;
 }
 
 function sourceStillMatches(
@@ -405,6 +421,7 @@ function buildDecorations(
   const ranges = scanRanges(view, options.maxBuildCharacters);
   const scanCharacterCount = ranges.reduce((total, range) => total + range.to - range.from, 0);
   const tree = syntaxTree(view.state);
+  const processedInlineStyleContainers = new Set<string>();
 
   const add = (key: string, range: Range<Decoration>) => {
     if (seen.has(key)) return;
@@ -445,8 +462,46 @@ function buildDecorations(
     }
   };
 
+  const decorateLocalInlineStyles = (node: SyntaxNode) => {
+    const key = `${node.from}:${node.to}`;
+    if (processedInlineStyleContainers.has(key)) return;
+    processedInlineStyleContainers.add(key);
+    const source = consume(node.from, node.to, 64 * 1024);
+    if (source === null) return;
+    const scan = scanLocalInlineStylePairs(source);
+    if (!scan.valid || !scan.pairs.length) return;
+
+    const htmlTagRanges = new Set(descendantNodes(node, 'HTMLTag').map((tag) => (
+      `${tag.from}:${tag.to}`
+    )));
+    const confirmed = scan.pairs.filter((pair) => htmlTagRanges.has(
+      `${node.from + pair.from}:${node.from + pair.openTo}`,
+    ) && htmlTagRanges.has(
+      `${node.from + pair.closeFrom}:${node.from + pair.to}`,
+    ));
+    if (confirmed.length !== scan.pairs.length) return;
+
+    confirmed.forEach((pair: LocalInlineStylePair) => {
+      const from = node.from + pair.from;
+      const openTo = node.from + pair.openTo;
+      const contentFrom = node.from + pair.contentFrom;
+      const contentTo = node.from + pair.contentTo;
+      const closeFrom = node.from + pair.closeFrom;
+      const to = node.from + pair.to;
+      if (composing || selectionIntersectsClosed(view, from, to)) return;
+      const className = pair.kind === 'highlight'
+        ? 'cm-live-highlight'
+        : `cm-live-color-${pair.color}`;
+      addMark(contentFrom, contentTo, className);
+      addReplace(from, openTo);
+      addReplace(closeFrom, to);
+    });
+  };
+
   const processNode = (node: SyntaxNode, fullyInsideRange: boolean) => {
     if (!fullyInsideRange && node.name !== 'Document') return false;
+
+    if (node.name === 'Paragraph') decorateLocalInlineStyles(node);
 
     const inlineClass = INLINE_STYLES[node.name];
     if (inlineClass) {
@@ -469,6 +524,7 @@ function buildDecorations(
     }
 
     if (/^ATXHeading[1-6]$/.test(node.name)) {
+      decorateLocalInlineStyles(node);
       const level = node.name.slice(-1);
       addMark(node.from, node.to, `cm-live-heading-${level}`);
       addLine(view.state.doc.lineAt(node.from).from, `cm-live-heading-line-${level}`);

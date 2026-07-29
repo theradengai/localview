@@ -14,6 +14,10 @@ import {
   type MarkdownCommand,
   type MarkdownCommandArgument,
 } from '../lib/markdownEditing';
+import {
+  MARKDOWN_INLINE_COLORS,
+  type MarkdownInlineColorToken,
+} from '../lib/markdownInlineStyles';
 
 export type MarkdownToolbarAnchor = {
   head: { left: number; top: number; bottom: number };
@@ -28,6 +32,7 @@ export type MarkdownSelectionToolbarHandle = {
 type Props = {
   anchor: MarkdownToolbarAnchor;
   availability: Record<MarkdownCommand, boolean>;
+  activeColor?: MarkdownInlineColorToken | null;
   onCommand: (command: MarkdownCommand, argument?: MarkdownCommandArgument) => boolean;
   onClose: () => void;
 };
@@ -42,6 +47,7 @@ const ENTRIES: ToolbarEntry[] = [
   { command: 'bold', label: 'B', title: '粗体' },
   { command: 'italic', label: 'I', title: '斜体' },
   { command: 'strikethrough', label: 'S', title: '删除线' },
+  { command: 'highlight', label: '高亮', title: '高亮' },
   { command: 'inlineCode', label: '</>', title: '行内代码' },
   { command: 'blockquote', label: '“”', title: '引用' },
   { command: 'codeBlock', label: '{ }', title: '代码块' },
@@ -66,14 +72,22 @@ function samePosition(left: Position | null, right: Position) {
 }
 
 const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Props>(
-  function MarkdownSelectionToolbar({ anchor, availability, onCommand, onClose }, forwardedRef) {
+  function MarkdownSelectionToolbar({
+    anchor,
+    availability,
+    activeColor = null,
+    onCommand,
+    onClose,
+  }, forwardedRef) {
     const toolbarRef = useRef<HTMLDivElement>(null);
     const linkInputRef = useRef<HTMLInputElement>(null);
+    const colorPanelRef = useRef<HTMLDivElement>(null);
     const returnFocusCommandRef = useRef<MarkdownCommand | null>(null);
-    const [panel, setPanel] = useState<'main' | 'link'>('main');
+    const [panel, setPanel] = useState<'main' | 'link' | 'color'>('main');
     const [position, setPosition] = useState<Position | null>(null);
     const [url, setUrl] = useState('');
     const [linkError, setLinkError] = useState('');
+    const [colorError, setColorError] = useState('');
 
     const focusButton = (button: HTMLButtonElement | undefined) => {
       if (!button) return false;
@@ -111,9 +125,14 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
     }, [anchor, panel]);
 
     useEffect(() => {
-      if (panel !== 'link') return;
-      linkInputRef.current?.focus();
-    }, [panel]);
+      if (panel === 'link') linkInputRef.current?.focus();
+      if (panel === 'color') {
+        const selected = colorPanelRef.current?.querySelector<HTMLButtonElement>(
+          `[data-color-token="${activeColor ?? 'default'}"]`,
+        );
+        selected?.focus();
+      }
+    }, [activeColor, panel]);
 
     useLayoutEffect(() => {
       if (panel !== 'main' || !returnFocusCommandRef.current) return;
@@ -125,10 +144,11 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
       focusButton(target ?? enabledButtons(toolbarRef.current)[0]);
     }, [panel]);
 
-    const returnToMain = () => {
-      returnFocusCommandRef.current = 'link';
+    const returnToMain = (command: MarkdownCommand) => {
+      returnFocusCommandRef.current = command;
       setPanel('main');
       setLinkError('');
+      setColorError('');
     };
 
     const execute = (command: MarkdownCommand, argument?: MarkdownCommandArgument) => {
@@ -145,6 +165,10 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
       if (!execute('link', { url: normalized })) setLinkError('当前选区已变化');
     };
 
+    const submitColor = (color: MarkdownInlineColorToken | null) => {
+      if (!execute('fontColor', { color })) setColorError('当前选区已变化');
+    };
+
     const handleCommandPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
     };
@@ -154,9 +178,31 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
         event.preventDefault();
         event.stopPropagation();
         if (panel === 'link') {
-          returnToMain();
+          returnToMain('link');
+        } else if (panel === 'color') {
+          returnToMain('fontColor');
         } else {
           onClose();
+        }
+        return;
+      }
+      if (panel === 'color') {
+        const items = Array.from(colorPanelRef.current?.querySelectorAll<HTMLButtonElement>(
+          '[data-color-token]',
+        ) ?? []);
+        if (!items.length) return;
+        const current = items.indexOf(document.activeElement as HTMLButtonElement);
+        let target = -1;
+        if (event.key === 'ArrowRight') target = current < 0 ? 0 : (current + 1) % items.length;
+        if (event.key === 'ArrowLeft') target = current < 0
+          ? items.length - 1
+          : (current - 1 + items.length) % items.length;
+        if (event.key === 'Home') target = 0;
+        if (event.key === 'End') target = items.length - 1;
+        if (target >= 0) {
+          event.preventDefault();
+          items[target].focus();
+          items[target].scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
         }
         return;
       }
@@ -190,13 +236,17 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
       ref={toolbarRef}
       className="markdown-selection-toolbar"
       role={panel === 'main' ? 'toolbar' : 'dialog'}
-      aria-label={panel === 'main' ? 'Markdown 快捷样式' : '插入链接'}
+      aria-label={panel === 'main'
+        ? 'Markdown 快捷样式'
+        : panel === 'link'
+          ? '插入链接'
+          : '选择字体颜色'}
       data-placement={position?.placement}
       style={style}
       onKeyDown={handleKeyDown}
     >
       {panel === 'link' ? <div className="markdown-selection-link-panel">
-        <button type="button" onClick={returnToMain} aria-label="返回快捷样式">‹</button>
+        <button type="button" onClick={() => returnToMain('link')} aria-label="返回快捷样式">‹</button>
         <input
           ref={linkInputRef}
           type="text"
@@ -217,6 +267,37 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
         />
         <button type="button" className="markdown-selection-apply" onClick={submitLink}>应用</button>
         {linkError ? <span className="markdown-selection-error" role="alert">{linkError}</span> : null}
+      </div> : panel === 'color' ? <div
+        ref={colorPanelRef}
+        className="markdown-selection-color-panel"
+        role="group"
+        aria-label="字体颜色"
+      >
+        <button type="button" onClick={() => returnToMain('fontColor')} aria-label="返回快捷样式">‹</button>
+        <button
+          type="button"
+          data-color-token="default"
+          aria-label="默认字体颜色"
+          title="默认字体颜色"
+          aria-pressed={activeColor === null}
+          onPointerDown={handleCommandPointerDown}
+          onClick={() => submitColor(null)}
+        >默认</button>
+        {(Object.entries(MARKDOWN_INLINE_COLORS) as Array<[
+          MarkdownInlineColorToken,
+          (typeof MARKDOWN_INLINE_COLORS)[MarkdownInlineColorToken],
+        ]>).map(([token, definition]) => <button
+          key={token}
+          type="button"
+          data-color-token={token}
+          aria-label={`${definition.label}字体`}
+          title={`${definition.label}字体`}
+          aria-pressed={activeColor === token}
+          className={`markdown-selection-color-swatch ${definition.className}`}
+          onPointerDown={handleCommandPointerDown}
+          onClick={() => submitColor(token)}
+        ><span aria-hidden="true">A</span></button>)}
+        {colorError ? <span className="markdown-selection-error" role="alert">{colorError}</span> : null}
       </div> : <div className="markdown-selection-toolbar-scroll">
         {ENTRIES.map((entry) => <button
           key={entry.command}
@@ -246,6 +327,21 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
             setLinkError('');
           }}
         >链接…</button>
+        <button
+          type="button"
+          data-toolbar-command="fontColor"
+          disabled={!availability.fontColor}
+          tabIndex={-1}
+          aria-label="字体颜色"
+          title="字体颜色"
+          className="markdown-selection-tool tool-fontColor"
+          onPointerDown={handleCommandPointerDown}
+          onClick={() => {
+            if (!availability.fontColor) return;
+            setPanel('color');
+            setColorError('');
+          }}
+        >颜色…</button>
       </div>}
     </div>;
   },

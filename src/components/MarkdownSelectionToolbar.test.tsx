@@ -102,7 +102,7 @@ describe('MarkdownSelectionToolbar', () => {
     fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'ArrowRight' });
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '标题 2' }));
     fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'End' });
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: '插入链接' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '字体颜色' }));
     expect(scrollIntoView).toHaveBeenCalled();
     external.remove();
   });
@@ -141,5 +141,32 @@ describe('MarkdownSelectionToolbar', () => {
     expect(onClose).not.toHaveBeenCalled();
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('exposes an accessible fixed color palette and returns stale errors', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 280, bottom: 36, width: 280, height: 36,
+      x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const user = userEvent.setup();
+    const onCommand = vi.fn(() => false);
+    render(<MarkdownSelectionToolbar
+      anchor={anchor}
+      availability={availability()}
+      activeColor="blue"
+      onCommand={onCommand}
+      onClose={vi.fn()}
+    />);
+
+    await user.click(screen.getByRole('button', { name: '字体颜色' }));
+    const dialog = screen.getByRole('dialog', { name: '选择字体颜色' });
+    const blue = screen.getByRole('button', { name: '蓝色字体' });
+    expect(blue.getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => expect(document.activeElement).toBe(blue));
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '紫色字体' }));
+    await user.click(screen.getByRole('button', { name: '紫色字体' }));
+    expect(onCommand).toHaveBeenCalledWith('fontColor', { color: 'purple' });
+    expect(screen.getByRole('alert').textContent).toBe('当前选区已变化');
   });
 });

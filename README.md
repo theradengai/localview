@@ -13,8 +13,8 @@ LocalView browses the real filesystem without Vaults, imports, hidden workspace 
 - Use the workspace-root or folder-row `+` menu to create an empty Markdown file or a real folder inline; Markdown names receive `.md` automatically when needed
 - Read and edit Markdown, HTML, and text files
 - Markdown Edit / Split / Preview modes, opening in Preview by default; Edit is a source-preserving Live Preview, while Split keeps the full preview on the left and softly wrapped raw source on the right
-- Select Markdown text to show a compact single-line formatting toolbar; the full source-formatting menu remains available on right-click in Edit/Split
-- GFM table insertion and safe top-level row, column, deletion, and alignment actions; `Shift` + right-click keeps the native macOS menu
+- Select Markdown text to show the only LocalView formatting surface: a compact single-line toolbar with source styles, highlight, and a fixed color palette
+- Use the document-toolbar **表格** button in Edit/Split for GFM table insertion and safe top-level row, column, deletion, and alignment actions; every right-click path remains the native macOS menu
 - HTML interactive preview with relative CSS, images, and JavaScript
 - Auto-save Markdown, HTML, and text to the original file after 600 ms of idle time; `⌘S` flushes immediately
 - Detect external edits, reload clean files, and block conflicting saves
@@ -101,7 +101,8 @@ Use **工作区菜单 → 新建窗口** or `⌘N` to compare different folders 
 
 - Creation actions support empty Markdown files and ordinary folders. Other file types, rename, move, and copy are not included. Files and workspace subfolders can only be moved to Trash, never permanently deleted in LocalView.
 - Markdown Live Preview is a reversible CodeMirror view over the original Markdown source, not a separate rich-text data model. Headings, emphasis, links, quotes, lists, tasks, fenced code, images, bounded top-level tables, and thematic breaks render in place when inactive; active or unsupported syntax stays source-editable.
-- The automatic selection toolbar covers headings, paragraph, inline styles, links, quotes, code blocks, and lists. GFM table insertion and structural row/column/alignment actions remain in the full right-click menu. Table actions do not include merged cells, dragged column widths, TSV conversion, or Excel editing; nested, malformed, ambiguous, or oversized tables stay source-editable but are not structurally rewritten.
+- The automatic selection toolbar covers headings, paragraph, inline styles, highlight, six fixed font colors, links, quotes, code blocks, and lists. Highlight is stored as an exact `<mark>...</mark>` pair; font color is stored as `<span data-localview-color="red|orange|green|blue|purple|gray">...</span>`. Only those exact, balanced LocalView pairs are rendered specially, while arbitrary raw HTML remains escaped. Other Markdown applications may expose or ignore these HTML-compatible source markers.
+- GFM table insertion and structural row/column/alignment actions live behind the document-toolbar **表格** button in Edit/Split. Ordinary right-click, `Shift` + right-click, the Context Menu key, and `Shift` + `F10` all use the native operating-system menu. Table actions do not include merged cells, dragged column widths, TSV conversion, or Excel editing; nested, malformed, ambiguous, or oversized tables stay source-editable but are not structurally rewritten.
 - Pressing Enter in the inline name field immediately creates an empty file on desktop. Later text changes auto-save after 600 ms; `⌘S` flushes immediately, and an existing same-name file is never overwritten.
 - The final filename is limited to 255 UTF-16 code units by LocalView after the optional `.md` suffix is added. The mounted volume may enforce a stricter or different filename limit, which is reported as an I/O error.
 - Folder names use the same explicit whitespace/control/separator rules and 255 UTF-16-code-unit limit. `.DS_Store`, LocalView temporary-file patterns, and `.numbers`/`.pages`/`.key` bundle suffixes are reserved so a created folder remains visible and retains Folder semantics.
