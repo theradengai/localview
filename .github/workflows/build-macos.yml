@@ -2,64 +2,67 @@ name: Build LocalView for macOS
 
 on:
   workflow_dispatch:
-  pull_request:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            architecture: arm64
+          - target: x86_64-apple-darwin
+            architecture: x86_64
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: 22
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.91.1
+          targets: ${{ matrix.target }}
 
       - name: Build LocalView
-        run: npm run tauri:build
+        run: npm run tauri:build -- --target "${{ matrix.target }}" -- --locked
 
       - name: Verify macOS bundles
+        env:
+          BUNDLE_ROOT: src-tauri/target/${{ matrix.target }}/release/bundle
+          EXPECTED_ARCH: ${{ matrix.architecture }}
         run: |
-          APP_PATH=(src-tauri/target/release/bundle/macos/*.app)
-          DMG_PATH=(src-tauri/target/release/bundle/dmg/*.dmg)
-          PLIST_PATH="${APP_PATH[0]}/Contents/Info.plist"
-          test -f "${APP_PATH[0]}/Contents/Resources/icon.icns"
-          codesign --verify --deep --strict --verbose=4 "${APP_PATH[0]}"
-          hdiutil verify "${DMG_PATH[0]}"
-          DOCUMENT_TYPES=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes" "$PLIST_PATH")
-          for EXTENSION in xls xlsx ods numbers doc docx odt rtf pages ppt pptx odp key; do
-            grep -Eq "^[[:space:]]+$EXTENSION$" <<< "$DOCUMENT_TYPES"
+          set -euo pipefail
+          node scripts/verify-macos-bundle.mjs "$BUNDLE_ROOT/macos/LocalView.app" "$EXPECTED_ARCH"
+          for image in "$BUNDLE_ROOT"/dmg/*.dmg; do
+            hdiutil verify "$image"
           done
-          for CONTENT_TYPE in \
-            com.microsoft.excel.xls \
-            org.openxmlformats.spreadsheetml.sheet \
-            org.oasis-open.opendocument.spreadsheet \
-            com.apple.iwork.numbers.sffnumbers \
-            com.microsoft.word.doc \
-            org.openxmlformats.wordprocessingml.document \
-            org.oasis-open.opendocument.text \
-            public.rtf \
-            com.apple.iwork.pages.sffpages \
-            com.microsoft.powerpoint.ppt \
-            org.openxmlformats.presentationml.presentation \
-            org.oasis-open.opendocument.presentation \
-            com.apple.iwork.keynote.sffkey; do
-            grep -Fq "$CONTENT_TYPE" <<< "$DOCUMENT_TYPES"
-          done
+          cd "$BUNDLE_ROOT/dmg"
+          shasum -a 256 ./*.dmg > SHA256SUMS.txt
 
-      - name: Upload macOS bundles
-        uses: actions/upload-artifact@v4
+      - name: Upload verified installers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: LocalView-macOS
-          path: |
-            src-tauri/target/release/bundle/macos/*.app
-            src-tauri/target/release/bundle/dmg/*.dmg
+          name: LocalView-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/
           if-no-files-found: error
+          retention-days: 14

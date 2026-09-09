@@ -1,0 +1,38 @@
+name: Bug report / 问题反馈
+description: Report a reproducible LocalView problem / 反馈可复现的问题
+body:
+  - type: markdown
+    attributes:
+      value: Please remove private documents and credentials from attachments. For vulnerabilities, use Security → Report a vulnerability.
+  - type: input
+    id: version
+    attributes:
+      label: LocalView version / 应用版本
+      placeholder: 0.2.0-beta.1
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and chip / 系统与芯片
+      placeholder: macOS 12.7.4, Intel
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Use a small synthetic example when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Sample or screenshot / 示例或截图
+      description: Remove personal content, folder names, and credentials first.

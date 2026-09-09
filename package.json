@@ -1,18 +1,23 @@
 {
   "name": "localview",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
+  "description": "Open a file, see the folder context. A lightweight macOS document workspace.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/theradengai/localview.git" },
+  "engines": { "node": ">=24 <25" },
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/check-webkit-compat.mjs",
     "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "node scripts/build-desktop.mjs"
   },
   "dependencies": {
+    "@codemirror/commands": "6.10.4",
     "@codemirror/lang-html": "^6.4.11",
     "@codemirror/lang-markdown": "^6.3.0",
     "@codemirror/language": "6.12.4",
@@ -26,6 +31,9 @@
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
     "remark-gfm": "^4.0.0"
+  },
+  "overrides": {
+    "mdast-util-gfm-autolink-literal": "2.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

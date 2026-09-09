@@ -4,6 +4,7 @@ import { normalizePath, parentPath } from './desktop';
 export type DirectoryTreeNode = DesktopEntry & {
   children?: DirectoryTreeNode[];
   loaded?: boolean;
+  demoContent?: string;
 };
 
 function sortNodes<T extends DesktopEntry>(nodes: T[]): T[] {
@@ -12,6 +13,16 @@ function sortNodes<T extends DesktopEntry>(nodes: T[]): T[] {
     if (folderOrder !== 0) return folderOrder;
     return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
   });
+}
+
+function findTreePath<T extends DirectoryTreeNode>(nodes: T[], path: string): T | null {
+  const target = normalizePath(path);
+  for (const node of nodes) {
+    if (normalizePath(node.path) === target) return node;
+    const nested = node.children ? findTreePath(node.children as T[], target) : null;
+    if (nested) return nested;
+  }
+  return null;
 }
 
 export function containsPath(parent: string, target: string): boolean {
@@ -130,4 +141,115 @@ export function replaceTreePathPrefix<T extends DirectoryTreeNode>(nodes: T[], o
       children: node.children ? replaceTreePathPrefix(node.children as T[], oldPrefix, newPrefix) : node.children,
     } as T;
   });
+}
+
+export function moveTreeEntry<T extends DirectoryTreeNode>(
+  nodes: T[],
+  rootPath: string,
+  originalPath: string,
+  entry: DesktopEntry,
+): T[] {
+  const root = normalizePath(rootPath);
+  const source = normalizePath(originalPath);
+  const destination = normalizePath(entry.path);
+  const destinationDirectory = parentPath(destination);
+  if (!root
+    || source === root
+    || !containsPath(root, source)
+    || !containsPath(root, destination)
+    || parentPath(source) === destinationDirectory) return nodes;
+  const sourceEntry = findTreePath(nodes, source);
+  const destinationEntry = findTreePath(nodes, destination);
+  if (sourceEntry && destinationEntry) return nodes;
+  const existing = sourceEntry ?? destinationEntry;
+  if ((existing?.kind === 'folder' || entry.kind === 'folder')
+    && containsPath(source, destinationDirectory)) return nodes;
+  const targetExists = destinationDirectory === root
+    || findTreePath(nodes, destinationDirectory)?.kind === 'folder';
+  if (!targetExists) return nodes;
+
+  const migrated = existing?.kind === 'folder'
+    ? replaceTreePathPrefix([existing], source, destination)[0]
+    : existing;
+  const moved = entry.kind === 'folder'
+    ? {
+        ...(migrated ?? {}),
+        ...entry,
+        children: migrated?.children,
+        loaded: migrated?.loaded ?? false,
+      } as T
+    : {
+        ...(migrated ?? {}),
+        ...entry,
+        children: undefined,
+        loaded: true,
+      } as T;
+  const withoutSource = removeTreePath(removeTreePath(nodes, source), destination);
+  if (destinationDirectory === root) return sortNodes([...withoutSource, moved]);
+
+  const insert = (items: T[]): T[] => items.map((node) => {
+    if (normalizePath(node.path) === destinationDirectory && node.kind === 'folder') {
+      return {
+        ...node,
+        children: sortNodes([...((node.children as T[] | undefined) ?? []), moved]),
+      } as T;
+    }
+    return node.children
+      ? { ...node, children: insert(node.children as T[]) } as T
+      : node;
+  });
+  return insert(withoutSource);
+}
+
+export function renameTreeEntry<T extends DirectoryTreeNode>(
+  nodes: T[],
+  rootPath: string,
+  originalPath: string,
+  entry: DesktopEntry,
+): T[] {
+  const root = normalizePath(rootPath);
+  const source = normalizePath(originalPath);
+  const destination = normalizePath(entry.path);
+  const directory = parentPath(source);
+  if (!root
+    || source === root
+    || source === destination
+    || !containsPath(root, source)
+    || !containsPath(root, destination)
+    || parentPath(destination) !== directory) return nodes;
+
+  const sourceEntry = findTreePath(nodes, source);
+  if (!sourceEntry || findTreePath(nodes, destination)) return nodes;
+  const migrated = sourceEntry.kind === 'folder'
+    ? replaceTreePathPrefix([sourceEntry], source, destination)[0]
+    : sourceEntry;
+  const renamed = entry.kind === 'folder'
+    ? {
+        ...migrated,
+        ...entry,
+        children: migrated.children,
+        loaded: migrated.loaded ?? false,
+      } as T
+    : {
+        ...migrated,
+        ...entry,
+        children: undefined,
+        loaded: true,
+      } as T;
+
+  const replaceInDirectory = (items: T[], currentDirectory: string): T[] => {
+    if (normalizePath(currentDirectory) === directory) {
+      return sortNodes([
+        ...items.filter((node) => normalizePath(node.path) !== source),
+        renamed,
+      ]);
+    }
+    return items.map((node) => node.kind === 'folder' && node.children
+      ? {
+          ...node,
+          children: replaceInDirectory(node.children as T[], node.path),
+        } as T
+      : node);
+  };
+  return replaceInDirectory(nodes, root);
 }

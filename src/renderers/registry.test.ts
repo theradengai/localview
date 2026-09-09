@@ -13,6 +13,8 @@ describe('rendererFor', () => {
     ['notes.txt', 'text', 'text'],
     ['cover.png', 'image', 'image'],
     ['manual.pdf', 'pdf', 'pdf'],
+    ['contacts.csv', 'spreadsheet', 'spreadsheet-grid'],
+    ['EXPORT.CSV', 'spreadsheet', 'spreadsheet-grid'],
     ['budget.xlsx', 'spreadsheet', 'spreadsheet-grid'],
     ['legacy.XLS', 'spreadsheet', 'spreadsheet-grid'],
     ['portable.ods', 'spreadsheet', 'spreadsheet-grid'],

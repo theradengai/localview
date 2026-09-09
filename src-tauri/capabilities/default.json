@@ -5,6 +5,8 @@
   "windows": ["main", "workspace-*"],
   "permissions": [
     "core:default",
+    "core:window:allow-destroy",
+    "core:window:allow-start-dragging",
     "dialog:default",
     "opener:default"
   ]

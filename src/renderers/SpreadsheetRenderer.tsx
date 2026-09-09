@@ -150,7 +150,7 @@ export default function SpreadsheetRenderer({
   if (!desktop) {
     return <div className="empty-state spreadsheet-fallback">
       <strong>{entry.name}</strong>
-      <span>桌面版可读取 Excel、ODS 的已保存单元格；浏览器 Demo 不访问本地文件。</span>
+      <span>桌面版可读取 CSV、Excel、ODS 的已保存单元格；浏览器 Demo 不访问本地文件。</span>
     </div>;
   }
 

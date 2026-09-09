@@ -85,6 +85,50 @@ export type TrashCandidate = {
   isDir: boolean;
 };
 
+export type MoveCandidate = {
+  sourcePath: string;
+  destinationDirectory: string;
+  destinationPath: string;
+  workspaceGeneration: number;
+  sourceParentIdentity: string;
+  sourceIdentity: string;
+  destinationIdentity: string;
+  sourceIsDirectory: boolean;
+  sourceIsBundle: boolean;
+};
+
+export type MovedWorkspaceEntry = {
+  originalPath: string;
+  movedPath: string;
+  entry: DesktopEntry;
+};
+
+export type MoveReconciliation = {
+  outcome: 'source' | 'destination' | 'ambiguous';
+  entry?: DesktopEntry | null;
+};
+
+export type RenameCandidate = {
+  sourcePath: string;
+  destinationPath: string;
+  workspaceGeneration: number;
+  parentIdentity: string;
+  sourceIdentity: string;
+  sourceIsDirectory: boolean;
+  sourceIsBundle: boolean;
+};
+
+export type RenamedWorkspaceEntry = {
+  originalPath: string;
+  renamedPath: string;
+  entry: DesktopEntry;
+};
+
+export type RenameReconciliation = {
+  outcome: 'source' | 'destination' | 'ambiguous';
+  entry?: DesktopEntry | null;
+};
+
 export type HtmlPreviewCapability = {
   token: string;
   documentPath: string;
@@ -101,6 +145,30 @@ export type LocalViewErrorCode =
   | 'TRASH_ROOT_FORBIDDEN'
   | 'TRASH_SYMLINK_UNSUPPORTED'
   | 'TRASH_UNSUPPORTED'
+  | 'MOVE_SOURCE_CHANGED'
+  | 'MOVE_DESTINATION_CHANGED'
+  | 'MOVE_SOURCE_UNSUPPORTED'
+  | 'MOVE_SAME_PARENT'
+  | 'MOVE_DESTINATION_INSIDE_SOURCE'
+  | 'MOVE_DESTINATION_EXISTS'
+  | 'MOVE_CROSS_DEVICE_UNSUPPORTED'
+  | 'MOVE_SECURE_RENAME_UNAVAILABLE'
+  | 'MOVE_BUNDLE_BOUNDARY'
+  | 'MOVE_OUTCOME_UNCERTAIN'
+  | 'RENAME_INVALID_NAME'
+  | 'RENAME_NAME_TOO_LONG'
+  | 'RENAME_RESERVED_NAME'
+  | 'RENAME_EXTENSION_CHANGE_UNSUPPORTED'
+  | 'RENAME_CASE_ONLY_UNSUPPORTED'
+  | 'RENAME_UNCHANGED'
+  | 'RENAME_ROOT_FORBIDDEN'
+  | 'RENAME_SOURCE_UNSUPPORTED'
+  | 'RENAME_SOURCE_CHANGED'
+  | 'RENAME_DESTINATION_EXISTS'
+  | 'RENAME_PARENT_CHANGED'
+  | 'RENAME_BUNDLE_BOUNDARY'
+  | 'RENAME_SECURE_UNAVAILABLE'
+  | 'RENAME_OUTCOME_UNCERTAIN'
   | 'STALE_OPERATION'
   | 'IO_ERROR';
 
@@ -175,6 +243,7 @@ export type MarkdownAssetContext = {
   rootPath: string;
   selectedPath: string;
   assetScope: string;
+  demoImages?: Readonly<Record<string, string>>;
 };
 
 export function isTauriRuntime(): boolean {
@@ -184,6 +253,17 @@ export function isTauriRuntime(): boolean {
 export async function chooseFolder(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const result = await open({ directory: true, multiple: false, title: '打开文件夹' });
+  return typeof result === 'string' ? result : null;
+}
+
+export async function chooseMoveDestination(defaultPath: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const result = await open({
+    directory: true,
+    multiple: false,
+    title: '移动到文件夹',
+    defaultPath,
+  });
   return typeof result === 'string' ? result : null;
 }
 
@@ -250,12 +330,58 @@ export async function writeTextFile(path: string, content: string, expectedVersi
   return invoke<string>('write_text_file', { path, content, expectedVersion });
 }
 
+export async function savePastedImages(
+  documentPath: string,
+  workspaceGeneration: number,
+  images: import('./imagePaste').PastedImage[],
+): Promise<string[]> {
+  return invoke<string[]>('save_pasted_images', { documentPath, workspaceGeneration, images });
+}
+
 export async function prepareTrash(path: string): Promise<TrashCandidate> {
   return invoke<TrashCandidate>('prepare_trash', { path });
 }
 
 export async function moveToTrash(candidate: TrashCandidate): Promise<TrashedItem> {
   return invoke<TrashedItem>('move_to_trash', { candidate });
+}
+
+export async function prepareWorkspaceMove(
+  sourcePath: string,
+  destinationDirectory: string,
+): Promise<MoveCandidate> {
+  return invoke<MoveCandidate>('prepare_workspace_move', { sourcePath, destinationDirectory });
+}
+
+export async function moveWorkspaceEntry(
+  candidate: MoveCandidate,
+): Promise<MovedWorkspaceEntry> {
+  return invoke<MovedWorkspaceEntry>('move_workspace_entry', { candidate });
+}
+
+export async function reconcileWorkspaceMove(
+  candidate: MoveCandidate,
+): Promise<MoveReconciliation> {
+  return invoke<MoveReconciliation>('reconcile_workspace_move', { candidate });
+}
+
+export async function prepareWorkspaceRename(
+  sourcePath: string,
+  newName: string,
+): Promise<RenameCandidate> {
+  return invoke<RenameCandidate>('prepare_workspace_rename', { sourcePath, newName });
+}
+
+export async function renameWorkspaceEntry(
+  candidate: RenameCandidate,
+): Promise<RenamedWorkspaceEntry> {
+  return invoke<RenamedWorkspaceEntry>('rename_workspace_entry', { candidate });
+}
+
+export async function reconcileWorkspaceRename(
+  candidate: RenameCandidate,
+): Promise<RenameReconciliation> {
+  return invoke<RenameReconciliation>('reconcile_workspace_rename', { candidate });
 }
 
 export async function prepareHtmlPreview(path: string): Promise<HtmlPreviewCapability> {
@@ -293,6 +419,14 @@ export async function createWorkspaceWindow(): Promise<string> {
     return 'browser-window';
   }
   return invoke<string>('new_workspace_window');
+}
+
+export async function printCurrentWindow(): Promise<void> {
+  if (!isTauriRuntime()) {
+    window.print();
+    return;
+  }
+  await invoke('print_current_window');
 }
 
 export async function respondAppQuit(generation: number, outcome: AppQuitOutcome): Promise<void> {
@@ -335,6 +469,10 @@ export async function listenForAppQuitAborts(
   handler: (event: AppQuitEvent) => void,
 ): Promise<UnlistenFn> {
   return getCurrentWindow().listen<AppQuitEvent>('app-quit-aborted', (event) => handler(event.payload));
+}
+
+export async function listenForPrintRequests(handler: () => void): Promise<UnlistenFn> {
+  return getCurrentWindow().listen('print-requested', () => handler());
 }
 
 export function assetUrl(path: string, workspaceRoot: string, assetScope: string): string {
@@ -416,7 +554,7 @@ export function resolveMarkdownAssetSource(
   context: MarkdownAssetContext,
 ): string {
   if (!source || /^(?:[a-z]+:|#|\/\/)/i.test(source)) return source;
-  if (!context.desktop) return source;
+  if (!context.desktop) return context.demoImages?.[resolveResourcePath(context.selectedPath, source)] ?? source;
 
   try {
     const resourcePath = source.startsWith('/')

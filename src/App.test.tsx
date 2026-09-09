@@ -1,8 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { createRef, StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import FileTree, { LOCALVIEW_TREE_DRAG_TYPE, MOVE_HOVER_OPEN_DELAY_MS } from './components/FileTree';
+import {
+  LAST_ACTIVE_WORKSPACE_SESSION_KEY,
+  readWorkspaceSession,
+} from './lib/workspaceSession';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -21,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   openPathHandler: undefined as ((path: string) => void) | undefined,
   quitRequestHandler: undefined as ((event: { generation: number }) => void) | undefined,
   quitAbortHandler: undefined as ((event: { generation: number }) => void) | undefined,
+  printRequestHandler: undefined as (() => void) | undefined,
   workspaceChangeHandler: undefined as ((batch: import('./lib/desktop').WorkspaceChangeBatch) => void) | undefined,
   workspaceFailureHandler: undefined as ((failure: import('./lib/desktop').WorkspaceWatchFailure) => void) | undefined,
   setWorkspaceRoot: vi.fn(),
@@ -30,16 +36,28 @@ const mocks = vi.hoisted(() => ({
   getWindowBootstrap: vi.fn(),
   createWorkspaceWindow: vi.fn(),
   respondAppQuit: vi.fn(),
+  printCurrentWindow: vi.fn(),
+  waitForPrintableAssets: vi.fn(),
   readTextFile: vi.fn(),
+  readSpreadsheet: vi.fn(),
   createDirectory: vi.fn(),
   createMarkdownFile: vi.fn(),
   writeTextFile: vi.fn(),
+  savePastedImages: vi.fn(),
   prepareHtmlPreview: vi.fn(),
   releaseHtmlPreview: vi.fn(),
   prepareTrash: vi.fn(),
   moveToTrash: vi.fn(),
   chooseFolder: vi.fn(),
+  chooseMoveDestination: vi.fn(),
+  prepareWorkspaceMove: vi.fn(),
+  moveWorkspaceEntry: vi.fn(),
+  reconcileWorkspaceMove: vi.fn(),
+  prepareWorkspaceRename: vi.fn(),
+  renameWorkspaceEntry: vi.fn(),
+  reconcileWorkspaceRename: vi.fn(),
   closeWindow: vi.fn(),
+  destroyWindow: vi.fn(),
   generateSystemThumbnail: vi.fn(),
   showEmbeddedQuickLook: vi.fn(),
   resizeEmbeddedQuickLook: vi.fn(),
@@ -106,7 +124,13 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
             selection,
             sliceDoc: (from: number, to: number) => document.slice(from, to),
           },
-          dispatch: vi.fn(),
+          dispatch: vi.fn((transaction: { userEvent?: string; changes?: { from: number; to: number; insert: string } }) => {
+            if (transaction.userEvent !== 'input.paste' || !transaction.changes) return;
+            const { from, to, insert } = transaction.changes;
+            const next = document.slice(0, from) + insert + document.slice(to);
+            setDocument(next);
+            onChange?.(next);
+          }),
           focus: vi.fn(),
         };
       }, [document]);
@@ -147,6 +171,7 @@ vi.mock('./lib/markdownLanguage', () => ({
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     close: mocks.closeWindow,
+    destroy: mocks.destroyWindow,
     isFocused: vi.fn(async () => true),
     onFocusChanged: vi.fn(async (handler: typeof mocks.focusHandler) => {
       mocks.focusHandler = handler;
@@ -165,6 +190,7 @@ vi.mock('./lib/desktop', async () => {
     ...actual,
     isTauriRuntime: () => mocks.desktop,
     chooseFolder: mocks.chooseFolder,
+    chooseMoveDestination: mocks.chooseMoveDestination,
     setWorkspaceRoot: mocks.setWorkspaceRoot,
     listDirectory: mocks.listDirectory,
     inspectPath: mocks.inspectPath,
@@ -173,6 +199,7 @@ vi.mock('./lib/desktop', async () => {
     finishWindowStartup: vi.fn(async () => undefined),
     createWorkspaceWindow: mocks.createWorkspaceWindow,
     respondAppQuit: mocks.respondAppQuit,
+    printCurrentWindow: mocks.printCurrentWindow,
     listenForOpenPath: vi.fn(async (handler: (path: string) => void) => {
       mocks.openPathHandler = handler;
       return () => undefined;
@@ -194,14 +221,26 @@ vi.mock('./lib/desktop', async () => {
       mocks.quitAbortHandler = handler;
       return () => undefined;
     }),
+    listenForPrintRequests: vi.fn(async (handler: typeof mocks.printRequestHandler) => {
+      mocks.printRequestHandler = handler;
+      return () => undefined;
+    }),
     readTextFile: mocks.readTextFile,
+    readSpreadsheet: mocks.readSpreadsheet,
     createDirectory: mocks.createDirectory,
     createMarkdownFile: mocks.createMarkdownFile,
     writeTextFile: mocks.writeTextFile,
+    savePastedImages: mocks.savePastedImages,
     prepareHtmlPreview: mocks.prepareHtmlPreview,
     releaseHtmlPreview: mocks.releaseHtmlPreview,
     prepareTrash: mocks.prepareTrash,
     moveToTrash: mocks.moveToTrash,
+    prepareWorkspaceMove: mocks.prepareWorkspaceMove,
+    moveWorkspaceEntry: mocks.moveWorkspaceEntry,
+    reconcileWorkspaceMove: mocks.reconcileWorkspaceMove,
+    prepareWorkspaceRename: mocks.prepareWorkspaceRename,
+    renameWorkspaceEntry: mocks.renameWorkspaceEntry,
+    reconcileWorkspaceRename: mocks.reconcileWorkspaceRename,
     generateSystemThumbnail: mocks.generateSystemThumbnail,
     showEmbeddedQuickLook: mocks.showEmbeddedQuickLook,
     resizeEmbeddedQuickLook: mocks.resizeEmbeddedQuickLook,
@@ -211,6 +250,10 @@ vi.mock('./lib/desktop', async () => {
     revealPath: mocks.revealPath,
   };
 });
+
+vi.mock('./lib/print', () => ({
+  waitForPrintableAssets: mocks.waitForPrintableAssets,
+}));
 
 async function editCurrentDocument(value: string) {
   if (!screen.queryByRole('textbox', { name: 'editor' })) {
@@ -237,6 +280,14 @@ async function beginFolderCreate(
   await user.click(screen.getByRole('menuitem', { name: '新建文件夹' }));
 }
 
+async function beginEntryRename(
+  user: ReturnType<typeof userEvent.setup>,
+  buttonName: RegExp | string,
+) {
+  await user.click(screen.getByRole('button', { name: buttonName }));
+  await user.click(screen.getByRole('menuitem', { name: '重命名' }));
+}
+
 beforeEach(() => {
   localStorage.clear();
   mocks.desktop = false;
@@ -245,6 +296,7 @@ beforeEach(() => {
   mocks.openPathHandler = undefined;
   mocks.quitRequestHandler = undefined;
   mocks.quitAbortHandler = undefined;
+  mocks.printRequestHandler = undefined;
   mocks.workspaceChangeHandler = undefined;
   mocks.workspaceFailureHandler = undefined;
   mocks.setWorkspaceRoot.mockReset();
@@ -282,7 +334,20 @@ beforeEach(() => {
   mocks.createWorkspaceWindow.mockResolvedValue('workspace-testprocess-1');
   mocks.respondAppQuit.mockReset();
   mocks.respondAppQuit.mockResolvedValue(undefined);
+  mocks.printCurrentWindow.mockReset();
+  mocks.printCurrentWindow.mockResolvedValue(undefined);
+  mocks.waitForPrintableAssets.mockReset();
+  mocks.waitForPrintableAssets.mockResolvedValue({ timedOut: false, failedImages: [] });
   mocks.readTextFile.mockReset();
+  mocks.readSpreadsheet.mockReset();
+  mocks.readSpreadsheet.mockResolvedValue({
+    version: 'sheet-v1',
+    sheets: [{
+      name: 'Data', index: 0, visible: true,
+      startRow: 0, startColumn: 0, endRow: 0, endColumn: 0,
+    }],
+    cells: [{ sheetIndex: 0, row: 0, column: 0, kind: 'string', displayValue: 'value' }],
+  });
   mocks.createDirectory.mockReset();
   mocks.createDirectory.mockImplementation(async (parentPath: string, name: string) => ({
     name: name.trim(),
@@ -300,6 +365,8 @@ beforeEach(() => {
   });
   mocks.writeTextFile.mockReset();
   mocks.writeTextFile.mockResolvedValue('saved-version');
+  mocks.savePastedImages.mockReset();
+  mocks.savePastedImages.mockResolvedValue(['assets/screenshot-test.png']);
   mocks.prepareHtmlPreview.mockReset();
   mocks.prepareHtmlPreview.mockImplementation(async (path: string) => ({
     token: 'preview-token',
@@ -323,7 +390,77 @@ beforeEach(() => {
   }));
   mocks.chooseFolder.mockReset();
   mocks.chooseFolder.mockResolvedValue(null);
+  mocks.chooseMoveDestination.mockReset();
+  mocks.chooseMoveDestination.mockResolvedValue(null);
+  mocks.prepareWorkspaceMove.mockReset();
+  mocks.prepareWorkspaceMove.mockImplementation(async (sourcePath: string, destinationDirectory: string) => ({
+    sourcePath,
+    destinationDirectory,
+    destinationPath: `${destinationDirectory}/${sourcePath.split('/').pop()}`,
+    workspaceGeneration: 1,
+    sourceParentIdentity: '1:10',
+    sourceIdentity: '1:11',
+    destinationIdentity: '1:12',
+    sourceIsDirectory: sourcePath.endsWith('.pages') || sourcePath.endsWith('/docs'),
+    sourceIsBundle: sourcePath.endsWith('.pages'),
+  }));
+  mocks.moveWorkspaceEntry.mockReset();
+  mocks.moveWorkspaceEntry.mockImplementation(async (candidate: {
+    sourcePath: string;
+    destinationPath: string;
+    sourceIsDirectory?: boolean;
+  }) => ({
+    originalPath: candidate.sourcePath,
+    movedPath: candidate.destinationPath,
+    entry: {
+      name: candidate.destinationPath.split('/').pop()!,
+      path: candidate.destinationPath,
+      kind: candidate.sourcePath.endsWith('.pages')
+        ? 'document'
+        : candidate.sourcePath.endsWith('.xlsx')
+          ? 'spreadsheet'
+          : candidate.sourcePath.endsWith('.png')
+            ? 'image'
+            : candidate.sourceIsDirectory ? 'folder' : 'md',
+    },
+  }));
+  mocks.reconcileWorkspaceMove.mockReset();
+  mocks.reconcileWorkspaceMove.mockResolvedValue({ outcome: 'source' });
+  mocks.prepareWorkspaceRename.mockReset();
+  mocks.prepareWorkspaceRename.mockImplementation(async (sourcePath: string, newName: string) => ({
+    sourcePath,
+    destinationPath: `${sourcePath.slice(0, sourcePath.lastIndexOf('/'))}/${newName}`,
+    workspaceGeneration: 1,
+    parentIdentity: '1:10',
+    sourceIdentity: '1:11',
+    sourceIsDirectory: sourcePath.endsWith('.pages') || sourcePath.endsWith('/docs'),
+    sourceIsBundle: sourcePath.endsWith('.pages'),
+  }));
+  mocks.renameWorkspaceEntry.mockReset();
+  mocks.renameWorkspaceEntry.mockImplementation(async (candidate: {
+    sourcePath: string;
+    destinationPath: string;
+    sourceIsDirectory?: boolean;
+  }) => ({
+    originalPath: candidate.sourcePath,
+    renamedPath: candidate.destinationPath,
+    entry: {
+      name: candidate.destinationPath.split('/').pop()!,
+      path: candidate.destinationPath,
+      kind: candidate.sourcePath.endsWith('.pages')
+        ? 'document'
+        : candidate.sourcePath.endsWith('.xlsx')
+          ? 'spreadsheet'
+          : candidate.sourcePath.endsWith('.png')
+            ? 'image'
+            : candidate.sourceIsDirectory ? 'folder' : 'md',
+    },
+  }));
+  mocks.reconcileWorkspaceRename.mockReset();
+  mocks.reconcileWorkspaceRename.mockResolvedValue({ outcome: 'source' });
   mocks.closeWindow.mockReset();
+  mocks.destroyWindow.mockReset();
+  mocks.destroyWindow.mockResolvedValue(undefined);
   mocks.generateSystemThumbnail.mockReset();
   mocks.generateSystemThumbnail.mockResolvedValue({
     mimeType: 'image/png',
@@ -347,6 +484,67 @@ afterEach(() => {
 });
 
 describe('autosave transition protection', () => {
+  async function readyScreenshotEditor() {
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled).toBe(false));
+    return editCurrentDocument('# initial disk');
+  }
+  function pasteScreenshot() {
+    const image = new File([new Uint8Array([137, 80, 78, 71])], 'capture.png', { type: 'image/png' });
+    fireEvent.paste(screen.getByRole('textbox', { name: 'editor' }), { clipboardData: {
+      items: [{ kind: 'file', type: image.type, getAsFile: () => image }], files: [image],
+    } });
+  }
+
+  it('waits for screenshot insertion before closing and saves the image reference', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# initial disk', version: 'v1' });
+    const imageWrite = deferred<string[]>();
+    mocks.savePastedImages.mockReturnValue(imageWrite.promise);
+    render(<App />);
+    await readyScreenshotEditor();
+    pasteScreenshot();
+    await waitFor(() => expect(mocks.savePastedImages).toHaveBeenCalledOnce());
+    const preventDefault = vi.fn();
+    await act(async () => mocks.closeHandler?.({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(mocks.destroyWindow).not.toHaveBeenCalled();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    await act(async () => imageWrite.resolve(['assets/screenshot-test.png']));
+    await waitFor(() => expect(mocks.destroyWindow).toHaveBeenCalledOnce());
+    expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/docs/plan.md', '![截图](assets/screenshot-test.png) initial disk', 'v1');
+    expect(mocks.savePastedImages).toHaveBeenCalledWith('/workspace/docs/plan.md', expect.any(Number), [{ mimeType: 'image/png', bytes: [137, 80, 78, 71] }]);
+  });
+
+  it('waits for screenshot insertion before Command-S flushes', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# initial disk', version: 'v1' });
+    const imageWrite = deferred<string[]>();
+    mocks.savePastedImages.mockReturnValue(imageWrite.promise);
+    render(<App />);
+    await readyScreenshotEditor();
+    pasteScreenshot();
+    await waitFor(() => expect(mocks.savePastedImages).toHaveBeenCalledOnce());
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    await act(async () => imageWrite.resolve(['assets/screenshot-test.png']));
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/docs/plan.md', '![截图](assets/screenshot-test.png) initial disk', 'v1'));
+  });
+
+  it('keeps the draft and releases the editor after a screenshot write error', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# initial disk', version: 'v1' });
+    mocks.savePastedImages.mockRejectedValue(new Error('PERMISSION_DENIED'));
+    render(<App />);
+    await readyScreenshotEditor();
+    pasteScreenshot();
+    await screen.findByText('图片粘贴失败：PERMISSION_DENIED');
+    const editor = screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement;
+    expect(editor.value).toBe('# initial disk');
+    expect(editor.disabled).toBe(false);
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
   it('autosaves the browser draft before switching files without a discard dialog', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -361,7 +559,7 @@ describe('autosave transition protection', () => {
     mocks.desktop = true;
     mocks.readTextFile.mockResolvedValue({ content: '# initial disk', version: 'v1' });
     mocks.chooseFolder.mockResolvedValue('/other');
-    mocks.closeWindow.mockRejectedValueOnce(new Error('native close failed'));
+    mocks.destroyWindow.mockRejectedValueOnce(new Error('native destroy failed'));
     const user = userEvent.setup();
     render(<App />);
 
@@ -374,12 +572,15 @@ describe('autosave transition protection', () => {
     await act(async () => mocks.openPathHandler?.('/workspace/docs/second.md'));
     await screen.findByText('workspace / second.md');
     await editCurrentDocument('# close draft');
+    localStorage.setItem(LAST_ACTIVE_WORKSPACE_SESSION_KEY, 'otherprocess.0');
 
     const preventDefault = vi.fn();
     await act(async () => mocks.closeHandler?.({ preventDefault }));
     expect(preventDefault).toHaveBeenCalledOnce();
-    await waitFor(() => expect(mocks.closeWindow).toHaveBeenCalledOnce());
-    await waitFor(() => expect(screen.getByText('关闭失败：native close failed')).toBeTruthy());
+    await waitFor(() => expect(mocks.destroyWindow).toHaveBeenCalledOnce());
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText('关闭失败：native destroy failed')).toBeTruthy());
+    expect(readWorkspaceSession('testprocess.0')?.rootPath).toBe('/workspace');
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
@@ -394,7 +595,53 @@ describe('autosave transition protection', () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(mocks.closeWindow).not.toHaveBeenCalled();
+    expect(mocks.destroyWindow).not.toHaveBeenCalled();
     expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the window and local draft when a failed save discard is cancelled', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.writeTextFile.mockRejectedValueOnce(new Error('disk full'));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# unsaved local draft');
+
+    const preventDefault = vi.fn();
+    await act(async () => mocks.closeHandler?.({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(await screen.findByText('关闭 LocalView前无法保存')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+
+    expect(mocks.destroyWindow).not.toHaveBeenCalled();
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement).value)
+      .toBe('# unsaved local draft');
+  });
+
+  it('restores unload protection when an approved discard cannot destroy the window', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.writeTextFile.mockRejectedValueOnce(new Error('disk full'));
+    mocks.destroyWindow.mockRejectedValueOnce(new Error('destroy denied'));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# local draft survives');
+
+    const preventDefault = vi.fn();
+    await act(async () => mocks.closeHandler?.({ preventDefault }));
+    await user.click(await screen.findByRole('button', { name: '放弃修改并关闭 LocalView' }));
+    await waitFor(() => expect(mocks.destroyWindow).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByText('关闭失败：destroy denied')).toBeTruthy());
+
+    const beforeUnload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement).value)
+      .toBe('# local draft survives');
   });
 });
 
@@ -468,6 +715,94 @@ describe('external disk changes', () => {
   });
 });
 
+describe('Markdown printing', () => {
+  it('prints the rendered latest unsaved snapshot without saving or changing mode', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    const editor = await screen.findByRole('textbox', { name: 'editor' }, { timeout: 5000 });
+    fireEvent.change(editor, { target: { value: '# Unsaved print title\n\n**rendered**' } });
+
+    await user.click(screen.getByRole('button', { name: '打印' }));
+    await waitFor(() => expect(mocks.printCurrentWindow).toHaveBeenCalledOnce());
+
+    const printRoot = mocks.waitForPrintableAssets.mock.calls[0]?.[0] as HTMLElement;
+    expect(printRoot.querySelector('h1')?.textContent).toBe('Unsaved print title');
+    expect(printRoot.querySelector('strong')?.textContent).toBe('rendered');
+    expect(printRoot.textContent).not.toContain('# Unsaved print title');
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '编辑' }).className).toContain('active');
+    expect(editor).toHaveProperty('value', '# Unsaved print title\n\n**rendered**');
+    expect(document.querySelector('.markdown-print-surface')).toBeTruthy();
+
+    act(() => window.dispatchEvent(new Event('afterprint')));
+    await waitFor(() => expect(document.querySelector('.markdown-print-surface')).toBeNull());
+  });
+
+  it('deduplicates native menu and Command-P while one immutable print job is preparing', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# Native print', version: 'v1' });
+    const readiness = deferred<{ timedOut: boolean; failedImages: string[] }>();
+    mocks.waitForPrintableAssets.mockReturnValue(readiness.promise);
+    render(<App />);
+
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect(mocks.printRequestHandler).toBeTypeOf('function'));
+    act(() => mocks.printRequestHandler?.());
+    await waitFor(
+      () => expect(mocks.waitForPrintableAssets).toHaveBeenCalledOnce(),
+      { timeout: 5000 },
+    );
+
+    act(() => mocks.printRequestHandler?.());
+    const shortcut = new KeyboardEvent('keydown', {
+      key: 'p',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(shortcut));
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(mocks.printCurrentWindow).not.toHaveBeenCalled();
+
+    await act(async () => readiness.resolve({ timedOut: false, failedImages: [] }));
+    await waitFor(() => expect(mocks.printCurrentWindow).toHaveBeenCalledOnce());
+    expect(mocks.waitForPrintableAssets).toHaveBeenCalledOnce();
+  });
+
+  it('captures Command-P but fails closed for non-Markdown documents', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /index\.html$/ }));
+    await screen.findByText('project / index.html');
+
+    const shortcut = new KeyboardEvent('keydown', {
+      key: 'p',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(shortcut));
+
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(mocks.printCurrentWindow).not.toHaveBeenCalled();
+    expect(document.querySelector('.markdown-print-surface')).toBeNull();
+    expect(await screen.findByText('当前仅支持打印 Markdown 文件')).toBeTruthy();
+  });
+
+  it('cleans up the print surface and releases interactions when native dispatch fails', async () => {
+    mocks.printCurrentWindow.mockRejectedValueOnce(new Error('native print failed'));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '打印' }));
+    expect(await screen.findByText('无法打开打印设置：native print failed')).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('.markdown-print-surface')).toBeNull());
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '打印' }).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
+  });
+});
+
 describe('default preview mode', () => {
   it('opens Markdown, HTML, and text in Preview and resets manual Edit on file changes', async () => {
     window.localStorage.setItem('localview.view-modes', JSON.stringify({ md: 'edit', html: 'split', text: 'edit' }));
@@ -506,7 +841,7 @@ describe('default preview mode', () => {
     await screen.findByText('project / style.css');
     expect(screen.getByRole('button', { name: '预览' }).className).toContain('active');
     expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
-    expect(screen.getByText(/font-family: system-ui/)).toBeTruthy();
+    expect(document.querySelector('.code-preview')?.textContent).toContain('font-family: system-ui');
   });
 
   it('still supports explicit Edit and Split modes', async () => {
@@ -521,16 +856,23 @@ describe('default preview mode', () => {
     const markdownTextbox = screen.getByRole('textbox', { name: 'editor' });
     expect(markdownTextbox.closest<HTMLElement>('.editor-pane')?.dataset.markdownPresentation)
       .toBe('source');
-    const markdownEditor = markdownTextbox.closest('.editor-pane');
+    const markdownEditor = markdownTextbox.closest('.editor-surface');
     const markdownPreview = screen.getByRole('heading', { name: 'Local Folder Viewer' }).closest('.preview-pane');
     expect(markdownPreview?.nextElementSibling).toBe(markdownEditor);
+
+    await user.click(screen.getByRole('button', { name: '预览' }));
+    expect(screen.queryByRole('textbox', { name: 'editor' })).toBeNull();
+    expect((markdownEditor as HTMLElement).hidden).toBe(true);
+    expect((markdownTextbox as HTMLTextAreaElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    expect(screen.getByRole('textbox', { name: 'editor' })).toBe(markdownTextbox);
 
     await user.click(screen.getByRole('button', { name: /index\.html$/ }));
     await screen.findByText('project / index.html');
     await user.click(screen.getByRole('button', { name: '分栏' }));
     const htmlTextbox = screen.getByRole('textbox', { name: 'editor' });
     expect(htmlTextbox.closest('.editor-pane')?.getAttribute('data-markdown-presentation')).toBeNull();
-    const htmlEditor = htmlTextbox.closest('.editor-pane');
+    const htmlEditor = htmlTextbox.closest('.editor-surface');
     const htmlPreview = screen.getByTitle('index.html').closest('.html-pane');
     expect(htmlPreview?.nextElementSibling).toBe(htmlEditor);
   });
@@ -544,7 +886,8 @@ describe('Markdown file creation', () => {
     const rootCreate = screen.getByRole('button', { name: '在 PROJECT 根目录新建' });
     const folderCreate = screen.getByRole('button', { name: '在 docs 中新建' });
     const folderRow = folderCreate.closest('.tree-row');
-    expect(folderRow?.querySelectorAll(':scope > button')).toHaveLength(1);
+    expect(folderRow?.querySelectorAll(':scope > button')).toHaveLength(0);
+    expect(folderRow?.querySelectorAll(':scope > .tree-row-main')).toHaveLength(1);
     expect(folderRow?.querySelectorAll('.tree-row-actions button')).toHaveLength(2);
     expect(folderRow?.querySelector('.tree-row-main')).toBeTruthy();
 
@@ -922,12 +1265,14 @@ describe('folder creation and tree action menus', () => {
     const preventDefault = vi.fn();
     act(() => mocks.closeHandler?.({ preventDefault }));
     expect(preventDefault).toHaveBeenCalledOnce();
+    expect(mocks.destroyWindow).not.toHaveBeenCalled();
     expect(mocks.closeWindow).not.toHaveBeenCalled();
     act(() => mocks.quitRequestHandler?.({ generation: 44 }));
     await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(44, 'cancel'));
 
     await act(async () => creation.resolve({ name: 'slow', path: '/workspace/slow', kind: 'folder' }));
-    await waitFor(() => expect(mocks.closeWindow).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.destroyWindow).toHaveBeenCalledOnce());
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
   });
 });
 
@@ -1374,6 +1719,1364 @@ describe('Finder incoming Office files', () => {
   });
 });
 
+describe('workspace entry rename', () => {
+  it('starts inline rename by double-clicking only the tree name', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = screen.getByRole('button', { name: 'README.md' });
+    const name = row.querySelector('.tree-name');
+    expect(name).toBeTruthy();
+    await user.dblClick(name!);
+
+    expect(screen.getByRole('textbox', { name: '重命名 README.md' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑当前文件名称' })).toBeTruthy();
+  });
+
+  it('waits for an unselected file navigation before starting double-click rename', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = screen.getByRole('button', { name: 'product-notes.md' });
+    await user.dblClick(row.querySelector('.tree-name')!);
+
+    expect(await screen.findByRole('textbox', { name: '重命名 product-notes.md' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '编辑当前文件名称' }).textContent)
+      .toBe('product-notes.md');
+  });
+
+  it('renames in the document title and submits when clicking outside', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(screen.getByRole('button', { name: '编辑当前文件名称' }));
+    const input = screen.getByRole('textbox', { name: '重命名 README.md' });
+    await user.clear(input);
+    await user.type(input, 'HOME');
+    await user.click(await screen.findByRole('heading', { name: 'Local Folder Viewer' }));
+
+    expect(await screen.findByRole('button', { name: 'HOME.md' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '编辑当前文件名称' }).textContent).toBe('HOME.md');
+  });
+
+  it('silently exits an unchanged title rename on blur', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(screen.getByRole('button', { name: '编辑当前文件名称' }));
+    await user.click(await screen.findByRole('heading', { name: 'Local Folder Viewer' }));
+
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: '重命名 README.md' })).toBeNull());
+    expect(screen.getByRole('button', { name: '编辑当前文件名称' }).textContent).toBe('README.md');
+    expect(screen.queryByText(/已模拟重命名/)).toBeNull();
+  });
+
+  it('keeps and refocuses an invalid title rename after blur', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.dblClick(screen.getByRole('button', { name: '编辑当前文件名称' }));
+    const input = screen.getByRole('textbox', { name: '重命名 README.md' });
+    await user.clear(input);
+    await user.type(input, 'bad/name');
+    await user.click(await screen.findByRole('heading', { name: 'Local Folder Viewer' }));
+
+    expect(await screen.findByText('请输入有效名称')).toBeTruthy();
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it('continues a different tree click after a blur rename succeeds', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const sourceRow = screen.getByRole('button', { name: 'README.md' });
+    await user.dblClick(sourceRow.querySelector('.tree-name')!);
+    const input = screen.getByRole('textbox', { name: '重命名 README.md' });
+    await user.clear(input);
+    await user.type(input, 'HOME');
+    const docs = screen.getByRole('button', { name: 'docs' });
+    expect(docs.getAttribute('aria-expanded')).toBe('true');
+    await user.click(docs);
+
+    expect(await screen.findByRole('button', { name: 'HOME.md' })).toBeTruthy();
+    await waitFor(() => expect(docs.getAttribute('aria-expanded')).toBe('false'));
+  });
+
+  it('renames the browser demo inline while preserving the locked suffix and content', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await beginEntryRename(user, 'README.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 README.md' });
+    expect((input as HTMLInputElement).value).toBe('README');
+    await user.clear(input);
+    await user.type(input, 'HOME{Enter}');
+
+    expect(await screen.findByRole('button', { name: 'HOME.md' })).toBeTruthy();
+    expect(screen.getByText('project / HOME.md')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Local Folder Viewer' })).toBeTruthy();
+  });
+
+  it('flushes a selected dirty document before rename and retargets Finder reveal', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const listBeforeRename = mocks.listDirectory.getMockImplementation()!;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      const entries = await listBeforeRename(path);
+      // A delayed directory refresh must observe the same rename as the command result.
+      return mocks.renameWorkspaceEntry.mock.calls.length ? entries.map((entry: { path: string }) => (
+        entry.path === '/workspace/docs/plan.md'
+          ? { ...entry, name: 'strategy.md', path: '/workspace/docs/strategy.md' }
+          : entry
+      )) : entries;
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# local rename draft');
+
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'strategy{Enter}');
+
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+    expect(mocks.writeTextFile).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      '# local rename draft',
+      'v1',
+    );
+    expect(mocks.prepareWorkspaceRename).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      'strategy.md',
+    );
+    expect(await screen.findByRole('button', { name: 'strategy.md' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '在 Finder 中显示' }));
+    expect(mocks.revealPath).toHaveBeenCalledWith('/workspace/docs/strategy.md');
+  });
+
+  it('does not force-save an unrelated dirty document', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# unrelated dirty draft');
+    mocks.writeTextFile.mockClear();
+
+    await beginEntryRename(user, 'report.pages 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 report.pages' });
+    await user.clear(input);
+    await user.type(input, 'summary{Enter}');
+
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement).value)
+      .toBe('# unrelated dirty draft');
+  });
+
+  it('keeps the inline editor on a definitive failure and never applies a false success', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.renameWorkspaceEntry.mockRejectedValue({
+      code: 'RENAME_DESTINATION_EXISTS',
+      message: 'collision',
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'taken{Enter}');
+
+    expect(await screen.findByText('当前文件夹中已存在同名项目')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '重命名 plan.md' }).getAttribute('aria-invalid'))
+      .toBe('true');
+    expect(screen.queryByRole('button', { name: 'taken.md' })).toBeNull();
+  });
+
+  it('treats typed uncertain as refresh-only even if reconciliation sees destination', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.renameWorkspaceEntry.mockRejectedValue({
+      code: 'RENAME_OUTCOME_UNCERTAIN',
+      message: 'uncertain',
+    });
+    mocks.reconcileWorkspaceRename.mockResolvedValue({
+      outcome: 'destination',
+      entry: { name: 'maybe.md', path: '/workspace/docs/maybe.md', kind: 'md' },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'maybe{Enter}');
+
+    expect(await screen.findByText(/重命名结果不确定/)).toBeTruthy();
+    expect(mocks.reconcileWorkspaceRename).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('textbox', { name: '重命名 plan.md' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'maybe.md' })).toBeNull();
+  });
+
+  it('renames an ancestor folder after saving and migrates the selected descendant path', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# folder rename draft');
+
+    await beginEntryRename(user, 'docs 文件夹操作');
+    const input = screen.getByRole('textbox', { name: '重命名 docs' });
+    await user.clear(input);
+    await user.type(input, 'knowledge{Enter}');
+
+    expect(await screen.findByRole('button', { name: 'knowledge' })).toBeTruthy();
+    expect(screen.getByText('/workspace/knowledge/plan.md')).toBeTruthy();
+    expect(mocks.writeTextFile).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      '# folder rename draft',
+      'v1',
+    );
+  });
+
+  it('releases the old HTML capability and prepares the renamed path', async () => {
+    mocks.desktop = true;
+    let renamed = false;
+    mocks.getWindowBootstrap.mockResolvedValue({
+      initialPath: '/workspace/docs/index.html',
+      sessionId: 'testprocess.0',
+      restoreMode: 'none',
+    });
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === '/workspace') return [{ name: 'docs', path: '/workspace/docs', kind: 'folder' }];
+      if (path === '/workspace/docs') return [{
+        name: renamed ? 'home.html' : 'index.html',
+        path: renamed ? '/workspace/docs/home.html' : '/workspace/docs/index.html',
+        kind: 'html',
+      }];
+      return [];
+    });
+    mocks.renameWorkspaceEntry.mockImplementationOnce(async (candidate: {
+      sourcePath: string;
+      destinationPath: string;
+    }) => {
+      renamed = true;
+      return {
+        originalPath: candidate.sourcePath,
+        renamedPath: candidate.destinationPath,
+        entry: { name: 'home.html', path: candidate.destinationPath, kind: 'html' },
+      };
+    });
+    mocks.readTextFile.mockResolvedValue({ content: '<h1>hello</h1>', version: 'html-v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / index.html');
+    await waitFor(() => expect(mocks.prepareHtmlPreview).toHaveBeenCalledWith(
+      '/workspace/docs/index.html',
+    ));
+
+    await beginEntryRename(user, 'index.html 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 index.html' });
+    await user.clear(input);
+    await user.type(input, 'home{Enter}');
+
+    await waitFor(() => expect(mocks.prepareHtmlPreview).toHaveBeenCalledWith(
+      '/workspace/docs/home.html',
+    ));
+    expect(mocks.releaseHtmlPreview).toHaveBeenCalledWith('preview-token');
+  });
+
+  it('restarts embedded Quick Look for a renamed selected document', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 250, y: 88, left: 250, top: 88, width: 900, height: 680,
+      right: 1150, bottom: 768, toJSON: () => ({}),
+    } as DOMRect);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await user.click(screen.getByRole('button', { name: 'report.pages' }));
+    await waitFor(() => expect(mocks.showEmbeddedQuickLook).toHaveBeenCalledWith(
+      '/workspace/docs/report.pages',
+      expect.any(Object),
+      expect.any(Number),
+    ));
+
+    await beginEntryRename(user, 'report.pages 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 report.pages' });
+    await user.clear(input);
+    await user.type(input, 'summary{Enter}');
+
+    await waitFor(() => expect(mocks.showEmbeddedQuickLook).toHaveBeenCalledWith(
+      '/workspace/docs/summary.pages',
+      expect.any(Object),
+      expect.any(Number),
+    ));
+    expect(mocks.hideEmbeddedQuickLook).toHaveBeenCalled();
+  });
+
+  it('reloads Spreadsheet data from the renamed selected path', async () => {
+    mocks.desktop = true;
+    mocks.getWindowBootstrap.mockResolvedValue({
+      initialPath: '/workspace/docs/budget.xlsx',
+      sessionId: 'testprocess.0',
+      restoreMode: 'none',
+    });
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === '/workspace') return [{ name: 'docs', path: '/workspace/docs', kind: 'folder' }];
+      if (path === '/workspace/docs') return [{
+        name: 'budget.xlsx', path: '/workspace/docs/budget.xlsx', kind: 'spreadsheet',
+      }];
+      return [];
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(mocks.readSpreadsheet).toHaveBeenCalledWith(
+      '/workspace/docs/budget.xlsx',
+    ));
+
+    await beginEntryRename(user, 'budget.xlsx 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 budget.xlsx' });
+    await user.clear(input);
+    await user.type(input, 'forecast{Enter}');
+
+    await waitFor(() => expect(mocks.readSpreadsheet).toHaveBeenCalledWith(
+      '/workspace/docs/forecast.xlsx',
+    ));
+  });
+
+  it('coalesces a self watcher rename that arrives before the command response', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({
+      path: '/workspace', generation: 1, watching: true, assetScope: 'scope-1',
+    });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let committed = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (committed && path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+        { name: 'summary.pages', path: '/workspace/docs/summary.pages', kind: 'document' },
+      ];
+      return defaultList?.(path);
+    });
+    const commit = deferred<any>();
+    mocks.renameWorkspaceEntry.mockReturnValueOnce(commit.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await beginEntryRename(user, 'report.pages 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 report.pages' });
+    await user.clear(input);
+    await user.type(input, 'summary{Enter}');
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => mocks.workspaceChangeHandler?.({
+      rootPath: '/workspace',
+      generation: 1,
+      events: [{
+        kind: 'rename',
+        paths: ['/workspace/docs/report.pages', '/workspace/docs/summary.pages'],
+      }],
+    }));
+    committed = true;
+    await act(async () => commit.resolve({
+      originalPath: '/workspace/docs/report.pages',
+      renamedPath: '/workspace/docs/summary.pages',
+      entry: { name: 'summary.pages', path: '/workspace/docs/summary.pages', kind: 'document' },
+    }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'summary.pages' })).toBeTruthy());
+    expect(screen.getAllByRole('button', { name: 'summary.pages' })).toHaveLength(1);
+  });
+
+  it('bounds rename watcher buffering and rescans after the 33rd related batch', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({
+      path: '/workspace', generation: 1, watching: true, assetScope: 'scope-1',
+    });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let committed = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (committed && path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+        { name: 'summary.pages', path: '/workspace/docs/summary.pages', kind: 'document' },
+      ];
+      return defaultList?.(path);
+    });
+    const commit = deferred<any>();
+    mocks.renameWorkspaceEntry.mockReturnValueOnce(commit.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    mocks.listDirectory.mockClear();
+    await beginEntryRename(user, 'report.pages 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 report.pages' });
+    await user.clear(input);
+    await user.type(input, 'summary{Enter}');
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => {
+      for (let index = 0; index < 33; index += 1) {
+        mocks.workspaceChangeHandler?.({
+          rootPath: '/workspace',
+          generation: 1,
+          events: [{ kind: 'modify', paths: ['/workspace/docs/report.pages'] }],
+        });
+      }
+    });
+    expect(mocks.listDirectory).not.toHaveBeenCalled();
+
+    committed = true;
+    await act(async () => commit.resolve({
+      originalPath: '/workspace/docs/report.pages',
+      renamedPath: '/workspace/docs/summary.pages',
+      entry: { name: 'summary.pages', path: '/workspace/docs/summary.pages', kind: 'document' },
+    }));
+    await waitFor(() => expect(mocks.listDirectory).toHaveBeenCalled());
+    expect(mocks.listDirectory.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it('waits for an in-flight rename before closing the window', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const pendingRename = deferred<Awaited<ReturnType<typeof mocks.renameWorkspaceEntry>>>();
+    mocks.renameWorkspaceEntry.mockReturnValueOnce(pendingRename.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'after-close{Enter}');
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+
+    const preventDefault = vi.fn();
+    await act(async () => mocks.closeHandler?.({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(mocks.destroyWindow).not.toHaveBeenCalled();
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+
+    await act(async () => pendingRename.resolve({
+      originalPath: '/workspace/docs/plan.md',
+      renamedPath: '/workspace/docs/after-close.md',
+      entry: { name: 'after-close.md', path: '/workspace/docs/after-close.md', kind: 'md' },
+    }));
+    await waitFor(() => expect(mocks.destroyWindow).toHaveBeenCalledOnce());
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+  });
+
+  it('waits for an in-flight rename before a Finder workspace transition', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const pendingRename = deferred<any>();
+    mocks.renameWorkspaceEntry.mockReturnValueOnce(pendingRename.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'before-transition{Enter}');
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+    const listCallsBeforeTransition = mocks.listDirectory.mock.calls.length;
+
+    act(() => mocks.openPathHandler?.('/workspace/docs/report.pages'));
+    await Promise.resolve();
+    expect(mocks.listDirectory.mock.calls.length).toBe(listCallsBeforeTransition);
+
+    await act(async () => pendingRename.resolve({
+      originalPath: '/workspace/docs/plan.md',
+      renamedPath: '/workspace/docs/before-transition.md',
+      entry: {
+        name: 'before-transition.md',
+        path: '/workspace/docs/before-transition.md',
+        kind: 'md',
+      },
+    }));
+    expect(await screen.findByText('workspace / report.pages')).toBeTruthy();
+  });
+
+  it('waits for an in-flight rename before answering application quit', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const pendingRename = deferred<any>();
+    mocks.renameWorkspaceEntry.mockReturnValueOnce(pendingRename.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await beginEntryRename(user, 'plan.md 操作');
+    const input = screen.getByRole('textbox', { name: '重命名 plan.md' });
+    await user.clear(input);
+    await user.type(input, 'before-quit{Enter}');
+    await waitFor(() => expect(mocks.renameWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => mocks.quitRequestHandler?.({ generation: 91 }));
+    await Promise.resolve();
+    expect(mocks.respondAppQuit).not.toHaveBeenCalled();
+
+    await act(async () => pendingRename.resolve({
+      originalPath: '/workspace/docs/plan.md',
+      renamedPath: '/workspace/docs/before-quit.md',
+      entry: { name: 'before-quit.md', path: '/workspace/docs/before-quit.md', kind: 'md' },
+    }));
+    await waitFor(() => expect(mocks.respondAppQuit).toHaveBeenCalledWith(91, 'saved'));
+  });
+});
+
+describe('workspace file moves', () => {
+  it('activates the first folder target before a move-source prop update when WKWebView hides transfer types', () => {
+    const onMoveStart = vi.fn(() => true);
+    const onMoveTarget = vi.fn(() => true);
+    const onMoveDrop = vi.fn();
+    render(<FileTree
+      tree={[
+        { name: 'source.md', path: '/workspace/source.md', kind: 'md' },
+        { name: 'target', path: '/workspace/target', kind: 'folder' },
+      ]}
+      rootPath="/workspace"
+      openFolders={new Set()}
+      selectedPath={null}
+      locked={false}
+      createDraft={null}
+      createBusy={false}
+      createInvalid={false}
+      preparingFolders={new Set()}
+      createInputRef={createRef()}
+      renameDraft={null}
+      renameBusy={false}
+      renameInvalid={false}
+      renameInputRef={createRef()}
+      focusPath={null}
+      moveSourcePath={null}
+      moveTargetPath={null}
+      moveTargetAllowed={false}
+      moveDragId={1}
+      onFocusHandled={vi.fn()}
+      onNodeClick={vi.fn()}
+      onNodeContextMenu={vi.fn()}
+      onOpenCreateMenu={vi.fn()}
+      onOpenNodeMenu={vi.fn()}
+      onSubmitCreate={vi.fn()}
+      onCancelCreate={vi.fn()}
+      onBeginRename={vi.fn()}
+      onSubmitRename={vi.fn()}
+      onCancelRename={vi.fn()}
+      onMoveStart={onMoveStart}
+      onMoveTarget={onMoveTarget}
+      onMoveHoverExpand={vi.fn()}
+      onMoveDrop={onMoveDrop}
+      onMoveEnd={vi.fn()}
+    />);
+    const sourceTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(screen.getByRole('button', { name: 'source.md' }), {
+      dataTransfer: sourceTransfer,
+    });
+    expect(onMoveStart).toHaveBeenCalledOnce();
+
+    const target = screen.getByRole('button', { name: 'target' });
+    const targetRow = target.closest('.tree-row') as HTMLDivElement;
+    const protectedTargetTransfer = {
+      effectAllowed: 'move',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragEnter(targetRow, { dataTransfer: protectedTargetTransfer });
+    fireEvent.dragOver(targetRow, { dataTransfer: protectedTargetTransfer });
+    expect(onMoveTarget).toHaveBeenCalledWith('/workspace/target');
+    expect(protectedTargetTransfer.dropEffect).toBe('move');
+    fireEvent.drop(targetRow, { dataTransfer: protectedTargetTransfer });
+    expect(onMoveDrop).toHaveBeenCalledWith('/workspace/target');
+
+    onMoveStart.mockReturnValue(false);
+    onMoveTarget.mockClear();
+    onMoveDrop.mockClear();
+    const rejectedTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    expect(fireEvent.dragStart(screen.getByRole('button', { name: 'source.md' }), {
+      dataTransfer: rejectedTransfer,
+    })).toBe(false);
+    expect(rejectedTransfer.setData).not.toHaveBeenCalled();
+    fireEvent.dragEnter(targetRow, { dataTransfer: protectedTargetTransfer });
+    fireEvent.dragOver(targetRow, { dataTransfer: protectedTargetTransfer });
+    fireEvent.drop(targetRow, { dataTransfer: protectedTargetTransfer });
+    expect(onMoveTarget).not.toHaveBeenCalled();
+    expect(onMoveDrop).not.toHaveBeenCalled();
+  });
+
+  it('clears the synchronous folder-target handshake on Escape', () => {
+    render(<App />);
+    const source = screen.getByRole('button', { name: 'README.md' });
+    const sourceRow = source.closest('.tree-row') as HTMLDivElement;
+    const sourceTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(source, { dataTransfer: sourceTransfer });
+    expect(sourceRow.className).toContain('move-source');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(sourceRow.className).not.toContain('move-source');
+    const destination = screen.getByRole('button', { name: 'docs' });
+    const destinationRow = destination.closest('.tree-row') as HTMLDivElement;
+    const protectedTargetTransfer = {
+      effectAllowed: 'move',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragEnter(destinationRow, { dataTransfer: protectedTargetTransfer });
+    fireEvent.dragOver(destinationRow, { dataTransfer: protectedTargetTransfer });
+    expect(destinationRow.className).not.toContain('move-target-valid');
+  });
+
+  it('uses the exact non-native tree main as the draggable source', () => {
+    render(<App />);
+    const source = screen.getByRole('button', { name: 'README.md' });
+    const sourceRow = source.closest('.tree-row') as HTMLDivElement;
+
+    expect(source.tagName).toBe('DIV');
+    expect(source.className).toContain('tree-row-main');
+    expect(source.getAttribute('draggable')).toBe('true');
+    expect(sourceRow.getAttribute('draggable')).toBeNull();
+
+    const folder = screen.getByRole('button', { name: 'docs' });
+    expect(folder.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(folder, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: 'docs' }).getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(screen.getByRole('button', { name: 'docs' }), { key: ' ' });
+    expect(screen.getByRole('button', { name: 'docs' }).getAttribute('aria-expanded')).toBe('true');
+
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(screen.getByRole('button', { name: '在 docs 中新建' }), { dataTransfer });
+    fireEvent.dragStart(screen.getByRole('button', { name: 'docs 文件夹操作' }), { dataTransfer });
+    expect(dataTransfer.setData).not.toHaveBeenCalled();
+  });
+
+  it('moves a browser-demo file by drag and drop without desktop IPC', async () => {
+    render(<App />);
+    const source = screen.getByRole('button', { name: 'README.md' });
+    const destination = screen.getByRole('button', { name: 'docs' });
+    const destinationRow = destination.closest('.tree-row') as HTMLDivElement;
+    const types: string[] = [];
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types,
+      setData: vi.fn((type: string) => {
+        if (!types.includes(type)) types.push(type);
+      }),
+    };
+
+    fireEvent.dragStart(source, { dataTransfer });
+    expect(dataTransfer.setData).toHaveBeenCalledWith(LOCALVIEW_TREE_DRAG_TYPE, '/Users/thera/project/README.md');
+    fireEvent.dragEnter(destinationRow, { dataTransfer });
+    fireEvent.dragOver(destinationRow, { dataTransfer });
+    expect(destinationRow.className).toContain('move-target-valid');
+    fireEvent.dragLeave(destinationRow, { dataTransfer, relatedTarget: document.body });
+    expect(destinationRow.className).not.toContain('move-target-valid');
+    fireEvent.dragEnter(destinationRow, { dataTransfer });
+    fireEvent.dragOver(destinationRow, { dataTransfer });
+    fireEvent.drop(destinationRow, { dataTransfer });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'README.md' }).dataset.treePath)
+      .toBe('/Users/thera/project/docs/README.md'));
+    expect(screen.getByText('project / README.md')).toBeTruthy();
+    expect(await screen.findByText(/浏览器 Demo 已模拟移动 README\.md/)).toBeTruthy();
+    expect(mocks.prepareWorkspaceMove).not.toHaveBeenCalled();
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+  });
+
+  it('moves a nested browser-demo file to the workspace root on the first drag', async () => {
+    render(<App />);
+    const source = screen.getByRole('button', { name: 'product-notes.md' });
+    const rootTarget = screen.getByText('PROJECT').closest('.sidebar-header') as HTMLDivElement;
+    const types: string[] = [];
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types,
+      setData: vi.fn((type: string) => {
+        if (!types.includes(type)) types.push(type);
+      }),
+    };
+
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragEnter(rootTarget, { dataTransfer });
+    expect(rootTarget.className).toContain('move-target-valid');
+    const childLeave = new Event('dragleave', { bubbles: true, cancelable: true });
+    Object.defineProperty(childLeave, 'dataTransfer', { value: dataTransfer });
+    Object.defineProperty(childLeave, 'relatedTarget', {
+      value: screen.getByRole('button', { name: '在 PROJECT 根目录新建' }),
+    });
+    fireEvent(screen.getByText('PROJECT'), childLeave);
+    expect(rootTarget.className).toContain('move-target-valid');
+    fireEvent.dragOver(rootTarget, { dataTransfer });
+    fireEvent.drop(rootTarget, { dataTransfer });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'product-notes.md' }).dataset.treePath)
+      .toBe('/Users/thera/project/product-notes.md'));
+    expect(await screen.findByText(/浏览器 Demo 已模拟移动 product-notes\.md/)).toBeTruthy();
+  });
+
+  it('moves a loaded folder into another folder and back to the workspace root', async () => {
+    render(<App />);
+    const docs = screen.getByRole('button', { name: 'docs' });
+    const prototypeRow = screen.getByRole('button', { name: 'prototype' }).closest('.tree-row') as HTMLDivElement;
+    const firstTypes: string[] = [];
+    const firstTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: firstTypes,
+      setData: vi.fn((type: string) => {
+        if (!firstTypes.includes(type)) firstTypes.push(type);
+      }),
+    };
+
+    fireEvent.dragStart(docs, { dataTransfer: firstTransfer });
+    fireEvent.dragEnter(prototypeRow, { dataTransfer: firstTransfer });
+    fireEvent.dragOver(prototypeRow, { dataTransfer: firstTransfer });
+    expect(prototypeRow.className).toContain('move-target-valid');
+    fireEvent.drop(prototypeRow, { dataTransfer: firstTransfer });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'docs' }).dataset.treePath)
+      .toBe('/Users/thera/project/prototype/docs'));
+    expect(screen.getByRole('button', { name: 'product-notes.md' }).dataset.treePath)
+      .toBe('/Users/thera/project/prototype/docs/product-notes.md');
+
+    const movedDocs = screen.getByRole('button', { name: 'docs' });
+    const rootTarget = screen.getByText('PROJECT').closest('.sidebar-header') as HTMLDivElement;
+    const secondTypes: string[] = [];
+    const secondTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: secondTypes,
+      setData: vi.fn((type: string) => {
+        if (!secondTypes.includes(type)) secondTypes.push(type);
+      }),
+    };
+    fireEvent.dragStart(movedDocs, { dataTransfer: secondTransfer });
+    fireEvent.dragEnter(rootTarget, { dataTransfer: secondTransfer });
+    fireEvent.dragOver(rootTarget, { dataTransfer: secondTransfer });
+    fireEvent.drop(rootTarget, { dataTransfer: secondTransfer });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'docs' }).dataset.treePath)
+      .toBe('/Users/thera/project/docs'));
+    expect(screen.getByRole('button', { name: 'product-notes.md' }).dataset.treePath)
+      .toBe('/Users/thera/project/docs/product-notes.md');
+  });
+
+  it('marks a folder drop onto itself invalid and leaves the tree unchanged', () => {
+    render(<App />);
+    const docs = screen.getByRole('button', { name: 'docs' });
+    const docsRow = docs.closest('.tree-row') as HTMLDivElement;
+    const types: string[] = [];
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types,
+      setData: (type: string) => {
+        if (!types.includes(type)) types.push(type);
+      },
+    };
+
+    fireEvent.dragStart(docs, { dataTransfer });
+    fireEvent.dragEnter(docsRow, { dataTransfer });
+    fireEvent.dragOver(docsRow, { dataTransfer });
+    expect(docsRow.className).toContain('move-target-invalid');
+    fireEvent.drop(docsRow, { dataTransfer });
+    expect(screen.getByRole('button', { name: 'docs' }).dataset.treePath)
+      .toBe('/Users/thera/project/docs');
+  });
+
+  it('blocks drag and the native picker while an inline create draft is active', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await userEvent.click(screen.getByRole('button', { name: '在 WORKSPACE 根目录新建' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: '新建 Markdown' }));
+    expect(await screen.findByPlaceholderText('untitled.md')).toBeTruthy();
+
+    const docs = screen.getByRole('button', { name: 'docs' });
+    const docsRow = docs.closest('.tree-row') as HTMLDivElement;
+    expect(docs.getAttribute('draggable')).toBe('false');
+    expect(docsRow.getAttribute('draggable')).toBeNull();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types: [] as string[],
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(docs, { dataTransfer });
+    expect(dataTransfer.setData).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(docs, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+    expect(await screen.findByText('请先完成或取消当前新建操作')).toBeTruthy();
+    expect(mocks.chooseMoveDestination).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText('untitled.md')).toBeTruthy();
+  });
+
+  it('opens a collapsed destination folder after a sustained tree hover', async () => {
+    render(<App />);
+    const source = screen.getByRole('button', { name: 'README.md' });
+    const destination = screen.getByRole('button', { name: 'assets' });
+    const destinationRow = destination.closest('.tree-row') as HTMLDivElement;
+    const types: string[] = [];
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types,
+      setData: (type: string) => {
+        if (!types.includes(type)) types.push(type);
+      },
+    };
+
+    expect(destination.getAttribute('aria-expanded')).toBe('false');
+    vi.useFakeTimers();
+    try {
+      fireEvent.dragStart(source, { dataTransfer });
+      fireEvent.dragEnter(destinationRow, { dataTransfer });
+      fireEvent.dragOver(destinationRow, { dataTransfer });
+      expect(destinationRow.className).toContain('move-target-valid');
+      await act(async () => vi.advanceTimersByTimeAsync(MOVE_HOVER_OPEN_DELAY_MS));
+      expect(destination.getAttribute('aria-expanded')).toBe('true');
+      expect(screen.getByRole('button', { name: 'cover.png' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not ghost-expand a folder after the drag leaves during async loading', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    const targetLoad = deferred<Array<{ name: string; path: string; kind: 'md' }>>();
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === '/workspace') return [
+        { name: 'docs', path: '/workspace/docs', kind: 'folder' },
+        { name: 'target', path: '/workspace/target', kind: 'folder' },
+      ];
+      if (path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+      ];
+      if (path === '/workspace/target') return targetLoad.promise;
+      return [];
+    });
+    render(<App />);
+    const source = await screen.findByRole('button', { name: 'plan.md' });
+    const destination = screen.getByRole('button', { name: 'target' });
+    const destinationRow = destination.closest('.tree-row') as HTMLDivElement;
+    const types: string[] = [];
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      types,
+      setData: (type: string) => {
+        if (!types.includes(type)) types.push(type);
+      },
+    };
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.dragStart(source, { dataTransfer });
+      fireEvent.dragEnter(destinationRow, { dataTransfer });
+      await act(async () => vi.advanceTimersByTimeAsync(MOVE_HOVER_OPEN_DELAY_MS));
+      expect(mocks.listDirectory).toHaveBeenCalledWith('/workspace/target');
+      fireEvent.dragLeave(destinationRow, { dataTransfer, relatedTarget: document.body });
+      await act(async () => targetLoad.resolve([
+        { name: 'ghost.md', path: '/workspace/target/ghost.md', kind: 'md' },
+      ]));
+      await Promise.resolve();
+      expect(screen.getByRole('button', { name: 'target' }).getAttribute('aria-expanded'))
+        .toBe('false');
+      expect(screen.queryByRole('button', { name: 'ghost.md' })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('strictly saves and follows the currently selected dirty Markdown file', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (mocks.moveWorkspaceEntry.mock.calls.length && path === '/workspace/docs') return [
+        { name: 'report.pages', path: '/workspace/docs/report.pages', kind: 'document' },
+      ];
+      if (mocks.moveWorkspaceEntry.mock.calls.length && path === '/workspace/drafts') return [
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+        { name: 'plan.md', path: '/workspace/drafts/plan.md', kind: 'md' },
+      ];
+      return defaultList?.(path);
+    });
+    render(<App />);
+    const plan = await screen.findByRole('button', { name: 'plan.md' });
+    await editCurrentDocument('# moved draft');
+
+    fireEvent.contextMenu(plan, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      '# moved draft',
+      'v1',
+    ));
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce());
+    expect(mocks.chooseMoveDestination).toHaveBeenCalledWith('/workspace');
+    expect(mocks.prepareWorkspaceMove).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      '/workspace/drafts',
+    );
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(screen.getByText('/workspace/drafts/plan.md')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# moved draft');
+  });
+
+  it('moves a folder containing the selected dirty file and retargets the active document', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let moved = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (!moved) return defaultList?.(path);
+      if (path === '/workspace') return [
+        { name: 'drafts', path: '/workspace/drafts', kind: 'folder' },
+      ];
+      if (path === '/workspace/drafts') return [
+        { name: 'docs', path: '/workspace/drafts/docs', kind: 'folder' },
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+      ];
+      if (path === '/workspace/drafts/docs') return [
+        { name: 'plan.md', path: '/workspace/drafts/docs/plan.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/drafts/docs/report.pages', kind: 'document' },
+      ];
+      return [];
+    });
+    mocks.moveWorkspaceEntry.mockImplementationOnce(async (candidate: {
+      sourcePath: string;
+      destinationPath: string;
+    }) => {
+      moved = true;
+      return {
+        originalPath: candidate.sourcePath,
+        movedPath: candidate.destinationPath,
+        entry: { name: 'docs', path: candidate.destinationPath, kind: 'folder' },
+      };
+    });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# moved with folder');
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'docs' }), {
+      clientX: 80,
+      clientY: 100,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledWith(
+      '/workspace/docs/plan.md',
+      '# moved with folder',
+      'v1',
+    ));
+    await waitFor(() => expect(mocks.prepareWorkspaceMove).toHaveBeenCalledWith(
+      '/workspace/docs',
+      '/workspace/drafts',
+    ));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'plan.md' }).dataset.treePath)
+      .toBe('/workspace/drafts/docs/plan.md'));
+    expect(screen.getByText('/workspace/drafts/docs/plan.md')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'editor' }))
+      .toHaveProperty('value', '# moved with folder');
+  });
+
+  it('keeps tree, selection, and save target unchanged when folder cycle validation fails', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    mocks.prepareWorkspaceMove.mockRejectedValueOnce({
+      code: 'MOVE_DESTINATION_INSIDE_SOURCE',
+      message: 'inside source',
+    });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# before failed folder move');
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'docs' }), {
+      clientX: 80,
+      clientY: 100,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    expect(await screen.findByText(/不能把文件夹移到它自己或子文件夹中/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'docs' }).dataset.treePath).toBe('/workspace/docs');
+    expect(screen.getByRole('button', { name: 'plan.md' }).dataset.treePath)
+      .toBe('/workspace/docs/plan.md');
+    expect(screen.getByText('/workspace/docs/plan.md')).toBeTruthy();
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+
+    await editCurrentDocument('# after failed folder move');
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenLastCalledWith(
+      '/workspace/docs/plan.md',
+      '# after failed folder move',
+      'saved-version',
+    ));
+  });
+
+  it('blocks a folder move when its selected dirty descendant cannot be saved', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.writeTextFile.mockRejectedValue({ code: 'EXTERNAL_CHANGE', message: 'changed outside' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# local descendant');
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'docs' }), {
+      clientX: 80,
+      clientY: 100,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    expect(await screen.findByText(/无法移动当前项目：磁盘文件已经变化/)).toBeTruthy();
+    expect(mocks.prepareWorkspaceMove).not.toHaveBeenCalled();
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'docs' }).dataset.treePath).toBe('/workspace/docs');
+    expect(screen.getByRole('button', { name: 'plan.md' }).dataset.treePath)
+      .toBe('/workspace/docs/plan.md');
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# local descendant');
+  });
+
+  it('blocks moving the current file on save conflict and keeps the original tree', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.writeTextFile.mockRejectedValue({ code: 'EXTERNAL_CHANGE', message: 'changed outside' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    render(<App />);
+    const plan = await screen.findByRole('button', { name: 'plan.md' });
+    await editCurrentDocument('# local');
+    fireEvent.contextMenu(plan, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    expect(await screen.findByText(/无法移动当前项目：磁盘文件已经变化/)).toBeTruthy();
+    expect(mocks.prepareWorkspaceMove).not.toHaveBeenCalled();
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'plan.md' }).dataset.treePath)
+      .toBe('/workspace/docs/plan.md');
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# local');
+  });
+
+  it('moves an unrelated file without flushing the current draft', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await editCurrentDocument('# unsaved current');
+    const report = screen.getByRole('button', { name: 'report.pages' });
+    fireEvent.contextMenu(report, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce());
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', '# unsaved current');
+  });
+
+  it('reports an ambiguous IO result without guessing or removing the source', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    mocks.moveWorkspaceEntry.mockRejectedValueOnce({ code: 'IO_ERROR', message: 'response lost' });
+    mocks.reconcileWorkspaceMove.mockResolvedValueOnce({ outcome: 'ambiguous' });
+    render(<App />);
+    const report = await screen.findByRole('button', { name: 'report.pages' });
+    fireEvent.contextMenu(report, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    expect(await screen.findByText(/移动结果不确定/)).toBeTruthy();
+    expect(mocks.reconcileWorkspaceMove).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'report.pages' }).dataset.treePath)
+      .toBe('/workspace/docs/report.pages');
+  });
+
+  it('reconciles a typed uncertain move only for refresh and never claims success', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    mocks.moveWorkspaceEntry.mockRejectedValueOnce({
+      code: 'MOVE_OUTCOME_UNCERTAIN',
+      message: 'postcondition could not be proved',
+    });
+    mocks.reconcileWorkspaceMove.mockResolvedValueOnce({
+      outcome: 'destination',
+      entry: {
+        name: 'report.pages',
+        path: '/workspace/drafts/report.pages',
+        kind: 'document',
+      },
+    });
+    render(<App />);
+    const report = await screen.findByRole('button', { name: 'report.pages' });
+    fireEvent.contextMenu(report, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    expect(await screen.findByText(/移动结果不确定/)).toBeTruthy();
+    expect(mocks.reconcileWorkspaceMove).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'report.pages' }).dataset.treePath)
+      .toBe('/workspace/docs/report.pages');
+    expect(screen.queryByText(/已将 report\.pages 移到/)).toBeNull();
+  });
+
+  it('rebuilds a selected descendant system renderer after its folder moves', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480,
+      width: 640, height: 480, toJSON: () => ({}),
+    } as DOMRect);
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (mocks.moveWorkspaceEntry.mock.calls.length && path === '/workspace') return [
+        { name: 'drafts', path: '/workspace/drafts', kind: 'folder' },
+      ];
+      if (mocks.moveWorkspaceEntry.mock.calls.length && path === '/workspace/drafts') return [
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+        { name: 'docs', path: '/workspace/drafts/docs', kind: 'folder' },
+      ];
+      if (mocks.moveWorkspaceEntry.mock.calls.length && path === '/workspace/drafts/docs') return [
+        { name: 'plan.md', path: '/workspace/drafts/docs/plan.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/drafts/docs/report.pages', kind: 'document' },
+      ];
+      return defaultList?.(path);
+    });
+    render(<App />);
+    const report = await screen.findByRole('button', { name: 'report.pages' });
+    fireEvent.click(report);
+    await waitFor(() => expect(mocks.showEmbeddedQuickLook).toHaveBeenCalledWith(
+      '/workspace/docs/report.pages',
+      expect.any(Object),
+      expect.any(Number),
+    ));
+    mocks.showEmbeddedQuickLook.mockClear();
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'docs' }), {
+      clientX: 80,
+      clientY: 100,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+
+    await waitFor(() => expect(mocks.showEmbeddedQuickLook).toHaveBeenCalledWith(
+      '/workspace/drafts/docs/report.pages',
+      expect.any(Object),
+      expect.any(Number),
+    ));
+    expect(screen.getByText('/workspace/drafts/docs/report.pages')).toBeTruthy();
+    expect(mocks.hideEmbeddedQuickLook).toHaveBeenCalled();
+  });
+
+  it('converges when the watcher rename arrives before the command response', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let committed = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (committed && path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+      ];
+      if (committed && path === '/workspace/drafts') return [
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/drafts/report.pages', kind: 'document' },
+      ];
+      return defaultList?.(path);
+    });
+    const commit = deferred<{
+      originalPath: string;
+      movedPath: string;
+      entry: { name: string; path: string; kind: 'document' };
+    }>();
+    mocks.moveWorkspaceEntry.mockReturnValueOnce(commit.promise);
+    render(<App />);
+    const report = await screen.findByRole('button', { name: 'report.pages' });
+    fireEvent.contextMenu(report, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => mocks.workspaceChangeHandler?.({
+      rootPath: '/workspace',
+      generation: 1,
+      events: [{
+        kind: 'rename',
+        paths: ['/workspace/docs/report.pages', '/workspace/drafts/report.pages'],
+      }],
+    }));
+    committed = true;
+    await act(async () => commit.resolve({
+      originalPath: '/workspace/docs/report.pages',
+      movedPath: '/workspace/drafts/report.pages',
+      entry: { name: 'report.pages', path: '/workspace/drafts/report.pages', kind: 'document' },
+    }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'report.pages' }).dataset.treePath)
+      .toBe('/workspace/drafts/report.pages'));
+    expect(screen.getAllByRole('button', { name: 'report.pages' })).toHaveLength(1);
+  });
+
+  it('holds related watcher batches and collapses the 33rd batch into one bounded rescan', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let committed = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (committed && path === '/workspace/docs') return [
+        { name: 'plan.md', path: '/workspace/docs/plan.md', kind: 'md' },
+      ];
+      if (committed && path === '/workspace/drafts') return [
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/drafts/report.pages', kind: 'document' },
+      ];
+      return defaultList?.(path);
+    });
+    const commit = deferred<{
+      originalPath: string;
+      movedPath: string;
+      entry: { name: string; path: string; kind: 'document' };
+    }>();
+    mocks.moveWorkspaceEntry.mockReturnValueOnce(commit.promise);
+    render(<App />);
+    const report = await screen.findByRole('button', { name: 'report.pages' });
+    mocks.listDirectory.mockClear();
+    fireEvent.contextMenu(report, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => {
+      for (let index = 0; index < 33; index += 1) {
+        mocks.workspaceChangeHandler?.({
+          rootPath: '/workspace',
+          generation: 1,
+          events: [{ kind: 'modify', paths: ['/workspace/docs/report.pages'] }],
+        });
+      }
+    });
+    expect(mocks.listDirectory).not.toHaveBeenCalled();
+
+    committed = true;
+    await act(async () => commit.resolve({
+      originalPath: '/workspace/docs/report.pages',
+      movedPath: '/workspace/drafts/report.pages',
+      entry: { name: 'report.pages', path: '/workspace/drafts/report.pages', kind: 'document' },
+    }));
+    await waitFor(() => expect(mocks.listDirectory).toHaveBeenCalled());
+    expect(mocks.listDirectory.mock.calls.length).toBeLessThanOrEqual(6);
+    expect(screen.getByRole('button', { name: 'report.pages' }).dataset.treePath)
+      .toBe('/workspace/drafts/report.pages');
+  });
+
+  it('holds descendant watcher batches while moving a folder and bounds the rescan', async () => {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockResolvedValue({ path: '/workspace', generation: 1, watching: true });
+    mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });
+    mocks.chooseMoveDestination.mockResolvedValue('/workspace/drafts');
+    const defaultList = mocks.listDirectory.getMockImplementation();
+    let committed = false;
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (!committed) return defaultList?.(path);
+      if (path === '/workspace') return [
+        { name: 'drafts', path: '/workspace/drafts', kind: 'folder' },
+      ];
+      if (path === '/workspace/drafts') return [
+        { name: 'docs', path: '/workspace/drafts/docs', kind: 'folder' },
+        { name: 'older.md', path: '/workspace/drafts/older.md', kind: 'md' },
+      ];
+      if (path === '/workspace/drafts/docs') return [
+        { name: 'plan.md', path: '/workspace/drafts/docs/plan.md', kind: 'md' },
+        { name: 'report.pages', path: '/workspace/drafts/docs/report.pages', kind: 'document' },
+      ];
+      return [];
+    });
+    const commit = deferred<{
+      originalPath: string;
+      movedPath: string;
+      entry: { name: string; path: string; kind: 'folder' };
+    }>();
+    mocks.moveWorkspaceEntry.mockReturnValueOnce(commit.promise);
+    render(<App />);
+    const docs = await screen.findByRole('button', { name: 'docs' });
+    mocks.listDirectory.mockClear();
+    fireEvent.contextMenu(docs, { clientX: 80, clientY: 100 });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledOnce());
+
+    act(() => {
+      for (let index = 0; index < 33; index += 1) {
+        mocks.workspaceChangeHandler?.({
+          rootPath: '/workspace',
+          generation: 1,
+          events: [{ kind: 'modify', paths: ['/workspace/docs/nested/deep.md'] }],
+        });
+      }
+    });
+    expect(mocks.listDirectory).not.toHaveBeenCalled();
+
+    committed = true;
+    await act(async () => commit.resolve({
+      originalPath: '/workspace/docs',
+      movedPath: '/workspace/drafts/docs',
+      entry: { name: 'docs', path: '/workspace/drafts/docs', kind: 'folder' },
+    }));
+    await waitFor(() => expect(mocks.listDirectory).toHaveBeenCalled());
+    expect(mocks.listDirectory.mock.calls.length).toBeLessThanOrEqual(8);
+    expect(screen.getByRole('button', { name: 'plan.md' }).dataset.treePath)
+      .toBe('/workspace/drafts/docs/plan.md');
+  });
+});
+
 describe('autosave, live tree, Trash, and session lifecycle', () => {
   it('autosaves once after the 600 ms idle window', async () => {
     mocks.desktop = true;
@@ -1658,6 +3361,15 @@ describe('autosave, live tree, Trash, and session lifecycle', () => {
 });
 
 describe('multi-window entry and application quit coordination', () => {
+  it('marks the titlebar as a deep native drag region without marking action buttons', () => {
+    const { container } = render(<App />);
+    const titlebar = container.querySelector<HTMLElement>('.titlebar');
+    expect(titlebar?.getAttribute('data-tauri-drag-region')).toBe('deep');
+    titlebar?.querySelectorAll('button').forEach((button) => {
+      expect(button.hasAttribute('data-tauri-drag-region')).toBe(false);
+    });
+  });
+
   it('opens one new window from the project menu without flushing or changing the current draft', async () => {
     mocks.desktop = true;
     mocks.readTextFile.mockResolvedValue({ content: '# disk', version: 'v1' });

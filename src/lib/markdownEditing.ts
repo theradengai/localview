@@ -109,6 +109,8 @@ export type MarkdownEditResult = {
 
 export type TableAlignment = 'none' | 'left' | 'center' | 'right';
 export type TableRowPosition = 'header' | 'delimiter' | number;
+export type EditableTableRow = 'header' | number;
+export type MarkdownTableCellRange = { from: number; to: number };
 
 export type GfmTableModel = {
   from: number;
@@ -117,6 +119,8 @@ export type GfmTableModel = {
   prefix: string;
   headers: string[];
   rows: string[][];
+  headerCellRanges: MarkdownTableCellRange[];
+  rowCellRanges: MarkdownTableCellRange[][];
   alignments: TableAlignment[];
   currentColumn: number;
   currentRow: TableRowPosition;
@@ -617,9 +621,10 @@ function parseTableRow(line: LineInfo): ParsedRow | null {
     const leftTrim = raw.length - raw.trimStart().length;
     const rightTrim = raw.length - raw.trimEnd().length;
     cells.push(raw.trim());
+    const contentFrom = line.from + indentation.length + rawFrom + leftTrim;
     cellRanges.push({
-      from: line.from + indentation.length + rawFrom + leftTrim,
-      to: line.from + indentation.length + rawTo - rightTrim,
+      from: contentFrom,
+      to: Math.max(contentFrom, line.from + indentation.length + rawTo - rightTrim),
     });
   }
   if (cells.length === 0 || cells.length > TABLE_MAX_COLUMNS) return null;
@@ -699,6 +704,8 @@ export function parseEditableGfmTableRange(
     prefix: header.prefix,
     headers: header.cells,
     rows: parsedRows.map((row) => row.cells),
+    headerCellRanges: header.cellRanges,
+    rowCellRanges: parsedRows.map((row) => row.cellRanges),
     alignments: alignments as TableAlignment[],
     currentColumn: columnAtPosition(activeRow, contextPosition),
     currentRow,
@@ -746,6 +753,57 @@ function serializeTableParts(
 
 export function serializeGfmTable(model: GfmTableModel) {
   return serializeTableParts(model.prefix, model.headers, model.alignments, model.rows).text;
+}
+
+export function normalizeGfmTableCellInput(rawValue: string) {
+  const flattened = rawValue.replace(/\r\n|\r|\n/g, ' ');
+  let normalized = '';
+  let slashes = 0;
+  for (const character of flattened) {
+    if (character === '|') {
+      if (slashes % 2 === 0) normalized += '\\';
+      normalized += character;
+      slashes = 0;
+      continue;
+    }
+    normalized += character;
+    if (character === '\\') slashes += 1;
+    else slashes = 0;
+  }
+  return normalized;
+}
+
+export function updateGfmTableCell(
+  model: GfmTableModel,
+  row: EditableTableRow,
+  column: number,
+  rawValue: string,
+): MarkdownEditResult | null {
+  if (!Number.isInteger(column)
+    || column < 0
+    || column >= model.headers.length
+    || (typeof row === 'number'
+      && (!Number.isInteger(row) || row < 0 || row >= model.rows.length))) return null;
+  const range = row === 'header'
+    ? model.headerCellRanges[column]
+    : model.rowCellRanges[row]?.[column];
+  const currentValue = row === 'header' ? model.headers[column] : model.rows[row][column];
+  if (!range
+    || !Number.isInteger(range.from)
+    || !Number.isInteger(range.to)
+    || range.from < model.from
+    || range.to < range.from
+    || range.to > model.to) return null;
+  const insert = normalizeGfmTableCellInput(rawValue);
+  const nextBytes = model.sourceBytes - utf8Length(currentValue) + utf8Length(insert);
+  if (nextBytes > TABLE_MAX_BYTES) return null;
+  return {
+    change: { from: range.from, to: range.to, insert },
+    selection: {
+      anchor: range.from + insert.length,
+      head: range.from + insert.length,
+    },
+  };
 }
 
 function isValidTableShape(

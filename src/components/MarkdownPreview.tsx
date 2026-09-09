@@ -1,12 +1,8 @@
 import { memo, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import MarkdownContent from './MarkdownContent';
 import {
   resolveMarkdownAssetSource,
 } from '../lib/desktop';
-import { remarkLocalInlineStyles } from '../lib/markdownInlineStyles';
-
-const LOCALVIEW_REMARK_PLUGINS = [remarkGfm, remarkLocalInlineStyles];
 
 type Props = {
   content: string;
@@ -14,9 +10,10 @@ type Props = {
   rootPath: string;
   selectedPath: string;
   assetScope: string;
+  demoImages?: Readonly<Record<string, string>>;
 };
 
-function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope }: Props) {
+function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope, demoImages }: Props) {
   const components = useMemo(() => ({
     img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
       const original = typeof src === 'string' ? src : '';
@@ -25,13 +22,14 @@ function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope 
         rootPath,
         selectedPath,
         assetScope,
+        demoImages,
       });
       return <img {...props} src={resolved} alt={alt ?? ''} />;
     },
-  }), [assetScope, desktop, rootPath, selectedPath]);
+  }), [assetScope, desktop, rootPath, selectedPath, demoImages]);
 
   return <div className="preview-pane markdown-body">
-    <ReactMarkdown remarkPlugins={LOCALVIEW_REMARK_PLUGINS} components={components}>{content}</ReactMarkdown>
+    <MarkdownContent content={content} components={components} />
   </div>;
 }
 

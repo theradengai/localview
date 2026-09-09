@@ -34,5 +34,5 @@ export function rendererFor(entry: DesktopEntry): RendererId {
 }
 
 export function matchesDataGridExtension(value: string): boolean {
-  return value === 'xls' || value === 'xlsx' || value === 'ods';
+  return value === 'csv' || value === 'xls' || value === 'xlsx' || value === 'ods';
 }

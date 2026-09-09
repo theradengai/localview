@@ -9,7 +9,7 @@ use percent_encoding::percent_decode_str;
 #[cfg(unix)]
 use rustix::{
     fd::OwnedFd,
-    fs::{self as unix_fs, FileType, Mode, OFlags},
+    fs::{self as unix_fs, AtFlags, FileType, Mode, OFlags, RenameFlags},
     io::{fcntl_dupfd_cloexec, Errno},
 };
 use serde::{Deserialize, Serialize};
@@ -39,10 +39,11 @@ use objc2_foundation::{NSFileManager, NSString, NSURL};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+mod image_paste;
 mod quick_look;
 mod spreadsheet;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct FsEntry {
     name: String,
@@ -235,6 +236,78 @@ struct TrashCandidate {
     is_dir: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct MoveCandidate {
+    source_path: String,
+    destination_directory: String,
+    destination_path: String,
+    workspace_generation: u64,
+    source_parent_identity: String,
+    source_identity: String,
+    destination_identity: String,
+    source_is_directory: bool,
+    source_is_bundle: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct MovedWorkspaceEntry {
+    original_path: String,
+    moved_path: String,
+    entry: FsEntry,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum MoveReconciliationOutcome {
+    Source,
+    Destination,
+    Ambiguous,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct MoveReconciliation {
+    outcome: MoveReconciliationOutcome,
+    entry: Option<FsEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RenameCandidate {
+    source_path: String,
+    destination_path: String,
+    workspace_generation: u64,
+    parent_identity: String,
+    source_identity: String,
+    source_is_directory: bool,
+    source_is_bundle: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RenamedWorkspaceEntry {
+    original_path: String,
+    renamed_path: String,
+    entry: FsEntry,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum RenameReconciliationOutcome {
+    Source,
+    Destination,
+    Ambiguous,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RenameReconciliation {
+    outcome: RenameReconciliationOutcome,
+    entry: Option<FsEntry>,
+}
+
 impl WorkspaceRegistry {
     fn workspace_for_label(&self, label: &str) -> Result<Arc<WorkspaceState>, String> {
         if self
@@ -325,13 +398,13 @@ const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
 const HTML_EXTENSIONS: &[&str] = &["html", "htm"];
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "json", "jsonc", "yaml", "yml", "toml", "xml", "css", "js", "jsx", "ts", "tsx", "rs",
-    "py", "sh", "csv", "log",
+    "py", "sh", "log",
 ];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico",
 ];
 const PDF_EXTENSIONS: &[&str] = &["pdf"];
-const SPREADSHEET_EXTENSIONS: &[&str] = &["xls", "xlsx", "ods", "numbers"];
+const SPREADSHEET_EXTENSIONS: &[&str] = &["csv", "xls", "xlsx", "ods", "numbers"];
 const DOCUMENT_EXTENSIONS: &[&str] = &["doc", "docx", "odt", "rtf", "pages"];
 const PRESENTATION_EXTENSIONS: &[&str] = &["ppt", "pptx", "odp", "key"];
 const IWORK_BUNDLE_EXTENSIONS: &[&str] = &["numbers", "pages", "key"];
@@ -1673,6 +1746,1397 @@ fn move_to_trash(
     move_candidate_to_trash_impl(&state, &candidate).map_err(CommandError::legacy)
 }
 
+#[cfg(unix)]
+struct MoveDirectory {
+    path: PathBuf,
+    directory: OwnedFd,
+    identity: FileIdentity,
+}
+
+#[cfg(unix)]
+struct RelocationPreflight {
+    root: WorkspaceRoot,
+    source_path: PathBuf,
+    destination_directory: PathBuf,
+    destination_path: PathBuf,
+    source_parent: MoveDirectory,
+    destination_parent: MoveDirectory,
+    source_name: std::ffi::OsString,
+    destination_name: std::ffi::OsString,
+    source_identity: FileIdentity,
+    source_is_directory: bool,
+    source_is_bundle: bool,
+    workspace_generation: u64,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct RelocationErrorCodes {
+    source_changed: &'static str,
+    destination_changed: &'static str,
+    destination_exists: &'static str,
+    bundle_boundary: &'static str,
+    secure_unavailable: &'static str,
+    outcome_uncertain: &'static str,
+    cross_device: Option<&'static str>,
+    strict_rollback_identity: bool,
+}
+
+#[cfg(unix)]
+const MOVE_RELOCATION_ERRORS: RelocationErrorCodes = RelocationErrorCodes {
+    source_changed: "MOVE_SOURCE_CHANGED",
+    destination_changed: "MOVE_DESTINATION_CHANGED",
+    destination_exists: "MOVE_DESTINATION_EXISTS",
+    bundle_boundary: "MOVE_BUNDLE_BOUNDARY",
+    secure_unavailable: "MOVE_SECURE_RENAME_UNAVAILABLE",
+    outcome_uncertain: "MOVE_OUTCOME_UNCERTAIN",
+    cross_device: Some("MOVE_CROSS_DEVICE_UNSUPPORTED"),
+    strict_rollback_identity: false,
+};
+
+#[cfg(unix)]
+const RENAME_RELOCATION_ERRORS: RelocationErrorCodes = RelocationErrorCodes {
+    source_changed: "RENAME_SOURCE_CHANGED",
+    destination_changed: "RENAME_PARENT_CHANGED",
+    destination_exists: "RENAME_DESTINATION_EXISTS",
+    bundle_boundary: "RENAME_BUNDLE_BOUNDARY",
+    secure_unavailable: "RENAME_SECURE_UNAVAILABLE",
+    outcome_uncertain: "RENAME_OUTCOME_UNCERTAIN",
+    cross_device: None,
+    strict_rollback_identity: true,
+};
+
+#[cfg(unix)]
+fn move_directory_error(code: &str, message: impl Into<String>) -> CommandError {
+    CommandError::new(code, message)
+}
+
+#[cfg(unix)]
+fn open_move_directory(
+    root: &WorkspaceRoot,
+    requested: &Path,
+    changed_code: &str,
+    bundle_boundary_code: &str,
+) -> Result<MoveDirectory, CommandError> {
+    validate_directory_identity(&root.path, &root.directory, "WORKSPACE_ROOT_CHANGED")
+        .map_err(CommandError::legacy)?;
+    let relative = requested.strip_prefix(&root.path).map_err(|_| {
+        move_directory_error("WORKSPACE_CHANGED", "Path is outside the active workspace")
+    })?;
+    let mut directory = fcntl_dupfd_cloexec(&root.directory, 0)
+        .map_err(|error| move_directory_error("IO_ERROR", error.to_string()))?;
+    let mut normalized = root.path.clone();
+    if is_document_bundle(&normalized, true) {
+        return Err(move_directory_error(
+            bundle_boundary_code,
+            "Items inside an iWork document bundle cannot be moved independently",
+        ));
+    }
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(move_directory_error(
+                "WORKSPACE_CHANGED",
+                "Workspace move path contains an invalid component",
+            ));
+        };
+        directory = unix_fs::openat(
+            &directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| match error {
+            Errno::NOENT | Errno::NOTDIR | Errno::LOOP => {
+                move_directory_error(changed_code, "The move directory changed")
+            }
+            Errno::ACCESS | Errno::PERM => {
+                move_directory_error("PERMISSION_DENIED", error.to_string())
+            }
+            _ => move_directory_error("IO_ERROR", error.to_string()),
+        })?;
+        normalized.push(name);
+        if is_document_bundle(&normalized, true) {
+            return Err(move_directory_error(
+                bundle_boundary_code,
+                "Items cannot be moved into or out of an iWork document bundle",
+            ));
+        }
+    }
+    let stat = unix_fs::fstat(&directory)
+        .map_err(|error| move_directory_error(changed_code, error.to_string()))?;
+    if !FileType::from_raw_mode(stat.st_mode).is_dir() {
+        return Err(move_directory_error(
+            changed_code,
+            "Move target is not a directory",
+        ));
+    }
+    Ok(MoveDirectory {
+        path: normalized,
+        directory,
+        identity: FileIdentity {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+        },
+    })
+}
+
+#[cfg(unix)]
+fn move_preflight(
+    state: &WorkspaceState,
+    requested_source: &Path,
+    requested_destination: &Path,
+) -> Result<RelocationPreflight, CommandError> {
+    let (root, workspace_generation) =
+        active_workspace_capability_with_generation(state).map_err(CommandError::legacy)?;
+    if requested_source == root.path {
+        return Err(move_directory_error(
+            "MOVE_SOURCE_UNSUPPORTED",
+            "The workspace root cannot be moved",
+        ));
+    }
+    let source_parent_path = requested_source.parent().ok_or_else(|| {
+        move_directory_error("MOVE_SOURCE_UNSUPPORTED", "The move source has no parent")
+    })?;
+    let source_parent = open_move_directory(
+        &root,
+        source_parent_path,
+        "MOVE_SOURCE_CHANGED",
+        MOVE_RELOCATION_ERRORS.bundle_boundary,
+    )?;
+    let destination_parent = open_move_directory(
+        &root,
+        requested_destination,
+        "MOVE_DESTINATION_CHANGED",
+        MOVE_RELOCATION_ERRORS.bundle_boundary,
+    )?;
+    if source_parent.identity == destination_parent.identity {
+        return Err(move_directory_error(
+            "MOVE_SAME_PARENT",
+            "The file is already in that folder",
+        ));
+    }
+    let source_name = requested_source.file_name().ok_or_else(|| {
+        move_directory_error("MOVE_SOURCE_UNSUPPORTED", "The move source has no filename")
+    })?;
+    let source_path = source_parent.path.join(source_name);
+    if source_path == root.path {
+        return Err(move_directory_error(
+            "MOVE_SOURCE_UNSUPPORTED",
+            "The workspace root cannot be moved",
+        ));
+    }
+    let source = unix_fs::openat(
+        &source_parent.directory,
+        source_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| match error {
+        Errno::LOOP => {
+            move_directory_error("MOVE_SOURCE_UNSUPPORTED", "Symbolic links cannot be moved")
+        }
+        Errno::NOENT | Errno::NOTDIR => {
+            move_directory_error("MOVE_SOURCE_CHANGED", "The move source changed")
+        }
+        Errno::ACCESS | Errno::PERM => move_directory_error("PERMISSION_DENIED", error.to_string()),
+        _ => move_directory_error("IO_ERROR", error.to_string()),
+    })?;
+    let source_stat = unix_fs::fstat(&source)
+        .map_err(|error| move_directory_error("MOVE_SOURCE_CHANGED", error.to_string()))?;
+    let source_type = FileType::from_raw_mode(source_stat.st_mode);
+    let source_is_directory = source_type.is_dir();
+    let source_is_bundle = source_is_directory && is_document_bundle(&source_path, true);
+    if !source_type.is_file() && !source_is_directory {
+        return Err(move_directory_error(
+            "MOVE_SOURCE_UNSUPPORTED",
+            "Only files and directories can be moved",
+        ));
+    }
+    if source_is_directory
+        && (destination_parent.path == source_path
+            || destination_parent.path.starts_with(&source_path))
+    {
+        return Err(move_directory_error(
+            "MOVE_DESTINATION_INSIDE_SOURCE",
+            "A directory cannot be moved into itself or one of its descendants",
+        ));
+    }
+    let source_identity = FileIdentity {
+        device: source_stat.st_dev as u64,
+        inode: source_stat.st_ino as u64,
+    };
+    if source_identity.device != destination_parent.identity.device {
+        return Err(move_directory_error(
+            "MOVE_CROSS_DEVICE_UNSUPPORTED",
+            "Cross-device moves are not supported",
+        ));
+    }
+    match unix_fs::statat(
+        &destination_parent.directory,
+        source_name,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(_) => {
+            return Err(move_directory_error(
+                "MOVE_DESTINATION_EXISTS",
+                "An item with the same name already exists in the destination",
+            ));
+        }
+        Err(Errno::NOENT) => {}
+        Err(error) => {
+            return Err(move_directory_error(
+                "MOVE_DESTINATION_CHANGED",
+                error.to_string(),
+            ));
+        }
+    }
+    let destination_path = destination_parent.path.join(source_name);
+    Ok(RelocationPreflight {
+        root,
+        source_path,
+        destination_directory: destination_parent.path.clone(),
+        destination_path,
+        source_parent,
+        destination_parent,
+        source_name: source_name.to_os_string(),
+        destination_name: source_name.to_os_string(),
+        source_identity,
+        source_is_directory,
+        source_is_bundle,
+        workspace_generation,
+    })
+}
+
+#[cfg(unix)]
+fn is_rename_trim_whitespace(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0009..=0x000d
+            | 0x0020
+            | 0x0085
+            | 0x00a0
+            | 0x1680
+            | 0x2000..=0x200a
+            | 0x2028
+            | 0x2029
+            | 0x202f
+            | 0x205f
+            | 0x3000
+    )
+}
+
+#[cfg(unix)]
+fn rename_locked_suffix(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(index) if index > 0 && index < name.len() - 1 => &name[index..],
+        _ => "",
+    }
+}
+
+#[cfg(unix)]
+fn rename_name_has_extension(name: &str) -> bool {
+    matches!(name.rfind('.'), Some(index) if index > 0 && index < name.len() - 1)
+}
+
+#[cfg(unix)]
+fn validate_workspace_rename_name(
+    original_name: &str,
+    requested_name: &str,
+    source_is_directory: bool,
+    source_is_bundle: bool,
+) -> Result<String, CommandError> {
+    let name = requested_name
+        .trim_matches(is_rename_trim_whitespace)
+        .to_string();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(|character| {
+            let code = character as u32;
+            character == '/'
+                || character == '\\'
+                || code <= 0x001f
+                || (0x007f..=0x009f).contains(&code)
+        })
+    {
+        return Err(move_directory_error(
+            "RENAME_INVALID_NAME",
+            "The requested name is invalid",
+        ));
+    }
+    let lowered = name.to_lowercase();
+    let internal_temporary =
+        lowered.starts_with('.') && lowered.contains(".localview-") && lowered.ends_with(".tmp");
+    if lowered == ".ds_store" || internal_temporary {
+        return Err(move_directory_error(
+            "RENAME_RESERVED_NAME",
+            "The requested name is reserved",
+        ));
+    }
+    if source_is_directory
+        && !source_is_bundle
+        && [".numbers", ".pages", ".key"]
+            .iter()
+            .any(|suffix| lowered.ends_with(suffix))
+    {
+        return Err(move_directory_error(
+            "RENAME_RESERVED_NAME",
+            "Ordinary folders cannot use an iWork bundle suffix",
+        ));
+    }
+    if !source_is_directory || source_is_bundle {
+        let original_suffix = rename_locked_suffix(original_name);
+        if original_suffix.is_empty() {
+            if rename_name_has_extension(&name) {
+                return Err(move_directory_error(
+                    "RENAME_EXTENSION_CHANGE_UNSUPPORTED",
+                    "Changing a file extension is not supported",
+                ));
+            }
+        } else if rename_locked_suffix(&name) != original_suffix {
+            return Err(move_directory_error(
+                "RENAME_EXTENSION_CHANGE_UNSUPPORTED",
+                "Changing a file extension is not supported",
+            ));
+        }
+    }
+    if name.encode_utf16().count() > 255 {
+        return Err(move_directory_error(
+            "RENAME_NAME_TOO_LONG",
+            "The requested name is too long",
+        ));
+    }
+    if name == original_name {
+        return Err(move_directory_error(
+            "RENAME_UNCHANGED",
+            "The requested name is unchanged",
+        ));
+    }
+    if lowered == original_name.to_lowercase() {
+        return Err(move_directory_error(
+            "RENAME_CASE_ONLY_UNSUPPORTED",
+            "Case-only rename is not supported",
+        ));
+    }
+    Ok(name)
+}
+
+#[cfg(unix)]
+fn rename_preflight(
+    state: &WorkspaceState,
+    requested_source: &Path,
+    requested_name: &str,
+) -> Result<RelocationPreflight, CommandError> {
+    let (root, workspace_generation) =
+        active_workspace_capability_with_generation(state).map_err(CommandError::legacy)?;
+    if requested_source == root.path {
+        return Err(move_directory_error(
+            "RENAME_ROOT_FORBIDDEN",
+            "The workspace root cannot be renamed",
+        ));
+    }
+    let source_parent_path = requested_source.parent().ok_or_else(|| {
+        move_directory_error(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "The rename source has no parent",
+        )
+    })?;
+    let source_parent = open_move_directory(
+        &root,
+        source_parent_path,
+        RENAME_RELOCATION_ERRORS.source_changed,
+        RENAME_RELOCATION_ERRORS.bundle_boundary,
+    )?;
+    let destination_parent = open_move_directory(
+        &root,
+        source_parent_path,
+        RENAME_RELOCATION_ERRORS.destination_changed,
+        RENAME_RELOCATION_ERRORS.bundle_boundary,
+    )?;
+    if source_parent.identity != destination_parent.identity {
+        return Err(move_directory_error(
+            "RENAME_PARENT_CHANGED",
+            "The rename parent changed",
+        ));
+    }
+    let source_name = requested_source.file_name().ok_or_else(|| {
+        move_directory_error(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "The rename source has no filename",
+        )
+    })?;
+    let Some(source_name_string) = source_name.to_str() else {
+        return Err(move_directory_error(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "Names that are not valid UTF-8 cannot be renamed",
+        ));
+    };
+    let source_path = source_parent.path.join(source_name);
+    if source_path == root.path {
+        return Err(move_directory_error(
+            "RENAME_ROOT_FORBIDDEN",
+            "The workspace root cannot be renamed",
+        ));
+    }
+    let source = unix_fs::openat(
+        &source_parent.directory,
+        source_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| match error {
+        Errno::LOOP => move_directory_error(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "Symbolic links cannot be renamed",
+        ),
+        Errno::NOENT | Errno::NOTDIR => {
+            move_directory_error("RENAME_SOURCE_CHANGED", "The rename source changed")
+        }
+        Errno::ACCESS | Errno::PERM => move_directory_error("PERMISSION_DENIED", error.to_string()),
+        _ => move_directory_error("IO_ERROR", error.to_string()),
+    })?;
+    let source_stat = unix_fs::fstat(&source)
+        .map_err(|error| move_directory_error("RENAME_SOURCE_CHANGED", error.to_string()))?;
+    let source_type = FileType::from_raw_mode(source_stat.st_mode);
+    let source_is_directory = source_type.is_dir();
+    let source_is_bundle = source_is_directory && is_document_bundle(&source_path, true);
+    if !source_type.is_file() && !source_is_directory {
+        return Err(move_directory_error(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "Only files and directories can be renamed",
+        ));
+    }
+    let destination_name = validate_workspace_rename_name(
+        source_name_string,
+        requested_name,
+        source_is_directory,
+        source_is_bundle,
+    )?;
+    match unix_fs::statat(
+        &destination_parent.directory,
+        destination_name.as_str(),
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(_) => {
+            return Err(move_directory_error(
+                "RENAME_DESTINATION_EXISTS",
+                "An item with the same name already exists",
+            ));
+        }
+        Err(Errno::NOENT) => {}
+        Err(error) => {
+            return Err(move_directory_error(
+                "RENAME_PARENT_CHANGED",
+                error.to_string(),
+            ));
+        }
+    }
+    let source_identity = FileIdentity {
+        device: source_stat.st_dev as u64,
+        inode: source_stat.st_ino as u64,
+    };
+    let destination_path = destination_parent.path.join(&destination_name);
+    Ok(RelocationPreflight {
+        root,
+        source_path,
+        destination_directory: destination_parent.path.clone(),
+        destination_path,
+        source_parent,
+        destination_parent,
+        source_name: source_name.to_os_string(),
+        destination_name: destination_name.into(),
+        source_identity,
+        source_is_directory,
+        source_is_bundle,
+        workspace_generation,
+    })
+}
+
+#[cfg(unix)]
+fn candidate_from_rename_preflight(preflight: &RelocationPreflight) -> RenameCandidate {
+    RenameCandidate {
+        source_path: preflight.source_path.to_string_lossy().into_owned(),
+        destination_path: preflight.destination_path.to_string_lossy().into_owned(),
+        workspace_generation: preflight.workspace_generation,
+        parent_identity: identity_token(preflight.source_parent.identity),
+        source_identity: identity_token(preflight.source_identity),
+        source_is_directory: preflight.source_is_directory,
+        source_is_bundle: preflight.source_is_bundle,
+    }
+}
+
+#[cfg(unix)]
+fn prepare_workspace_rename_impl(
+    state: &WorkspaceState,
+    source_path: &Path,
+    new_name: &str,
+) -> Result<RenameCandidate, CommandError> {
+    rename_preflight(state, source_path, new_name)
+        .map(|preflight| candidate_from_rename_preflight(&preflight))
+}
+
+#[cfg(unix)]
+fn renamed_entry(candidate: &RenameCandidate) -> Result<FsEntry, CommandError> {
+    let path = Path::new(&candidate.destination_path);
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            move_directory_error("RENAME_PARENT_CHANGED", "Invalid rename destination")
+        })?;
+    Ok(FsEntry {
+        name: name.to_string(),
+        path: candidate.destination_path.clone(),
+        kind: file_kind(path, candidate.source_is_directory),
+    })
+}
+
+#[cfg(unix)]
+fn candidate_from_move_preflight(preflight: &RelocationPreflight) -> MoveCandidate {
+    MoveCandidate {
+        source_path: preflight.source_path.to_string_lossy().into_owned(),
+        destination_directory: preflight
+            .destination_directory
+            .to_string_lossy()
+            .into_owned(),
+        destination_path: preflight.destination_path.to_string_lossy().into_owned(),
+        workspace_generation: preflight.workspace_generation,
+        source_parent_identity: identity_token(preflight.source_parent.identity),
+        source_identity: identity_token(preflight.source_identity),
+        destination_identity: identity_token(preflight.destination_parent.identity),
+        source_is_directory: preflight.source_is_directory,
+        source_is_bundle: preflight.source_is_bundle,
+    }
+}
+
+#[cfg(unix)]
+fn moved_entry(candidate: &MoveCandidate) -> Result<FsEntry, CommandError> {
+    let path = Path::new(&candidate.destination_path);
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| move_directory_error("MOVE_DESTINATION_CHANGED", "Invalid destination"))?;
+    Ok(FsEntry {
+        name: name.to_string(),
+        path: candidate.destination_path.clone(),
+        kind: file_kind(path, candidate.source_is_directory),
+    })
+}
+
+#[cfg(unix)]
+fn prepare_workspace_move_impl(
+    state: &WorkspaceState,
+    source_path: &Path,
+    destination_directory: &Path,
+) -> Result<MoveCandidate, CommandError> {
+    move_preflight(state, source_path, destination_directory)
+        .map(|preflight| candidate_from_move_preflight(&preflight))
+}
+
+#[cfg(unix)]
+fn root_relative_move_path(
+    root: &Path,
+    path: &Path,
+    error_code: &str,
+) -> Result<PathBuf, CommandError> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        move_directory_error(error_code, "The move path is outside the workspace root")
+    })?;
+    let mut normalized = PathBuf::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(move_directory_error(
+                error_code,
+                "The move path contains an invalid component",
+            ));
+        };
+        normalized.push(name);
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(move_directory_error(
+            error_code,
+            "The workspace root cannot be moved",
+        ));
+    }
+    Ok(normalized)
+}
+
+#[cfg(target_os = "macos")]
+fn secure_workspace_rename(
+    root: &WorkspaceRoot,
+    source: &Path,
+    destination: &Path,
+    codes: RelocationErrorCodes,
+) -> Result<(), CommandError> {
+    const RENAME_NOFOLLOW_ANY_BITS: u32 = 0x0000_0010;
+    const RENAME_RESOLVE_BENEATH_BITS: u32 = 0x0000_0020;
+    let no_follow = RenameFlags::from_bits_retain(RENAME_NOFOLLOW_ANY_BITS);
+    let beneath = RenameFlags::from_bits_retain(RENAME_RESOLVE_BENEATH_BITS);
+    let preferred = RenameFlags::NOREPLACE | no_follow | beneath;
+    match unix_fs::renameat_with(
+        &root.directory,
+        source,
+        &root.directory,
+        destination,
+        preferred,
+    ) {
+        Ok(()) => Ok(()),
+        Err(Errno::INVAL) => unix_fs::renameat_with(
+            &root.directory,
+            source,
+            &root.directory,
+            destination,
+            RenameFlags::NOREPLACE | no_follow,
+        )
+        .map_err(|error| relocation_rename_error(error, codes)),
+        Err(Errno::NOTSUP | Errno::OPNOTSUPP) => Err(move_directory_error(
+            codes.secure_unavailable,
+            "This volume does not support secure workspace relocation",
+        )),
+        Err(error) => Err(relocation_rename_error(error, codes)),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn secure_workspace_rename(
+    _root: &WorkspaceRoot,
+    _source: &Path,
+    _destination: &Path,
+    codes: RelocationErrorCodes,
+) -> Result<(), CommandError> {
+    Err(move_directory_error(
+        codes.secure_unavailable,
+        "Secure workspace relocation is unavailable on this platform",
+    ))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MoveCommitPhase {
+    AfterFinalPreflight,
+    AfterRename,
+    BeforeRollback,
+}
+
+#[cfg(unix)]
+trait MoveCommitObserver {
+    fn on_phase(&mut self, _phase: MoveCommitPhase) {}
+}
+
+#[cfg(unix)]
+struct NoopMoveCommitObserver;
+
+#[cfg(unix)]
+impl MoveCommitObserver for NoopMoveCommitObserver {}
+
+#[cfg(all(unix, test))]
+struct TestMoveCommitObserver<F>(F)
+where
+    F: FnMut(MoveCommitPhase);
+
+#[cfg(all(unix, test))]
+impl<F> MoveCommitObserver for TestMoveCommitObserver<F>
+where
+    F: FnMut(MoveCommitPhase),
+{
+    fn on_phase(&mut self, phase: MoveCommitPhase) {
+        (self.0)(phase);
+    }
+}
+
+#[cfg(unix)]
+fn validate_final_relocation_preflight(
+    preflight: &RelocationPreflight,
+    codes: RelocationErrorCodes,
+) -> Result<(), CommandError> {
+    validate_directory_identity(
+        &preflight.root.path,
+        &preflight.root.directory,
+        "WORKSPACE_ROOT_CHANGED",
+    )
+    .map_err(CommandError::legacy)?;
+    let source_parent = open_move_directory(
+        &preflight.root,
+        &preflight.source_parent.path,
+        codes.source_changed,
+        codes.bundle_boundary,
+    )?;
+    if source_parent.identity != preflight.source_parent.identity
+        || identity_at(&source_parent.directory, &preflight.source_name)
+            .map_err(|_| move_directory_error(codes.source_changed, "The source changed"))?
+            != Some(preflight.source_identity)
+    {
+        return Err(move_directory_error(
+            codes.source_changed,
+            "The source changed before commit",
+        ));
+    }
+    let destination = open_move_directory(
+        &preflight.root,
+        &preflight.destination_parent.path,
+        codes.destination_changed,
+        codes.bundle_boundary,
+    )?;
+    if destination.identity != preflight.destination_parent.identity {
+        return Err(move_directory_error(
+            codes.destination_changed,
+            "The destination parent changed before commit",
+        ));
+    }
+    if identity_at(&destination.directory, &preflight.destination_name)
+        .map_err(|_| move_directory_error(codes.destination_changed, "The destination changed"))?
+        .is_some()
+    {
+        return Err(move_directory_error(
+            codes.destination_exists,
+            "An item with the same name already exists in the destination",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn observe_relocation_paths(
+    preflight: &RelocationPreflight,
+    codes: RelocationErrorCodes,
+) -> Result<
+    (
+        MoveDirectory,
+        MoveDirectory,
+        Option<FileIdentity>,
+        Option<FileIdentity>,
+    ),
+    CommandError,
+> {
+    validate_directory_identity(
+        &preflight.root.path,
+        &preflight.root.directory,
+        "WORKSPACE_ROOT_CHANGED",
+    )
+    .map_err(CommandError::legacy)?;
+    let source_parent = open_move_directory(
+        &preflight.root,
+        &preflight.source_parent.path,
+        codes.source_changed,
+        codes.bundle_boundary,
+    )?;
+    let destination = open_move_directory(
+        &preflight.root,
+        &preflight.destination_parent.path,
+        codes.destination_changed,
+        codes.bundle_boundary,
+    )?;
+    let source = identity_at(&source_parent.directory, &preflight.source_name)
+        .map_err(|_| move_directory_error(codes.source_changed, "Unable to inspect source"))?;
+    let moved = identity_at(&destination.directory, &preflight.destination_name).map_err(|_| {
+        move_directory_error(codes.destination_changed, "Unable to inspect destination")
+    })?;
+    Ok((source_parent, destination, source, moved))
+}
+
+#[cfg(unix)]
+fn commit_relocation_with_observer<O: MoveCommitObserver>(
+    preflight: &RelocationPreflight,
+    codes: RelocationErrorCodes,
+    observer: &mut O,
+) -> Result<(), CommandError> {
+    let source_relative = root_relative_move_path(
+        &preflight.root.path,
+        &preflight.source_path,
+        codes.source_changed,
+    )?;
+    let destination_relative = root_relative_move_path(
+        &preflight.root.path,
+        &preflight.destination_path,
+        codes.destination_changed,
+    )?;
+    validate_final_relocation_preflight(preflight, codes)?;
+    observer.on_phase(MoveCommitPhase::AfterFinalPreflight);
+    secure_workspace_rename(
+        &preflight.root,
+        &source_relative,
+        &destination_relative,
+        codes,
+    )?;
+    observer.on_phase(MoveCommitPhase::AfterRename);
+
+    let observation = observe_relocation_paths(preflight, codes);
+    if let Ok((source_parent, destination_parent, source, destination)) = &observation {
+        if source_parent.identity == preflight.source_parent.identity
+            && destination_parent.identity == preflight.destination_parent.identity
+            && source.is_none()
+            && *destination == Some(preflight.source_identity)
+        {
+            return Ok(());
+        }
+    }
+
+    let Ok((source_parent, destination_parent, source, destination)) = observation else {
+        return Err(move_directory_error(
+            codes.outcome_uncertain,
+            "The relocation completed but its result could not be verified",
+        ));
+    };
+    let Some(rollback_identity) = destination else {
+        return Err(move_directory_error(
+            codes.outcome_uncertain,
+            "The relocated item could not be found for rollback",
+        ));
+    };
+    if source.is_some()
+        || (codes.strict_rollback_identity
+            && (rollback_identity != preflight.source_identity
+                || source_parent.identity != preflight.source_parent.identity
+                || destination_parent.identity != preflight.destination_parent.identity))
+    {
+        return Err(move_directory_error(
+            codes.outcome_uncertain,
+            "The relocation paths changed before rollback",
+        ));
+    }
+    observer.on_phase(MoveCommitPhase::BeforeRollback);
+    validate_directory_identity(
+        &preflight.root.path,
+        &preflight.root.directory,
+        "WORKSPACE_ROOT_CHANGED",
+    )
+    .map_err(|_| {
+        move_directory_error(
+            codes.outcome_uncertain,
+            "The workspace root changed before rollback",
+        )
+    })?;
+    secure_workspace_rename(
+        &preflight.root,
+        &destination_relative,
+        &source_relative,
+        codes,
+    )
+    .map_err(|_| {
+        move_directory_error(
+            codes.outcome_uncertain,
+            "The relocation result could not be rolled back safely",
+        )
+    })?;
+    let (_, _, restored, destination_after) =
+        observe_relocation_paths(preflight, codes).map_err(|_| {
+            move_directory_error(
+                codes.outcome_uncertain,
+                "The rollback result could not be verified",
+            )
+        })?;
+    if restored != Some(rollback_identity) || destination_after.is_some() {
+        return Err(move_directory_error(
+            codes.outcome_uncertain,
+            "The rollback result did not match the observed item",
+        ));
+    }
+    let code = if source_parent.identity != preflight.source_parent.identity
+        || rollback_identity != preflight.source_identity
+    {
+        codes.source_changed
+    } else {
+        codes.destination_changed
+    };
+    Err(move_directory_error(
+        code,
+        "The filesystem changed during relocation; the item was restored",
+    ))
+}
+
+#[cfg(unix)]
+fn move_workspace_entry_with_observer<O: MoveCommitObserver>(
+    state: &WorkspaceState,
+    candidate: &MoveCandidate,
+    observer: &mut O,
+) -> Result<MovedWorkspaceEntry, CommandError> {
+    let preflight = move_preflight(
+        state,
+        Path::new(&candidate.source_path),
+        Path::new(&candidate.destination_directory),
+    )?;
+    if preflight.workspace_generation != candidate.workspace_generation {
+        return Err(move_directory_error(
+            "WORKSPACE_CHANGED",
+            "The active workspace changed before the move",
+        ));
+    }
+    if preflight.source_path != PathBuf::from(&candidate.source_path)
+        || identity_token(preflight.source_parent.identity) != candidate.source_parent_identity
+        || identity_token(preflight.source_identity) != candidate.source_identity
+        || preflight.source_is_directory != candidate.source_is_directory
+        || preflight.source_is_bundle != candidate.source_is_bundle
+    {
+        return Err(move_directory_error(
+            "MOVE_SOURCE_CHANGED",
+            "The prepared move no longer matches the filesystem",
+        ));
+    }
+    if preflight.destination_directory != PathBuf::from(&candidate.destination_directory)
+        || preflight.destination_path != PathBuf::from(&candidate.destination_path)
+        || identity_token(preflight.destination_parent.identity) != candidate.destination_identity
+    {
+        return Err(move_directory_error(
+            "MOVE_DESTINATION_CHANGED",
+            "The prepared destination no longer matches the filesystem",
+        ));
+    }
+    commit_relocation_with_observer(&preflight, MOVE_RELOCATION_ERRORS, observer)?;
+    Ok(MovedWorkspaceEntry {
+        original_path: candidate.source_path.clone(),
+        moved_path: candidate.destination_path.clone(),
+        entry: moved_entry(candidate)?,
+    })
+}
+
+#[cfg(unix)]
+fn move_workspace_entry_impl(
+    state: &WorkspaceState,
+    candidate: &MoveCandidate,
+) -> Result<MovedWorkspaceEntry, CommandError> {
+    move_workspace_entry_with_observer(state, candidate, &mut NoopMoveCommitObserver)
+}
+
+#[cfg(all(unix, test))]
+fn move_workspace_entry_with_hook<F>(
+    state: &WorkspaceState,
+    candidate: &MoveCandidate,
+    hook: F,
+) -> Result<MovedWorkspaceEntry, CommandError>
+where
+    F: FnMut(MoveCommitPhase),
+{
+    move_workspace_entry_with_observer(state, candidate, &mut TestMoveCommitObserver(hook))
+}
+
+#[cfg(unix)]
+fn relocation_rename_error(error: Errno, codes: RelocationErrorCodes) -> CommandError {
+    match error {
+        Errno::EXIST | Errno::NOTEMPTY => move_directory_error(
+            codes.destination_exists,
+            "An item with the same name already exists in the destination",
+        ),
+        Errno::XDEV => move_directory_error(
+            codes.cross_device.unwrap_or(codes.destination_changed),
+            "Cross-device relocation is not supported",
+        ),
+        Errno::INVAL | Errno::NOTSUP | Errno::OPNOTSUPP => move_directory_error(
+            codes.secure_unavailable,
+            "This volume does not support secure workspace relocation",
+        ),
+        Errno::NOENT | Errno::NOTDIR | Errno::LOOP => {
+            move_directory_error(codes.source_changed, "The relocation source changed")
+        }
+        Errno::ACCESS | Errno::PERM => move_directory_error("PERMISSION_DENIED", error.to_string()),
+        _ => move_directory_error("IO_ERROR", error.to_string()),
+    }
+}
+
+#[cfg(all(unix, test))]
+fn move_rename_error(error: Errno) -> CommandError {
+    relocation_rename_error(error, MOVE_RELOCATION_ERRORS)
+}
+
+#[cfg(unix)]
+fn rename_workspace_entry_with_observer<O: MoveCommitObserver>(
+    state: &WorkspaceState,
+    candidate: &RenameCandidate,
+    observer: &mut O,
+) -> Result<RenamedWorkspaceEntry, CommandError> {
+    let source_path = Path::new(&candidate.source_path);
+    let destination_path = Path::new(&candidate.destination_path);
+    let destination_name = destination_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            move_directory_error("RENAME_PARENT_CHANGED", "Invalid rename destination")
+        })?;
+    if source_path.parent() != destination_path.parent() {
+        return Err(move_directory_error(
+            "RENAME_PARENT_CHANGED",
+            "Rename must stay in the same parent folder",
+        ));
+    }
+    let preflight = rename_preflight(state, source_path, destination_name)?;
+    if preflight.workspace_generation != candidate.workspace_generation {
+        return Err(move_directory_error(
+            "WORKSPACE_CHANGED",
+            "The active workspace changed before rename",
+        ));
+    }
+    if preflight.source_path != PathBuf::from(&candidate.source_path)
+        || identity_token(preflight.source_parent.identity) != candidate.parent_identity
+        || identity_token(preflight.source_identity) != candidate.source_identity
+        || preflight.source_is_directory != candidate.source_is_directory
+        || preflight.source_is_bundle != candidate.source_is_bundle
+    {
+        return Err(move_directory_error(
+            "RENAME_SOURCE_CHANGED",
+            "The prepared rename no longer matches the filesystem",
+        ));
+    }
+    if preflight.destination_path != PathBuf::from(&candidate.destination_path)
+        || preflight.destination_directory != preflight.source_parent.path
+        || preflight.destination_parent.identity != preflight.source_parent.identity
+    {
+        return Err(move_directory_error(
+            "RENAME_PARENT_CHANGED",
+            "The prepared rename destination no longer matches the filesystem",
+        ));
+    }
+    commit_relocation_with_observer(&preflight, RENAME_RELOCATION_ERRORS, observer)?;
+    Ok(RenamedWorkspaceEntry {
+        original_path: candidate.source_path.clone(),
+        renamed_path: candidate.destination_path.clone(),
+        entry: renamed_entry(candidate)?,
+    })
+}
+
+#[cfg(unix)]
+fn rename_workspace_entry_impl(
+    state: &WorkspaceState,
+    candidate: &RenameCandidate,
+) -> Result<RenamedWorkspaceEntry, CommandError> {
+    rename_workspace_entry_with_observer(state, candidate, &mut NoopMoveCommitObserver)
+}
+
+#[cfg(all(unix, test))]
+fn rename_workspace_entry_with_hook<F>(
+    state: &WorkspaceState,
+    candidate: &RenameCandidate,
+    hook: F,
+) -> Result<RenamedWorkspaceEntry, CommandError>
+where
+    F: FnMut(MoveCommitPhase),
+{
+    rename_workspace_entry_with_observer(state, candidate, &mut TestMoveCommitObserver(hook))
+}
+
+#[cfg(unix)]
+fn identity_at(directory: &OwnedFd, name: &std::ffi::OsStr) -> Result<Option<FileIdentity>, ()> {
+    match unix_fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => Ok(Some(FileIdentity {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+        })),
+        Err(Errno::NOENT | Errno::NOTDIR) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+#[cfg(unix)]
+fn reconcile_workspace_move_impl(
+    state: &WorkspaceState,
+    candidate: &MoveCandidate,
+) -> Result<MoveReconciliation, CommandError> {
+    let (root, generation) =
+        active_workspace_capability_with_generation(state).map_err(CommandError::legacy)?;
+    if generation != candidate.workspace_generation {
+        return Err(move_directory_error(
+            "WORKSPACE_CHANGED",
+            "The active workspace changed before reconciliation",
+        ));
+    }
+    let source_path = Path::new(&candidate.source_path);
+    let Some(source_parent_path) = source_path.parent() else {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    let Some(source_name) = source_path.file_name() else {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    if Path::new(&candidate.destination_directory).join(source_name)
+        != PathBuf::from(&candidate.destination_path)
+    {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    }
+    let Ok(source_parent) = open_move_directory(
+        &root,
+        source_parent_path,
+        "MOVE_SOURCE_CHANGED",
+        MOVE_RELOCATION_ERRORS.bundle_boundary,
+    ) else {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    let Ok(destination) = open_move_directory(
+        &root,
+        Path::new(&candidate.destination_directory),
+        "MOVE_DESTINATION_CHANGED",
+        MOVE_RELOCATION_ERRORS.bundle_boundary,
+    ) else {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    if identity_token(source_parent.identity) != candidate.source_parent_identity
+        || identity_token(destination.identity) != candidate.destination_identity
+    {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    }
+    let expected = &candidate.source_identity;
+    let source_matches = identity_at(&source_parent.directory, source_name)
+        .map(|identity| identity.map(identity_token).as_ref() == Some(expected))
+        .unwrap_or(false);
+    let destination_matches = identity_at(&destination.directory, source_name)
+        .map(|identity| identity.map(identity_token).as_ref() == Some(expected))
+        .unwrap_or(false);
+    if destination_matches && !source_matches {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Destination,
+            entry: Some(moved_entry(candidate)?),
+        });
+    }
+    if source_matches && !destination_matches {
+        return Ok(MoveReconciliation {
+            outcome: MoveReconciliationOutcome::Source,
+            entry: None,
+        });
+    }
+    Ok(MoveReconciliation {
+        outcome: MoveReconciliationOutcome::Ambiguous,
+        entry: None,
+    })
+}
+
+#[cfg(unix)]
+fn reconcile_workspace_rename_impl(
+    state: &WorkspaceState,
+    candidate: &RenameCandidate,
+) -> Result<RenameReconciliation, CommandError> {
+    let (root, generation) =
+        active_workspace_capability_with_generation(state).map_err(CommandError::legacy)?;
+    if generation != candidate.workspace_generation {
+        return Err(move_directory_error(
+            "WORKSPACE_CHANGED",
+            "The active workspace changed before rename reconciliation",
+        ));
+    }
+    let source_path = Path::new(&candidate.source_path);
+    let destination_path = Path::new(&candidate.destination_path);
+    let (Some(source_parent_path), Some(destination_parent_path)) =
+        (source_path.parent(), destination_path.parent())
+    else {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    let (Some(source_name), Some(destination_name)) =
+        (source_path.file_name(), destination_path.file_name())
+    else {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    if source_parent_path != destination_parent_path || source_name == destination_name {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    }
+    let Ok(source_parent) = open_move_directory(
+        &root,
+        source_parent_path,
+        RENAME_RELOCATION_ERRORS.source_changed,
+        RENAME_RELOCATION_ERRORS.bundle_boundary,
+    ) else {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    let Ok(destination_parent) = open_move_directory(
+        &root,
+        destination_parent_path,
+        RENAME_RELOCATION_ERRORS.destination_changed,
+        RENAME_RELOCATION_ERRORS.bundle_boundary,
+    ) else {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    };
+    if source_parent.identity != destination_parent.identity
+        || identity_token(source_parent.identity) != candidate.parent_identity
+    {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Ambiguous,
+            entry: None,
+        });
+    }
+    let expected = &candidate.source_identity;
+    let source_matches = identity_at(&source_parent.directory, source_name)
+        .map(|identity| identity.map(identity_token).as_ref() == Some(expected))
+        .unwrap_or(false);
+    let destination_matches = identity_at(&destination_parent.directory, destination_name)
+        .map(|identity| identity.map(identity_token).as_ref() == Some(expected))
+        .unwrap_or(false);
+    if destination_matches && !source_matches {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Destination,
+            entry: Some(renamed_entry(candidate)?),
+        });
+    }
+    if source_matches && !destination_matches {
+        return Ok(RenameReconciliation {
+            outcome: RenameReconciliationOutcome::Source,
+            entry: None,
+        });
+    }
+    Ok(RenameReconciliation {
+        outcome: RenameReconciliationOutcome::Ambiguous,
+        entry: None,
+    })
+}
+
+#[tauri::command]
+fn prepare_workspace_move(
+    source_path: String,
+    destination_directory: String,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<MoveCandidate, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (source_path, destination_directory, window, registry);
+        Err(CommandError::new(
+            "MOVE_SECURE_RENAME_UNAVAILABLE",
+            "Secure workspace moves are unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        prepare_workspace_move_impl(
+            &state,
+            Path::new(&source_path),
+            Path::new(&destination_directory),
+        )
+    }
+}
+
+#[tauri::command]
+fn move_workspace_entry(
+    candidate: MoveCandidate,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<MovedWorkspaceEntry, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (candidate, window, registry);
+        Err(CommandError::new(
+            "MOVE_SECURE_RENAME_UNAVAILABLE",
+            "Secure workspace moves are unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        move_workspace_entry_impl(&state, &candidate)
+    }
+}
+
+#[tauri::command]
+fn reconcile_workspace_move(
+    candidate: MoveCandidate,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<MoveReconciliation, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (candidate, window, registry);
+        Err(CommandError::new(
+            "MOVE_SOURCE_UNSUPPORTED",
+            "Workspace moves are unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        reconcile_workspace_move_impl(&state, &candidate)
+    }
+}
+
+#[tauri::command]
+fn prepare_workspace_rename(
+    source_path: String,
+    new_name: String,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<RenameCandidate, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (source_path, new_name, window, registry);
+        Err(CommandError::new(
+            "RENAME_SECURE_UNAVAILABLE",
+            "Secure workspace rename is unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        prepare_workspace_rename_impl(&state, Path::new(&source_path), &new_name)
+    }
+}
+
+#[tauri::command]
+fn rename_workspace_entry(
+    candidate: RenameCandidate,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<RenamedWorkspaceEntry, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (candidate, window, registry);
+        Err(CommandError::new(
+            "RENAME_SECURE_UNAVAILABLE",
+            "Secure workspace rename is unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        rename_workspace_entry_impl(&state, &candidate)
+    }
+}
+
+#[tauri::command]
+fn reconcile_workspace_rename(
+    candidate: RenameCandidate,
+    window: WebviewWindow,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<RenameReconciliation, CommandError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (candidate, window, registry);
+        Err(CommandError::new(
+            "RENAME_SOURCE_UNSUPPORTED",
+            "Workspace rename is unavailable on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        reconcile_workspace_rename_impl(&state, &candidate)
+    }
+}
+
 #[tauri::command]
 fn find_workspace_root(file_path: String) -> Result<String, String> {
     let source = fs::canonicalize(file_path).map_err(|error| error.to_string())?;
@@ -2118,6 +3582,10 @@ enum QuitAction {
 
 #[cfg(target_os = "macos")]
 const APP_QUIT_MENU_ID: &str = "localview-app-quit";
+#[cfg(target_os = "macos")]
+const APP_PRINT_MENU_ID: &str = "localview-print";
+#[cfg(target_os = "macos")]
+const PRINT_REQUESTED_EVENT: &str = "print-requested";
 
 impl QuitRegistry {
     fn begin(&self, labels: HashSet<String>) -> Result<Option<(u64, Vec<String>)>, String> {
@@ -2394,6 +3862,22 @@ async fn new_workspace_window(
 }
 
 #[tauri::command]
+fn print_current_window(window: WebviewWindow) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        return window
+            .print()
+            .map_err(|error| format!("PRINT_DISPATCH_FAILED: {error}"));
+    }
+
+    #[cfg(not(desktop))]
+    {
+        let _ = window;
+        Err("PRINT_UNSUPPORTED".to_string())
+    }
+}
+
+#[tauri::command]
 fn respond_app_quit(
     generation: u64,
     outcome: AppQuitOutcome,
@@ -2425,6 +3909,46 @@ fn focus_last_workspace_window(app: &tauri::AppHandle) -> bool {
     let _ = window.unminimize();
     let _ = window.set_focus();
     true
+}
+
+#[cfg(target_os = "macos")]
+fn select_print_target_label(
+    window_states: &[(String, bool)],
+    last_focused: Option<&str>,
+) -> Option<String> {
+    window_states
+        .iter()
+        .find(|(_, focused)| *focused)
+        .map(|(label, _)| label.clone())
+        .or_else(|| {
+            last_focused.and_then(|label| {
+                window_states
+                    .iter()
+                    .any(|(candidate, _)| candidate == label)
+                    .then(|| label.to_string())
+            })
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn print_menu_insert_position(item_labels: &[String]) -> Option<usize> {
+    item_labels.iter().position(|label| label.contains("Close"))
+}
+
+#[cfg(target_os = "macos")]
+fn request_print_for_focused_window(app: &tauri::AppHandle) {
+    let window_states = app
+        .webview_windows()
+        .into_iter()
+        .map(|(label, window)| (label, window.is_focused().unwrap_or(false)))
+        .collect::<Vec<_>>();
+    let last_focused = app.state::<WindowOpenRegistry>().last_focused();
+    let Some(label) = select_print_target_label(&window_states, last_focused.as_deref()) else {
+        return;
+    };
+    if let Err(error) = app.emit_to(&label, PRINT_REQUESTED_EVENT, ()) {
+        eprintln!("Failed to request printing for {label}: {error}");
+    }
 }
 
 fn cleanup_window_runtime(app: &tauri::AppHandle, label: &str) {
@@ -2625,12 +4149,11 @@ pub fn run() {
                 use tauri::menu::{Menu, MenuItem, MenuItemKind};
 
                 let menu = Menu::default(app)?;
-                let app_menu = menu
-                    .items()?
-                    .into_iter()
-                    .next()
+                let top_level_items = menu.items()?;
+                let app_menu = top_level_items
+                    .first()
                     .and_then(|item| match item {
-                        MenuItemKind::Submenu(submenu) => Some(submenu),
+                        MenuItemKind::Submenu(submenu) => Some(submenu.clone()),
                         _ => None,
                     })
                     .ok_or_else(|| tauri::Error::AssetNotFound("macOS app menu".into()))?;
@@ -2656,11 +4179,38 @@ pub fn run() {
                     Some("Cmd+Q"),
                 )?;
                 app_menu.append(&quit_item)?;
+
+                let file_menu = top_level_items
+                    .into_iter()
+                    .find_map(|item| match item {
+                        MenuItemKind::Submenu(submenu)
+                            if submenu.text().ok().as_deref() == Some("File") =>
+                        {
+                            Some(submenu)
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| tauri::Error::AssetNotFound("macOS file menu".into()))?;
+                let file_items = file_menu.items()?;
+                let file_item_labels = file_items
+                    .iter()
+                    .map(|item| match item {
+                        MenuItemKind::Predefined(item) => item.text().unwrap_or_default(),
+                        _ => String::new(),
+                    })
+                    .collect::<Vec<_>>();
+                let close_position = print_menu_insert_position(&file_item_labels)
+                    .ok_or_else(|| tauri::Error::AssetNotFound("macOS close menu item".into()))?;
+                let print_item =
+                    MenuItem::with_id(app, APP_PRINT_MENU_ID, "Print…", true, Some("Cmd+P"))?;
+                file_menu.insert(&print_item, close_position)?;
                 Ok(menu)
             })
             .on_menu_event(|app, event| {
                 if event.id() == APP_QUIT_MENU_ID {
                     request_app_quit(app);
+                } else if event.id() == APP_PRINT_MENU_ID {
+                    request_print_for_focused_window(app);
                 }
             });
     }
@@ -2676,14 +4226,22 @@ pub fn run() {
             create_markdown_file,
             create_directory,
             write_text_file,
+            image_paste::save_pasted_images,
             prepare_trash,
             move_to_trash,
+            prepare_workspace_move,
+            move_workspace_entry,
+            reconcile_workspace_move,
+            prepare_workspace_rename,
+            rename_workspace_entry,
+            reconcile_workspace_rename,
             find_workspace_root,
             prepare_html_preview,
             release_html_preview,
             get_window_bootstrap,
             finish_window_startup,
             new_workspace_window,
+            print_current_window,
             respond_app_quit,
             spreadsheet::read_spreadsheet,
             quick_look::generate_system_thumbnail,
@@ -3455,6 +5013,76 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 46);
+        assert_eq!(actual.get("csv").map(String::as_str), Some("Viewer"));
+        let csv_association = associations
+            .iter()
+            .find(|association| {
+                association["ext"]
+                    .as_array()
+                    .is_some_and(|extensions| extensions.iter().any(|value| value == "csv"))
+            })
+            .expect("CSV file association");
+        assert!(csv_association["contentTypes"]
+            .as_array()
+            .is_some_and(|content_types| content_types
+                .iter()
+                .any(|value| value == "public.comma-separated-values-text")));
+    }
+
+    #[test]
+    fn workspace_windows_can_destroy_after_the_frontend_save_guard() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("parse default capability");
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "workspace-*"])
+        );
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("capability permissions");
+        assert!(permissions
+            .iter()
+            .any(|value| value == "core:window:allow-destroy"));
+        assert!(!permissions
+            .iter()
+            .any(|value| value == "core:window:allow-close"));
+    }
+
+    #[test]
+    fn webview_drag_drop_handler_is_disabled_for_html5_tree_moves() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("parse tauri config");
+        let windows = config["app"]["windows"]
+            .as_array()
+            .expect("app.windows array");
+        let template = windows.first().expect("workspace window template");
+
+        assert_eq!(
+            template["dragDropEnabled"].as_bool(),
+            Some(false),
+            "the shared workspace window template must leave HTML5 drag/drop to WKWebView"
+        );
+    }
+
+    #[test]
+    fn workspace_windows_have_native_titlebar_drag_permission() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("parse default capability");
+        let windows = capability["windows"]
+            .as_array()
+            .expect("capability windows array");
+        assert!(windows.iter().any(|window| window.as_str() == Some("main")));
+        assert!(windows
+            .iter()
+            .any(|window| window.as_str() == Some("workspace-*")));
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("capability permissions array");
+        assert!(permissions
+            .iter()
+            .any(|permission| { permission.as_str() == Some("core:window:allow-start-dragging") }));
     }
 
     #[test]
@@ -3701,6 +5329,761 @@ mod tests {
             move_candidate_to_trash_impl(&state, &candidate).unwrap_err(),
             "WORKSPACE_CHANGED"
         );
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_moves_files_directories_and_iwork_bundles_without_overwrite() {
+        let root = unique_temp_dir("workspace-move-success");
+        fs::create_dir_all(root.join("source")).expect("create source parent");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source_parent = root.join("source");
+        let destination = root.join("destination");
+        let state = workspace_state(&root);
+
+        let file = source_parent.join("notes.md");
+        fs::write(&file, b"notes").expect("create regular file");
+        let candidate = prepare_workspace_move_impl(&state, &file, &destination)
+            .expect("prepare regular file move");
+        assert!(!candidate.source_is_directory);
+        assert!(!candidate.source_is_bundle);
+        let moved = move_workspace_entry_impl(&state, &candidate).expect("move regular file");
+        assert_eq!(moved.original_path, file.to_string_lossy());
+        assert_eq!(moved.entry.kind, "md");
+        assert!(!file.exists());
+        assert_eq!(fs::read(destination.join("notes.md")).unwrap(), b"notes");
+
+        let bundle = source_parent.join("Budget.numbers");
+        fs::create_dir_all(&bundle).expect("create Numbers bundle");
+        fs::write(bundle.join("Index.zip"), b"bundle").expect("create bundle content");
+        let candidate = prepare_workspace_move_impl(&state, &bundle, &destination)
+            .expect("prepare bundle move");
+        assert!(candidate.source_is_directory);
+        assert!(candidate.source_is_bundle);
+        let moved = move_workspace_entry_impl(&state, &candidate).expect("move bundle");
+        assert_eq!(moved.entry.kind, "spreadsheet");
+        assert!(!bundle.exists());
+        assert!(destination.join("Budget.numbers/Index.zip").exists());
+
+        let folder = source_parent.join("ordinary-folder");
+        fs::create_dir_all(folder.join("nested")).expect("create ordinary folder");
+        fs::write(folder.join("nested/child.md"), b"child").expect("create nested child");
+        let candidate = prepare_workspace_move_impl(&state, &folder, &destination)
+            .expect("prepare ordinary directory move");
+        assert!(candidate.source_is_directory);
+        assert!(!candidate.source_is_bundle);
+        let moved = move_workspace_entry_impl(&state, &candidate).expect("move directory");
+        assert_eq!(moved.entry.kind, "folder");
+        assert!(!folder.exists());
+        let moved_folder = destination.join("ordinary-folder");
+        assert!(moved_folder.join("nested/child.md").exists());
+
+        let candidate = prepare_workspace_move_impl(&state, &moved_folder, &root)
+            .expect("prepare directory move to root");
+        assert_eq!(
+            reconcile_workspace_move_impl(&state, &candidate)
+                .expect("folder source reconciliation")
+                .outcome,
+            MoveReconciliationOutcome::Source
+        );
+        move_workspace_entry_impl(&state, &candidate).expect("move directory to root");
+        let reconciled = reconcile_workspace_move_impl(&state, &candidate)
+            .expect("folder destination reconciliation");
+        assert_eq!(reconciled.outcome, MoveReconciliationOutcome::Destination);
+        assert_eq!(reconciled.entry.expect("moved folder entry").kind, "folder");
+        assert!(root.join("ordinary-folder/nested/child.md").exists());
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_rejects_root_descendant_symlink_outside_same_parent_and_collision() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_dir("workspace-move-rejections");
+        let outside = unique_temp_dir("workspace-move-outside");
+        fs::create_dir_all(root.join("source")).expect("create source parent");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        fs::create_dir_all(&outside).expect("create outside");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let outside = fs::canonicalize(outside).expect("canonical outside");
+        let source_parent = root.join("source");
+        let destination = root.join("destination");
+        let file = source_parent.join("notes.md");
+        fs::write(&file, b"notes").expect("create file");
+        let ordinary_folder = source_parent.join("ordinary-folder");
+        fs::create_dir_all(ordinary_folder.join("child")).expect("create folder descendants");
+        symlink(&file, source_parent.join("notes-link.md")).expect("create symlink");
+        fs::write(outside.join("outside.md"), b"outside").expect("create outside file");
+        let state = workspace_state(&root);
+
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &root, &destination)
+                .unwrap_err()
+                .code,
+            "MOVE_SOURCE_UNSUPPORTED"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &ordinary_folder, &ordinary_folder)
+                .unwrap_err()
+                .code,
+            "MOVE_DESTINATION_INSIDE_SOURCE"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &ordinary_folder, &ordinary_folder.join("child"),)
+                .unwrap_err()
+                .code,
+            "MOVE_DESTINATION_INSIDE_SOURCE"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(
+                &state,
+                &source_parent.join("notes-link.md"),
+                &destination,
+            )
+            .unwrap_err()
+            .code,
+            "MOVE_SOURCE_UNSUPPORTED"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &outside.join("outside.md"), &destination)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_CHANGED"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &file, &source_parent)
+                .unwrap_err()
+                .code,
+            "MOVE_SAME_PARENT"
+        );
+        fs::write(destination.join("notes.md"), b"existing").expect("create collision");
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &file, &destination)
+                .unwrap_err()
+                .code,
+            "MOVE_DESTINATION_EXISTS"
+        );
+
+        fs::remove_dir_all(root).expect("remove workspace");
+        fs::remove_dir_all(outside).expect("remove outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_rejects_iwork_bundle_interior_boundaries() {
+        let root = unique_temp_dir("workspace-move-bundle-boundary");
+        let bundle = root.join("Budget.numbers");
+        let destination = root.join("destination");
+        fs::create_dir_all(&bundle).expect("create bundle");
+        fs::create_dir_all(&destination).expect("create destination");
+        fs::write(bundle.join("Index.zip"), b"bundle").expect("create bundle content");
+        fs::write(root.join("notes.md"), b"notes").expect("create ordinary file");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let bundle = root.join("Budget.numbers");
+        let destination = root.join("destination");
+        let state = workspace_state(&root);
+
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &bundle.join("Index.zip"), &destination)
+                .unwrap_err()
+                .code,
+            "MOVE_BUNDLE_BOUNDARY"
+        );
+        assert_eq!(
+            prepare_workspace_move_impl(&state, &root.join("notes.md"), &bundle)
+                .unwrap_err()
+                .code,
+            "MOVE_BUNDLE_BOUNDARY"
+        );
+        assert!(prepare_workspace_move_impl(&state, &bundle, &destination).is_ok());
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_move_rolls_back_parent_and_leaf_replacements_without_outside_writes() {
+        for race in ["destination-parent", "source-parent", "source-leaf"] {
+            let root = unique_temp_dir(&format!("workspace-move-{race}"));
+            let outside = unique_temp_dir(&format!("workspace-move-{race}-outside"));
+            fs::create_dir_all(root.join("source")).expect("create source");
+            fs::create_dir_all(root.join("destination")).expect("create destination");
+            fs::create_dir_all(&outside).expect("create outside");
+            let root = fs::canonicalize(root).expect("canonical workspace");
+            let source = root.join("source/notes.md");
+            let destination = root.join("destination");
+            fs::write(&source, b"prepared").expect("create source file");
+            let state = workspace_state(&root);
+            let candidate =
+                prepare_workspace_move_impl(&state, &source, &destination).expect("prepare move");
+            let displaced_source = root.join("source-original");
+            let displaced_destination = outside.join("destination-original");
+            let retained_leaf = root.join("source/prepared-notes.md");
+
+            let result = move_workspace_entry_with_hook(&state, &candidate, |phase| {
+                if phase != MoveCommitPhase::AfterFinalPreflight {
+                    return;
+                }
+                match race {
+                    "destination-parent" => {
+                        fs::rename(&destination, &displaced_destination)
+                            .expect("displace destination");
+                        fs::create_dir(&destination).expect("replace destination");
+                    }
+                    "source-parent" => {
+                        fs::rename(root.join("source"), &displaced_source)
+                            .expect("displace source parent");
+                        fs::create_dir(root.join("source")).expect("replace source parent");
+                        fs::write(&source, b"replacement-parent")
+                            .expect("create replacement source");
+                    }
+                    "source-leaf" => {
+                        fs::rename(&source, &retained_leaf).expect("retain prepared leaf");
+                        fs::write(&source, b"replacement-leaf").expect("create replacement leaf");
+                    }
+                    _ => unreachable!(),
+                }
+            })
+            .unwrap_err();
+
+            assert!(matches!(
+                result.code.as_str(),
+                "MOVE_SOURCE_CHANGED" | "MOVE_DESTINATION_CHANGED"
+            ));
+            assert!(!destination.join("notes.md").exists());
+            match race {
+                "destination-parent" => {
+                    assert_eq!(fs::read(&source).unwrap(), b"prepared");
+                    assert!(!displaced_destination.join("notes.md").exists());
+                }
+                "source-parent" => {
+                    assert_eq!(fs::read(&source).unwrap(), b"replacement-parent");
+                    assert_eq!(
+                        fs::read(displaced_source.join("notes.md")).unwrap(),
+                        b"prepared"
+                    );
+                }
+                "source-leaf" => {
+                    assert_eq!(fs::read(&source).unwrap(), b"replacement-leaf");
+                    assert_eq!(fs::read(&retained_leaf).unwrap(), b"prepared");
+                }
+                _ => unreachable!(),
+            }
+            fs::remove_dir_all(&root).expect("remove workspace");
+            fs::remove_dir_all(&outside).expect("remove outside");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_move_reports_uncertain_without_overwriting_a_rollback_collision() {
+        let root = unique_temp_dir("workspace-move-rollback-collision");
+        fs::create_dir_all(root.join("source")).expect("create source");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source = root.join("source/notes.md");
+        let retained = root.join("source/prepared.md");
+        let destination = root.join("destination");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_move_impl(&state, &source, &destination).expect("prepare move");
+
+        let result = move_workspace_entry_with_hook(&state, &candidate, |phase| match phase {
+            MoveCommitPhase::AfterFinalPreflight => {
+                fs::rename(&source, &retained).expect("retain prepared source");
+                fs::write(&source, b"replacement").expect("create replacement source");
+            }
+            MoveCommitPhase::BeforeRollback => {
+                fs::write(&source, b"external-collision").expect("create rollback collision");
+            }
+            MoveCommitPhase::AfterRename => {}
+        })
+        .unwrap_err();
+
+        assert_eq!(result.code, "MOVE_OUTCOME_UNCERTAIN");
+        assert_eq!(fs::read(&source).unwrap(), b"external-collision");
+        assert_eq!(
+            fs::read(destination.join("notes.md")).unwrap(),
+            b"replacement"
+        );
+        assert_eq!(fs::read(&retained).unwrap(), b"prepared");
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_move_reports_uncertain_when_root_path_changes_after_rename() {
+        let root = unique_temp_dir("workspace-move-root-post-race");
+        fs::create_dir_all(root.join("source")).expect("create source");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let old_root = root.with_extension("displaced");
+        let source = root.join("source/notes.md");
+        let destination = root.join("destination");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_move_impl(&state, &source, &destination).expect("prepare move");
+
+        let result = move_workspace_entry_with_hook(&state, &candidate, |phase| {
+            if phase == MoveCommitPhase::AfterRename {
+                fs::rename(&root, &old_root).expect("displace workspace root");
+                fs::create_dir(&root).expect("replace workspace root");
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(result.code, "MOVE_OUTCOME_UNCERTAIN");
+        assert!(!root.join("destination/notes.md").exists());
+        assert_eq!(
+            fs::read(old_root.join("destination/notes.md")).unwrap(),
+            b"prepared"
+        );
+        drop(state);
+        fs::remove_dir_all(root).expect("remove replacement root");
+        fs::remove_dir_all(old_root).expect("remove displaced root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_revalidates_source_destination_root_and_generation() {
+        let root = unique_temp_dir("workspace-move-races");
+        fs::create_dir_all(root.join("source")).expect("create source parent");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source_parent = root.join("source");
+        let destination = root.join("destination");
+        let file = source_parent.join("notes.md");
+        fs::write(&file, b"old").expect("create file");
+        let state = workspace_state(&root);
+
+        let candidate =
+            prepare_workspace_move_impl(&state, &file, &destination).expect("prepare source race");
+        fs::rename(&file, source_parent.join("old-notes.md")).expect("retain old source");
+        fs::write(&file, b"replacement").expect("replace source");
+        assert_eq!(
+            move_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "MOVE_SOURCE_CHANGED"
+        );
+
+        let candidate = prepare_workspace_move_impl(&state, &file, &destination)
+            .expect("prepare source parent race");
+        let old_source_parent = root.join("source-old-parent");
+        fs::rename(&source_parent, &old_source_parent).expect("retain old source parent");
+        fs::create_dir(&source_parent).expect("replace source parent");
+        fs::write(&file, b"new parent file").expect("replace source in new parent");
+        assert_eq!(
+            move_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "MOVE_SOURCE_CHANGED"
+        );
+
+        let candidate = prepare_workspace_move_impl(&state, &file, &destination)
+            .expect("prepare destination race");
+        let old_destination = root.join("destination-old");
+        fs::rename(&destination, &old_destination).expect("retain old destination");
+        fs::create_dir(&destination).expect("replace destination");
+        assert_eq!(
+            move_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "MOVE_DESTINATION_CHANGED"
+        );
+
+        let candidate = prepare_workspace_move_impl(&state, &file, &destination)
+            .expect("prepare generation race");
+        state.context.lock().expect("workspace context").generation += 1;
+        assert_eq!(
+            move_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_CHANGED"
+        );
+
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_move_impl(&state, &file, &destination).expect("prepare root race");
+        let old_root = root.with_extension("old-root");
+        fs::rename(&root, &old_root).expect("retain pinned root");
+        fs::create_dir(&root).expect("replace root path");
+        assert_eq!(
+            move_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_CHANGED"
+        );
+        drop(state);
+        fs::remove_dir_all(root).expect("remove replacement root");
+        fs::remove_dir_all(old_root).expect("remove old root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_reconciliation_reports_source_destination_and_ambiguous() {
+        let root = unique_temp_dir("workspace-move-reconcile");
+        fs::create_dir_all(root.join("source")).expect("create source parent");
+        fs::create_dir_all(root.join("destination")).expect("create destination");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source_parent = root.join("source");
+        let destination = root.join("destination");
+        let file = source_parent.join("notes.md");
+        fs::write(&file, b"notes").expect("create file");
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_move_impl(&state, &file, &destination).expect("prepare move");
+
+        assert_eq!(
+            reconcile_workspace_move_impl(&state, &candidate)
+                .expect("source outcome")
+                .outcome,
+            MoveReconciliationOutcome::Source
+        );
+        move_workspace_entry_impl(&state, &candidate).expect("move file");
+        let reconciled =
+            reconcile_workspace_move_impl(&state, &candidate).expect("destination outcome");
+        assert_eq!(reconciled.outcome, MoveReconciliationOutcome::Destination);
+        assert_eq!(reconciled.entry.unwrap().path, candidate.destination_path);
+
+        let second = source_parent.join("second.md");
+        fs::write(&second, b"second").expect("create second file");
+        let candidate = prepare_workspace_move_impl(&state, &second, &destination)
+            .expect("prepare ambiguous move");
+        fs::hard_link(&second, destination.join("second.md")).expect("duplicate identity");
+        assert_eq!(
+            reconcile_workspace_move_impl(&state, &candidate)
+                .expect("ambiguous outcome")
+                .outcome,
+            MoveReconciliationOutcome::Ambiguous
+        );
+
+        assert_eq!(
+            move_rename_error(Errno::XDEV).code,
+            "MOVE_CROSS_DEVICE_UNSUPPORTED"
+        );
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_rename_validates_names_with_the_frontend_contract() {
+        assert_eq!(
+            validate_workspace_rename_name("notes.md", "  会议记录.md  ", false, false)
+                .expect("unicode trim"),
+            "会议记录.md"
+        );
+        assert_eq!(
+            validate_workspace_rename_name(".env", ".config", false, false).expect("dotfile"),
+            ".config"
+        );
+        assert_eq!(
+            validate_workspace_rename_name("archive.tar.gz", "backup.tar.gz", false, false)
+                .expect("multi extension"),
+            "backup.tar.gz"
+        );
+        for (name, code) in [
+            ("", "RENAME_INVALID_NAME"),
+            ("..", "RENAME_INVALID_NAME"),
+            ("a/b.md", "RENAME_INVALID_NAME"),
+            (".DS_Store", "RENAME_RESERVED_NAME"),
+            (".localview-save.tmp", "RENAME_RESERVED_NAME"),
+            ("README.txt", "RENAME_EXTENSION_CHANGE_UNSUPPORTED"),
+        ] {
+            assert_eq!(
+                validate_workspace_rename_name("README", name, false, false)
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+        assert_eq!(
+            validate_workspace_rename_name("notes.md", "notes.md", false, false)
+                .unwrap_err()
+                .code,
+            "RENAME_UNCHANGED"
+        );
+        assert_eq!(
+            validate_workspace_rename_name("notes.md", "NOTES.md", false, false)
+                .unwrap_err()
+                .code,
+            "RENAME_CASE_ONLY_UNSUPPORTED"
+        );
+        assert_eq!(
+            validate_workspace_rename_name(
+                "notes.md",
+                &format!("{}.md", "😀".repeat(127)),
+                false,
+                false,
+            )
+            .unwrap_err()
+            .code,
+            "RENAME_NAME_TOO_LONG"
+        );
+        assert_eq!(
+            validate_workspace_rename_name("docs", "Budget.numbers", true, false)
+                .unwrap_err()
+                .code,
+            "RENAME_RESERVED_NAME"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_rename_renames_files_directories_and_whole_iwork_bundles() {
+        let root = unique_temp_dir("workspace-rename-success");
+        fs::create_dir_all(&root).expect("create workspace");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let state = workspace_state(&root);
+
+        let file = root.join("notes.md");
+        fs::write(&file, b"notes").expect("create file");
+        let candidate = prepare_workspace_rename_impl(&state, &file, "journal.md")
+            .expect("prepare file rename");
+        assert_eq!(
+            reconcile_workspace_rename_impl(&state, &candidate)
+                .expect("source reconciliation")
+                .outcome,
+            RenameReconciliationOutcome::Source
+        );
+        let renamed = rename_workspace_entry_impl(&state, &candidate).expect("rename file");
+        assert_eq!(renamed.entry.kind, "md");
+        assert_eq!(fs::read(root.join("journal.md")).unwrap(), b"notes");
+        let reconciled = reconcile_workspace_rename_impl(&state, &candidate)
+            .expect("destination reconciliation");
+        assert_eq!(reconciled.outcome, RenameReconciliationOutcome::Destination);
+        assert_eq!(reconciled.entry.unwrap().path, candidate.destination_path);
+
+        let folder = root.join("drafts");
+        fs::create_dir_all(folder.join("nested")).expect("create folder");
+        fs::write(folder.join("nested/child.md"), b"child").expect("create child");
+        let candidate = prepare_workspace_rename_impl(&state, &folder, "archive")
+            .expect("prepare folder rename");
+        rename_workspace_entry_impl(&state, &candidate).expect("rename folder");
+        assert_eq!(
+            fs::read(root.join("archive/nested/child.md")).unwrap(),
+            b"child"
+        );
+
+        let bundle = root.join("Budget.numbers");
+        fs::create_dir_all(&bundle).expect("create bundle");
+        fs::write(bundle.join("Index.zip"), b"bundle").expect("create bundle content");
+        let candidate = prepare_workspace_rename_impl(&state, &bundle, "Forecast.numbers")
+            .expect("prepare bundle rename");
+        assert!(candidate.source_is_bundle);
+        let renamed = rename_workspace_entry_impl(&state, &candidate).expect("rename bundle");
+        assert_eq!(renamed.entry.kind, "spreadsheet");
+        assert!(root.join("Forecast.numbers/Index.zip").exists());
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_rename_rejects_root_symlink_bundle_interior_collision_and_invalid_names() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_dir("workspace-rename-rejections");
+        fs::create_dir_all(root.join("Budget.numbers")).expect("create bundle");
+        fs::write(root.join("Budget.numbers/Index.zip"), b"bundle").expect("create bundle content");
+        fs::write(root.join("notes.md"), b"notes").expect("create file");
+        fs::write(root.join("taken.md"), b"taken").expect("create collision");
+        symlink(root.join("notes.md"), root.join("notes-link.md")).expect("create symlink");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let state = workspace_state(&root);
+
+        assert_eq!(
+            prepare_workspace_rename_impl(&state, &root, "renamed")
+                .unwrap_err()
+                .code,
+            "RENAME_ROOT_FORBIDDEN"
+        );
+        assert_eq!(
+            prepare_workspace_rename_impl(&state, &root.join("notes-link.md"), "link-2.md")
+                .unwrap_err()
+                .code,
+            "RENAME_SOURCE_UNSUPPORTED"
+        );
+        assert_eq!(
+            prepare_workspace_rename_impl(
+                &state,
+                &root.join("Budget.numbers/Index.zip"),
+                "Other.zip",
+            )
+            .unwrap_err()
+            .code,
+            "RENAME_BUNDLE_BOUNDARY"
+        );
+        assert_eq!(
+            prepare_workspace_rename_impl(&state, &root.join("notes.md"), "taken.md")
+                .unwrap_err()
+                .code,
+            "RENAME_DESTINATION_EXISTS"
+        );
+        assert_eq!(
+            prepare_workspace_rename_impl(&state, &root.join("notes.md"), "notes.txt")
+                .unwrap_err()
+                .code,
+            "RENAME_EXTENSION_CHANGE_UNSUPPORTED"
+        );
+        assert_eq!(
+            prepare_workspace_rename_impl(&state, &root.join("notes.md"), "NOTES.md")
+                .unwrap_err()
+                .code,
+            "RENAME_CASE_ONLY_UNSUPPORTED"
+        );
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_rename_revalidates_candidate_and_never_overwrites_a_late_collision() {
+        let root = unique_temp_dir("workspace-rename-revalidate");
+        fs::create_dir_all(&root).expect("create workspace");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source = root.join("notes.md");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+
+        let mut tampered = prepare_workspace_rename_impl(&state, &source, "journal.md")
+            .expect("prepare tampered rename");
+        tampered.destination_path = root.join("journal.txt").to_string_lossy().into_owned();
+        assert_eq!(
+            rename_workspace_entry_impl(&state, &tampered)
+                .unwrap_err()
+                .code,
+            "RENAME_EXTENSION_CHANGE_UNSUPPORTED"
+        );
+
+        let candidate = prepare_workspace_rename_impl(&state, &source, "journal.md")
+            .expect("prepare collision rename");
+        let result = rename_workspace_entry_with_hook(&state, &candidate, |phase| {
+            if phase == MoveCommitPhase::AfterFinalPreflight {
+                fs::write(root.join("journal.md"), b"external").expect("create late collision");
+            }
+        })
+        .unwrap_err();
+        assert_eq!(result.code, "RENAME_DESTINATION_EXISTS");
+        assert_eq!(fs::read(&source).unwrap(), b"prepared");
+        assert_eq!(fs::read(root.join("journal.md")).unwrap(), b"external");
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_rename_reports_uncertain_without_false_success_after_source_replacement() {
+        let root = unique_temp_dir("workspace-rename-source-race");
+        fs::create_dir_all(&root).expect("create workspace");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source = root.join("notes.md");
+        let retained = root.join("prepared.md");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_rename_impl(&state, &source, "journal.md").expect("prepare rename");
+
+        let result = rename_workspace_entry_with_hook(&state, &candidate, |phase| {
+            if phase == MoveCommitPhase::AfterFinalPreflight {
+                fs::rename(&source, &retained).expect("retain prepared source");
+                fs::write(&source, b"replacement").expect("create replacement source");
+            }
+        })
+        .unwrap_err();
+        assert_eq!(result.code, "RENAME_OUTCOME_UNCERTAIN");
+        assert_eq!(fs::read(&retained).unwrap(), b"prepared");
+        assert_eq!(fs::read(root.join("journal.md")).unwrap(), b"replacement");
+        assert!(!source.exists());
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_rename_revalidates_source_generation_and_parent_identity() {
+        let root = unique_temp_dir("workspace-rename-races");
+        fs::create_dir_all(root.join("parent")).expect("create parent");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source = root.join("parent/notes.md");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+
+        let candidate = prepare_workspace_rename_impl(&state, &source, "journal.md")
+            .expect("prepare source race");
+        fs::rename(&source, root.join("parent/prepared.md")).expect("retain source");
+        fs::write(&source, b"replacement").expect("replace source");
+        assert_eq!(
+            rename_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "RENAME_SOURCE_CHANGED"
+        );
+
+        let candidate = prepare_workspace_rename_impl(&state, &source, "journal.md")
+            .expect("prepare generation race");
+        state.context.lock().expect("workspace context").generation += 1;
+        assert_eq!(
+            rename_workspace_entry_impl(&state, &candidate)
+                .unwrap_err()
+                .code,
+            "WORKSPACE_CHANGED"
+        );
+
+        let state = workspace_state(&root);
+        let candidate = prepare_workspace_rename_impl(&state, &source, "journal.md")
+            .expect("prepare parent race");
+        let displaced_parent = root.join("parent-original");
+        let result = rename_workspace_entry_with_hook(&state, &candidate, |phase| {
+            if phase != MoveCommitPhase::AfterFinalPreflight {
+                return;
+            }
+            fs::rename(root.join("parent"), &displaced_parent).expect("displace parent");
+            fs::create_dir(root.join("parent")).expect("replace parent");
+            fs::write(&source, b"replacement-parent").expect("create replacement source");
+        })
+        .unwrap_err();
+        assert_eq!(result.code, "RENAME_OUTCOME_UNCERTAIN");
+        assert_eq!(
+            fs::read(displaced_parent.join("notes.md")).unwrap(),
+            b"replacement"
+        );
+        assert_eq!(
+            fs::read(root.join("parent/journal.md")).unwrap(),
+            b"replacement-parent"
+        );
+
+        fs::remove_dir_all(root).expect("remove workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_rename_preserves_a_recreated_source_and_reports_uncertain() {
+        let root = unique_temp_dir("workspace-rename-rollback-collision");
+        fs::create_dir_all(&root).expect("create workspace");
+        let root = fs::canonicalize(root).expect("canonical workspace");
+        let source = root.join("notes.md");
+        fs::write(&source, b"prepared").expect("create source");
+        let state = workspace_state(&root);
+        let candidate =
+            prepare_workspace_rename_impl(&state, &source, "journal.md").expect("prepare rename");
+
+        let result = rename_workspace_entry_with_hook(&state, &candidate, |phase| {
+            if phase == MoveCommitPhase::AfterRename {
+                fs::write(&source, b"external-collision").expect("recreate source");
+            }
+        })
+        .unwrap_err();
+        assert_eq!(result.code, "RENAME_OUTCOME_UNCERTAIN");
+        assert_eq!(fs::read(&source).unwrap(), b"external-collision");
+        assert_eq!(fs::read(root.join("journal.md")).unwrap(), b"prepared");
 
         fs::remove_dir_all(root).expect("remove workspace");
     }
@@ -3962,6 +6345,40 @@ mod tests {
         assert_eq!(
             registry.consume_bootstrap(&label).unwrap().restore_mode,
             RestoreMode::None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn print_target_prefers_the_real_focused_window_then_the_registry_fallback() {
+        let windows = vec![
+            ("main".to_string(), false),
+            ("workspace-2".to_string(), true),
+        ];
+        assert_eq!(
+            select_print_target_label(&windows, Some("main")).as_deref(),
+            Some("workspace-2")
+        );
+
+        let unfocused = vec![
+            ("main".to_string(), false),
+            ("workspace-2".to_string(), false),
+        ];
+        assert_eq!(
+            select_print_target_label(&unfocused, Some("main")).as_deref(),
+            Some("main")
+        );
+        assert_eq!(select_print_target_label(&unfocused, Some("stale")), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn print_menu_item_is_inserted_immediately_before_close() {
+        let labels = vec!["New Window".to_string(), "Close Window".to_string()];
+        assert_eq!(print_menu_insert_position(&labels), Some(1));
+        assert_eq!(
+            print_menu_insert_position(&["New Window".to_string()]),
+            None
         );
     }
 

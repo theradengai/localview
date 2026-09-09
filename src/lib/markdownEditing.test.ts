@@ -10,6 +10,7 @@ import {
   parseEditableGfmTableRange,
   normalizeMarkdownLinkUrl,
   serializeGfmTable,
+  updateGfmTableCell,
   type MarkdownCommand,
   type MarkdownCommandArgument,
   type MarkdownCommandContext,
@@ -306,6 +307,52 @@ describe('strict GFM table parsing and limits', () => {
     });
     expect(getMarkdownCommandAvailability(byteContext).tableAddRowBelow).toBe(false);
     expect(applyMarkdownCommand({ ...byteContext, command: 'tableAddRowBelow' })).toBeNull();
+  });
+
+  it('exposes absolute header/body ranges and updates exactly one cell', () => {
+    const prefix = 'before\n\n';
+    const source = '| 名称 | 内容 |\n| --- | --- |\n| A | 左\\|右 |';
+    const model = parseEditableGfmTableRange(source, prefix.length, prefix.length);
+    expect(model?.headerCellRanges[0]).toEqual({
+      from: prefix.length + source.indexOf('名称'),
+      to: prefix.length + source.indexOf('名称') + '名称'.length,
+    });
+    expect(model?.rowCellRanges[0][1]).toEqual({
+      from: prefix.length + source.indexOf('左'),
+      to: prefix.length + source.indexOf('左') + '左\\|右'.length,
+    });
+
+    const result = updateGfmTableCell(model!, 0, 1, '新|值\r\n第二行');
+    expect(result?.change).toEqual({
+      from: prefix.length + source.indexOf('左'),
+      to: prefix.length + source.indexOf('左') + '左\\|右'.length,
+      insert: '新\\|值 第二行',
+    });
+    expect(result?.selection.anchor).toBe(result?.selection.head);
+  });
+
+  it('preserves escaped pipes, escapes structural pipes, and handles empty Unicode cells', () => {
+    const source = '| A | B |\n| --- | --- |\n|  | 中文 |';
+    const model = parseEditableGfmTableRange(source, 0, source.indexOf('中文'))!;
+    expect(updateGfmTableCell(model, 'header', 0, 'x\\|y')?.change.insert).toBe('x\\|y');
+    expect(updateGfmTableCell(model, 'header', 0, 'x|y')?.change.insert).toBe('x\\|y');
+    expect(updateGfmTableCell(model, 0, 0, '🙂中文')?.change).toEqual({
+      from: model.rowCellRanges[0][0].from,
+      to: model.rowCellRanges[0][0].to,
+      insert: '🙂中文',
+    });
+  });
+
+  it('rejects stale ranges and a replacement that exceeds the table byte limit', () => {
+    const source = oneColumnTable(1, 'x');
+    const model = parseEditableGfmTableRange(source, 0, source.lastIndexOf('x'))!;
+    const stale = {
+      ...model,
+      rowCellRanges: [[{ from: model.to + 1, to: model.to + 1 }]],
+    };
+    expect(updateGfmTableCell(stale, 0, 0, 'next')).toBeNull();
+    expect(updateGfmTableCell(model, 0, 0, '🙂'.repeat(TABLE_MAX_BYTES))).toBeNull();
+    expect(updateGfmTableCell(model, 'header', -1, 'no')).toBeNull();
   });
 });
 

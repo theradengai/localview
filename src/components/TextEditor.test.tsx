@@ -3,7 +3,9 @@ import { EditorView } from '@uiw/react-codemirror';
 import { createRef } from 'react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import '../style.css';
+import { getActiveMarkdownTableCell } from '../lib/markdownLivePreview';
 import TextEditor, { type TextEditorHandle } from './TextEditor';
+import type { PasteImagesHandler } from '../lib/imagePaste';
 
 class TestResizeObserver implements ResizeObserver {
   observe() {}
@@ -52,6 +54,8 @@ function renderEditor({
   editable = true,
   markdownPresentation = 'source' as const,
   onChange = vi.fn(),
+  onPasteImages,
+  onPasteError,
   ref,
 }: {
   documentKey?: string;
@@ -60,6 +64,8 @@ function renderEditor({
   editable?: boolean;
   markdownPresentation?: 'live' | 'source';
   onChange?: (value: string) => void;
+  onPasteImages?: import('../lib/imagePaste').PasteImagesHandler;
+  onPasteError?: (message: string) => void;
   ref?: React.Ref<TextEditorHandle>;
 } = {}) {
   return render(<TextEditor
@@ -72,10 +78,79 @@ function renderEditor({
     resolveMarkdownImageSource={(source) => source}
     hint={null}
     onChange={onChange}
+    onPasteImages={onPasteImages}
+    onPasteError={onPasteError}
   />);
 }
 
 describe('TextEditor Markdown interactions', () => {
+  function pasteImage(target: HTMLElement) {
+    const image = new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
+    fireEvent.paste(target, { clipboardData: {
+      items: [{ kind: 'file', type: image.type, getAsFile: () => image }],
+      files: [image], getData: () => 'clipboard fallback text',
+    } });
+    return image;
+  }
+
+  it.each(['live', 'source'] as const)('pastes screenshots in %s with one undoable replacement', async (markdownPresentation) => {
+    const onChange = vi.fn();
+    const onPasteImages = vi.fn<PasteImagesHandler>(async (_files, insert) => { insert(['assets/one.png', 'assets/two.png']); });
+    const editor = renderEditor({ value: 'before selected after', markdownPresentation, onChange, onPasteImages });
+    const { content, view } = editorView(editor.container);
+    act(() => view.dispatch({ selection: { anchor: 7, head: 15 } }));
+    const image = pasteImage(content);
+    await waitFor(() => expect(view.state.doc.toString()).toBe('before ![截图](assets/one.png)\n![截图](assets/two.png) after'));
+    expect(onPasteImages.mock.calls[0][0]).toEqual([image]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(content, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(view.state.doc.toString()).toBe('before selected after'));
+  });
+
+  it('does not insert a late attachment result into changed content', async () => {
+    let complete!: (sources: string[]) => boolean;
+    const onPasteImages = vi.fn<PasteImagesHandler>(async (_files, insert) => { complete = insert; });
+    const editor = renderEditor({ onPasteImages });
+    const { content, view } = editorView(editor.container);
+    pasteImage(content);
+    act(() => view.dispatch({ changes: { from: 0, insert: 'new ' } }));
+    act(() => expect(complete(['assets/late.png'])).toBe(false));
+    expect(view.state.doc.toString()).toBe('new hello');
+  });
+
+  it('does not insert a late attachment result after the editor unmounts', () => {
+    let complete!: (sources: string[]) => boolean;
+    const editor = renderEditor({ onPasteImages: async (_files, insert) => { complete = insert; } });
+    pasteImage(editorView(editor.container).content);
+    editor.unmount();
+    expect(complete(['assets/late.png'])).toBe(false);
+  });
+
+  it('retains source and selection when attachment writing fails', async () => {
+    const onPasteError = vi.fn();
+    const editor = renderEditor({ onPasteError, onPasteImages: async () => { throw new Error('磁盘已满'); } });
+    const { content, view } = editorView(editor.container);
+    act(() => view.dispatch({ selection: { anchor: 1, head: 4 } }));
+    pasteImage(content);
+    await waitFor(() => expect(onPasteError).toHaveBeenCalledWith('磁盘已满'));
+    expect(view.state.doc.toString()).toBe('hello');
+    expect(view.state.selection.main.from).toBe(1);
+    expect(view.state.selection.main.to).toBe(4);
+  });
+
+  it('preserves ordinary text paste and does not save images from read-only editors', async () => {
+    const onPasteImages = vi.fn();
+    const editor = renderEditor({ onPasteImages });
+    const { content, view } = editorView(editor.container);
+    fireEvent.paste(content, { clipboardData: { items: [], files: [], getData: () => 'text ' } });
+    expect(view.state.doc.toString()).toBe('text hello');
+    expect(onPasteImages).not.toHaveBeenCalled();
+    editor.unmount();
+    const locked = renderEditor({ editable: false, onPasteImages });
+    pasteImage(editorView(locked.container).content);
+    expect(onPasteImages).not.toHaveBeenCalled();
+  });
+
   beforeAll(() => {
     vi.stubGlobal('ResizeObserver', TestResizeObserver);
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => rect());
@@ -128,7 +203,19 @@ describe('TextEditor Markdown interactions', () => {
     expect(link?.classList.contains('cm-live-link')).toBe(true);
   });
 
-  it('shows the selection toolbar without stealing focus and applies one undoable change', async () => {
+  it.each([
+    ['粗体', '**hello** world'],
+    ['斜体', '*hello* world'],
+    ['删除线', '~~hello~~ world'],
+    ['行内代码', '`hello` world'],
+    ['标题 1', '# hello world'],
+    ['标题 2', '## hello world'],
+    ['标题 3', '### hello world'],
+    ['引用', '> hello world'],
+    ['无序列表', '- hello world'],
+    ['有序列表', '1. hello world'],
+    ['任务列表', '- [ ] hello world'],
+  ])('applies %s from the toolbar without stealing selection, as one undoable change', async (label, expected) => {
     const onChange = vi.fn();
     const editor = renderEditor({ value: 'hello world', markdownPresentation: 'live', onChange });
     const { content, view } = editorView(editor.container);
@@ -138,9 +225,9 @@ describe('TextEditor Markdown interactions', () => {
     });
     await screen.findByRole('toolbar', { name: 'Markdown 快捷样式' });
     expect(document.activeElement).toBe(content);
-    fireEvent.pointerDown(screen.getByRole('button', { name: '粗体' }));
-    fireEvent.click(screen.getByRole('button', { name: '粗体' }));
-    expect(view.state.doc.toString()).toBe('**hello** world');
+    fireEvent.pointerDown(screen.getByRole('button', { name: label }));
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(view.state.doc.toString()).toBe(expected);
     expect(onChange).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(content, { key: 'z', ctrlKey: true });
     await waitFor(() => expect(view.state.doc.toString()).toBe('hello world'));
@@ -178,8 +265,12 @@ describe('TextEditor Markdown interactions', () => {
     await screen.findByRole('toolbar', { name: 'Markdown 快捷样式' });
     const before = view.state.selection;
 
+    fireEvent.pointerDown(content, { button: 2 });
     expect(contextMenu(content).defaultPrevented).toBe(false);
+    expect(screen.getByRole('toolbar', { name: 'Markdown 快捷样式' })).toBeTruthy();
+    fireEvent.pointerDown(content, { button: 2, shiftKey: true });
     expect(contextMenu(content, { shiftKey: true }).defaultPrevented).toBe(false);
+    expect(screen.queryByRole('toolbar', { name: 'Markdown 快捷样式' })).toBeNull();
     for (const init of [
       { key: 'ContextMenu' },
       { key: 'F10', shiftKey: true },
@@ -192,6 +283,36 @@ describe('TextEditor Markdown interactions', () => {
     expect(view.state.doc.toString()).toBe('hello');
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByRole('menu', { name: 'Markdown 样式' })).toBeNull();
+  });
+
+  it('opens the Markdown toolbar on an empty-selection right-click and keeps Shift-right-click native', async () => {
+    const onChange = vi.fn();
+    const editor = renderEditor({ value: 'hello', markdownPresentation: 'live', onChange });
+    const { content, view } = editorView(editor.container);
+    expect(view.state.selection.main.empty).toBe(true);
+
+    fireEvent.pointerDown(content, { button: 2, clientX: 120, clientY: 80 });
+    const localEvent = contextMenu(content, { clientX: 120, clientY: 80 });
+    expect(localEvent.defaultPrevented).toBe(true);
+    const toolbar = await screen.findByRole('toolbar', { name: 'Markdown 快捷样式' });
+    expect(toolbar).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '粗体' }).disabled).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '高亮' }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '字体颜色' }).disabled).toBe(true);
+    fireEvent.pointerDown(screen.getByRole('button', { name: '粗体' }));
+    fireEvent.click(screen.getByRole('button', { name: '粗体' }));
+    expect(view.state.doc.toString()).toBe('he****llo');
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    const nativeEditor = renderEditor({ value: 'native', markdownPresentation: 'live' });
+    const native = editorView(nativeEditor.container);
+    const nativeEvent = contextMenu(native.content, {
+      clientX: 120,
+      clientY: 80,
+      shiftKey: true,
+    });
+    expect(nativeEvent.defaultPrevented).toBe(false);
+    expect(screen.queryByRole('toolbar', { name: 'Markdown 快捷样式' })).toBeNull();
   });
 
   it('does not reopen the toolbar after native right-click selection changes', async () => {
@@ -262,6 +383,84 @@ describe('TextEditor Markdown interactions', () => {
     act(() => view.dispatch({ selection: { anchor: table.indexOf('y') } }));
     await waitFor(() => expect(screen.queryByRole('menu', { name: 'Markdown 表格' })).toBeNull());
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('uses the active Live Preview cell for table tools and exposes a synchronous flush', async () => {
+    const table = '| A | B |\n| --- | --- |\n| x | y |';
+    const source = `${table}\n\nafter`;
+    const ref = createRef<TextEditorHandle>();
+    const onChange = vi.fn();
+    const editor = renderEditor({
+      value: source,
+      ref,
+      onChange,
+      markdownPresentation: 'live',
+    });
+    const { view } = editorView(editor.container);
+    act(() => view.dispatch({ selection: { anchor: source.length } }));
+    const cell = await waitFor(() => {
+      const value = editor.container.querySelectorAll<HTMLTableCellElement>('td')[0];
+      expect(value).toBeTruthy();
+      return value;
+    });
+    fireEvent.click(cell);
+    let input = await waitFor(() => {
+      const value = editor.container.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    input.value = 'changed|value';
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.input(input);
+    expect(ref.current?.flushMarkdownCellEdit()).toBe(true);
+    expect(view.state.doc.toString()).toContain('| changed\\|value | y |');
+
+    act(() => expect(ref.current?.openMarkdownTableTools({ x: 20, y: 20 })).toBe(true));
+    const addRowBelow = await screen.findByRole('menuitem', { name: '在下方添加行' });
+    await waitFor(() => expect(getActiveMarkdownTableCell(view)).toBeNull());
+    fireEvent.click(addRowBelow);
+    expect(view.state.doc.toString()).toContain('| changed\\|value | y |\n|  |  |');
+    expect(getActiveMarkdownTableCell(view)?.active.row).toBe(1);
+    input = await waitFor(() => {
+      const value = editor.container.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    expect(input.getAttribute('aria-label')).toContain('第 2 行第 1 列');
+    expect(onChange).toHaveBeenCalled();
+
+    fireEvent.click(editor.container.querySelector<HTMLButtonElement>('.cm-live-source-button')!);
+    await waitFor(() => expect(editor.container.querySelector('.cm-live-table-wrap')).toBeNull());
+    expect(view.state.doc.toString()).toContain('| changed\\|value | y |');
+  });
+
+  it('flushes the final IME textarea value before an explicit save reads editor content', async () => {
+    const table = '| A |\n| --- |\n| 初始 |';
+    const ref = createRef<TextEditorHandle>();
+    const editor = renderEditor({
+      value: `${table}\n\nafter`,
+      ref,
+      markdownPresentation: 'live',
+    });
+    const { view } = editorView(editor.container);
+    act(() => view.dispatch({ selection: { anchor: view.state.doc.length } }));
+    const cell = await waitFor(() => {
+      const value = editor.container.querySelector<HTMLTableCellElement>('td');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.click(cell);
+    const input = await waitFor(() => {
+      const value = editor.container.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.compositionStart(input);
+    input.value = '中文尾字';
+    input.setSelectionRange(input.value.length, input.value.length);
+
+    expect(ref.current?.flushMarkdownCellEdit()).toBe(true);
+    expect(view.state.doc.toString()).toContain('| 中文尾字 |');
   });
 
   it('fails closed for locked, non-Markdown, and unmounted table handles', () => {

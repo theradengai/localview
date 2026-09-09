@@ -1,0 +1,6 @@
+Name,Code,Notes
+Alpha,00123,"quoted, value"
+Multiline,plain,"line one
+line two"
+Ragged
+Escaped,ok,"said ""hello"""

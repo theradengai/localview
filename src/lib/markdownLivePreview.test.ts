@@ -1,11 +1,14 @@
 import { fireEvent, waitFor } from '@testing-library/react';
 import { Compartment } from '@codemirror/state';
+import { history } from '@codemirror/commands';
 import { EditorState, EditorView } from '@uiw/react-codemirror';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MARKDOWN_GFM_EXTENSION } from './markdownLanguage';
 import {
   MARKDOWN_LIVE_PREVIEW_LIMITS,
   createMarkdownLivePreviewExtension,
+  flushActiveMarkdownTableCell,
+  getActiveMarkdownTableCell,
 } from './markdownLivePreview';
 
 class TestResizeObserver implements ResizeObserver {
@@ -43,6 +46,7 @@ function mountLiveEditor(
     selection: { anchor: selection },
     extensions: [
       MARKDOWN_GFM_EXTENSION,
+      history(),
       editableCompartment.of(EditorView.editable.of(options.editable ?? true)),
       createMarkdownLivePreviewExtension({
         resolveImageSource: options.resolveImageSource ?? ((source) => source),
@@ -148,6 +152,66 @@ describe('Markdown Live Preview decorations', () => {
     editor.destroy();
   });
 
+  it('keeps ordinary list bullets and ordered numbering visible but tasks have only a checkbox', () => {
+    const source = '- first\n  - nested\n\n3. third\n1. fourth\n\n- [ ] task\n  - [x] done\n\nafter';
+    const editor = mountLiveEditor(source);
+    const markers = Array.from(editor.parent.querySelectorAll('.cm-live-list-marker'));
+    expect(markers.map((marker) => marker.textContent)).toEqual(['•', '•', '3.', '4.']);
+    expect(editor.parent.querySelectorAll('.cm-live-task-checkbox')).toHaveLength(2);
+    expect(editor.view.state.doc.toString()).toBe(source);
+    expect(editor.updates).toHaveLength(0);
+    editor.view.dispatch({ selection: { anchor: 0 } });
+    expect(editor.parent.querySelector('.cm-line')?.textContent).toBe('- first');
+    editor.destroy();
+  });
+
+  it('renders setext headings and hides hard-break escapes without changing the source', () => {
+    const source = 'Heading\n===\n\nSubheading\n---\n\nfirst\\\nsecond\n\nafter';
+    const editor = mountLiveEditor(source);
+    expect(editor.parent.querySelector('.cm-live-heading-1')?.textContent).toBe('Heading');
+    expect(editor.parent.querySelector('.cm-live-heading-2')?.textContent).toBe('Subheading');
+    expect(editor.view.dom.textContent).not.toContain('===');
+    expect(editor.view.dom.textContent).not.toContain('first\\');
+    expect(editor.view.state.doc.toString()).toBe(source);
+    expect(editor.updates).toHaveLength(0);
+    editor.destroy();
+  });
+
+  it('renders escaped punctuation as literal text and reveals its exact escape when selected', () => {
+    const source = '\\*literal\\* and `\\*code\\*`\n\nafter';
+    const editor = mountLiveEditor(source);
+    expect(editor.view.dom.textContent).toContain('*literal*');
+    expect(editor.view.dom.textContent).toContain('\\*code\\*');
+    expect(editor.parent.querySelector('.cm-live-emphasis')).toBeNull();
+    editor.view.dispatch({ selection: { anchor: 0 } });
+    expect(editor.view.dom.textContent).toContain('\\*literal');
+    expect(editor.view.state.doc.toString()).toBe(source);
+    editor.destroy();
+  });
+
+  it('keeps fenced-code chrome stable while selecting code text and reveals source from its label', () => {
+    const source = '```ts\nconst first = 1;\nconst second = 2;\n```';
+    const first = source.indexOf('const first');
+    const secondEnd = source.indexOf(';', source.indexOf('const second')) + 1;
+    const editor = mountLiveEditor(source, first);
+    const label = editor.parent.querySelector<HTMLButtonElement>('.cm-live-code-label');
+    expect(label).toBeTruthy();
+
+    editor.view.dispatch({ selection: { anchor: first, head: secondEnd } });
+
+    expect(editor.view.state.selection.main.from).toBe(first);
+    expect(editor.view.state.selection.main.to).toBe(secondEnd);
+    expect(editor.parent.querySelector('.cm-live-code-label')).toBe(label);
+    expect(label?.isConnected).toBe(true);
+    expect(editor.view.state.doc.toString()).toBe(source);
+
+    fireEvent.click(label!);
+    expect(editor.parent.querySelector('.cm-live-code-label')).toBeNull();
+    expect(editor.view.state.selection.main.head).toBe(0);
+    expect(editor.view.state.doc.toString()).toBe(source);
+    editor.destroy();
+  });
+
   it('renders exact LocalView highlight and color pairs and reveals nested source when active', () => {
     const source = '<span data-localview-color="blue"><mark>bright **bold**</mark></span> after';
     const editor = mountLiveEditor(source, source.length);
@@ -204,7 +268,9 @@ describe('Markdown Live Preview decorations', () => {
   it('fails closed for escaped syntax and oversized image or table nodes', async () => {
     const escaped = '\\*literal* and \\_text_ and \\[label](url)';
     const escapedEditor = mountLiveEditor(escaped);
-    expect(escapedEditor.view.dom.textContent).toContain(escaped);
+    expect(escapedEditor.view.dom.textContent).toContain('*literal* and _text_ and [label](url)');
+    expect(escapedEditor.parent.querySelector('.cm-live-emphasis, .cm-live-link')).toBeNull();
+    expect(escapedEditor.view.state.doc.toString()).toBe(escaped);
     escapedEditor.destroy();
 
     const oversizedImage = `![alt](${'a'.repeat(MARKDOWN_LIVE_PREVIEW_LIMITS.imageOrLinkCharacters + 1)})`;
@@ -244,6 +310,222 @@ describe('Markdown Live Preview decorations', () => {
     expect(editor.view.state.selection.main.head).toBe(0);
     expect(editor.view.state.doc.toString()).toBe(`${table}\n\nafter`);
     expect(editor.updates).toHaveLength(0);
+    editor.destroy();
+  });
+
+  it('renders inline styles inside inactive table cells with safe HTML and preserves cell-edit source', async () => {
+    const source = '| **Title** | Value |\n| --- | --- |\n| ~~done~~ | <mark>*bright*</mark> |\n| <script>alert(1)</script> | [bad](javascript:alert) |\n\nafter';
+    const editor = mountLiveEditor(source);
+    await flushLiveBlockRefresh();
+    const table = editor.parent.querySelector('table')!;
+    expect(table.querySelector('th strong')?.textContent).toBe('Title');
+    expect(table.querySelector('td del')?.textContent).toBe('done');
+    expect(table.querySelector('td mark em')?.textContent).toBe('bright');
+    expect(table.querySelector('script')).toBeNull();
+    expect(table.querySelector('a')?.getAttribute('href')).not.toMatch(/^javascript:/);
+    fireEvent.click(table.querySelector('td')!);
+    await flushLiveBlockRefresh();
+    expect(editor.parent.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('~~done~~');
+    expect(editor.view.state.doc.toString()).toBe(source);
+    expect(editor.updates).toHaveLength(0);
+    editor.destroy();
+  });
+
+  it('renders a table when the initial caret is inside it and reveals source only explicitly', async () => {
+    const table = '| Name | Value |\n| --- | --- |\n| A | one |';
+    const source = `${table}\n\nafter`;
+    const editor = mountLiveEditor(source, 0);
+    const widget = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLElement>('.cm-live-table-wrap');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+
+    expect(editor.view.state.selection.main.head).toBe(0);
+    fireEvent.click(widget.querySelector<HTMLButtonElement>('.cm-live-source-button')!);
+    await waitFor(() => expect(editor.parent.querySelector('.cm-live-table-wrap')).toBeNull());
+    expect(editor.view.state.selection.main.head).toBe(0);
+
+    editor.view.dispatch({ selection: { anchor: source.length } });
+    await waitFor(() => expect(editor.parent.querySelector('.cm-live-table-wrap')).toBeTruthy());
+    editor.destroy();
+  });
+
+  it('edits one table cell in place and synchronizes every input to Markdown source', async () => {
+    const table = '| 名称 | 内容 |\n| --- | --- |\n| A | 初始 |';
+    const editor = mountLiveEditor(`${table}\n\nafter`);
+    const cell = await waitFor(() => {
+      const value = editor.parent.querySelectorAll<HTMLTableCellElement>('td')[1];
+      expect(value).toBeTruthy();
+      return value;
+    });
+    fireEvent.click(cell);
+    const input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    input.value = '新|值\n第二行';
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.input(input);
+
+    expect(editor.view.state.doc.toString()).toContain('| A | 新\\|值 第二行 |');
+    expect(editor.updates[editor.updates.length - 1]).toBe(editor.view.state.doc.toString());
+    expect(editor.parent.querySelectorAll('.cm-live-table-input')).toHaveLength(1);
+    editor.destroy();
+  });
+
+  it('keeps the active textarea during IME composition and supports native context menu', async () => {
+    const table = '| A |\n| --- |\n| 初始 |';
+    const editor = mountLiveEditor(`${table}\n\nafter`);
+    const cell = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTableCellElement>('td');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.click(cell);
+    const input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.compositionStart(input);
+    input.value = '中文';
+    input.setSelectionRange(2, 2);
+    fireEvent.input(input);
+    expect(editor.parent.querySelector('.cm-live-table-input')).toBe(input);
+    expect(input.isConnected).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(editor.parent.querySelector('.cm-live-table-input')).toBe(input);
+    expect(input.isConnected).toBe(true);
+    fireEvent.compositionEnd(input);
+    await waitFor(() => expect(editor.view.state.doc.toString()).toContain('| 中文 |'));
+
+    const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    input.dispatchEvent(contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(false);
+    editor.destroy();
+  });
+
+  it('clears a stale active cell after the table is removed and lets callers continue', async () => {
+    const table = '| A |\n| --- |\n| value |';
+    const editor = mountLiveEditor(`${table}\n\nafter`);
+    const cell = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTableCellElement>('td');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.click(cell);
+    await waitFor(() => expect(getActiveMarkdownTableCell(editor.view)).toBeTruthy());
+
+    editor.view.dispatch({ changes: { from: 0, to: table.length, insert: 'plain text' } });
+
+    expect(getActiveMarkdownTableCell(editor.view)).toBeNull();
+    expect(flushActiveMarkdownTableCell(editor.view)).toBe(true);
+    editor.destroy();
+  });
+
+  it('patches a 500-cell table without replacing the active DOM or selection', async () => {
+    const headers = Array.from({ length: 25 }, (_, index) => `H${index}`);
+    const delimiter = headers.map(() => '---');
+    const rows = Array.from({ length: 19 }, (_, row) => headers.map((_, column) => `${row}-${column}`));
+    const table = [headers, delimiter, ...rows]
+      .map((cells) => `| ${cells.join(' | ')} |`).join('\n');
+    const editor = mountLiveEditor(`${table}\n\nafter`);
+    const cell = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTableCellElement>('td');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.click(cell);
+    const section = await waitFor(() => editor.parent.querySelector<HTMLElement>('.cm-live-table-wrap')!);
+    const renderedTable = section.querySelector('table');
+    const input = await waitFor(() => section.querySelector<HTMLTextAreaElement>('.cm-live-table-input')!);
+    input.focus();
+    input.value = 'continuous-input';
+    input.setSelectionRange(7, 7);
+    fireEvent.input(input);
+    await flushLiveBlockRefresh();
+
+    expect(editor.parent.querySelector('.cm-live-table-wrap')).toBe(section);
+    expect(section.querySelector('table')).toBe(renderedTable);
+    expect(section.querySelector('.cm-live-table-input')).toBe(input);
+    expect(input.selectionStart).toBe(7);
+    expect(input.selectionEnd).toBe(7);
+    editor.destroy();
+  });
+
+  it('closes an active cell on blur and restores focus at Tab boundaries', async () => {
+    const table = '| A | B |\n| --- | --- |\n| one | two |';
+    const editor = mountLiveEditor(`${table}\n\nafter`);
+    const last = await waitFor(() => {
+      const cells = editor.parent.querySelectorAll<HTMLTableCellElement>('td');
+      expect(cells).toHaveLength(2);
+      return cells[1];
+    });
+    fireEvent.click(last);
+    let input = await waitFor(() => editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input')!);
+    fireEvent.keyDown(input, { key: 'Tab' });
+    await waitFor(() => expect(editor.parent.querySelector('.cm-live-table-input')).toBeNull());
+    await flushLiveBlockRefresh();
+    const restored = editor.parent.querySelectorAll<HTMLTableCellElement>('td')[1];
+    expect(document.activeElement).toBe(restored);
+
+    fireEvent.click(restored);
+    input = await waitFor(() => editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input')!);
+    fireEvent.blur(input, { relatedTarget: document.body });
+    await Promise.resolve();
+    await waitFor(() => expect(editor.parent.querySelector('.cm-live-table-input')).toBeNull());
+    editor.destroy();
+  });
+
+  it('navigates cells with Tab and routes Command-Z/redo to CodeMirror history', async () => {
+    const table = '| A | B |\n| --- | --- |\n| one | two |';
+    const source = `${table}\n\nafter`;
+    const editor = mountLiveEditor(source);
+    const first = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTableCellElement>('th');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.click(first);
+    let input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    input.value = 'Changed';
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.input(input);
+    input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.keyDown(input, { key: 'z', metaKey: true });
+    await waitFor(() => expect(editor.view.state.doc.toString()).toBe(source));
+    input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.keyDown(input, { key: 'z', metaKey: true, shiftKey: true });
+    await waitFor(() => expect(editor.view.state.doc.toString()).toContain('| Changed | B |'));
+
+    input = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    const next = await waitFor(() => {
+      const value = editor.parent.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      expect(value).toBeTruthy();
+      return value!;
+    });
+    expect(next.getAttribute('aria-label')).toContain('第 2 列');
+    fireEvent.keyDown(next, { key: 'Escape' });
+    await waitFor(() => expect(editor.parent.querySelector('.cm-live-table-input')).toBeNull());
     editor.destroy();
   });
 

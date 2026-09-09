@@ -19,6 +19,10 @@ src-tauri/target/
 .vscode/
 .idea/
 .playwright-cli/
+.playwright-mcp/
+output/
+.tasks/
+release-artifacts/
 .env
 .env.*
 !.env.example

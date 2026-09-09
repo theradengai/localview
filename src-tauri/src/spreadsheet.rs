@@ -347,12 +347,59 @@ where
     })
 }
 
+fn parse_csv(bytes: Vec<u8>, version: String) -> Result<SpreadsheetWorkbookSnapshot, String> {
+    let bytes = bytes
+        .strip_prefix(&[0xef, 0xbb, 0xbf])
+        .unwrap_or(bytes.as_slice());
+    std::str::from_utf8(bytes).map_err(|error| {
+        spreadsheet_error(
+            "SPREADSHEET_INVALID_ENCODING",
+            format!("CSV must be UTF-8 or UTF-8 with BOM: {error}"),
+        )
+    })?;
+
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(bytes);
+    let mut cells = Vec::new();
+    let mut bounds: Option<CellBounds> = None;
+    for (row, record) in reader.records().enumerate() {
+        let record =
+            record.map_err(|error| spreadsheet_error("SPREADSHEET_PARSE_FAILED", error))?;
+        let row = u32::try_from(row).map_err(|_| {
+            spreadsheet_error("SPREADSHEET_TOO_MANY_CELLS", "CSV row index exceeds u32")
+        })?;
+        for (column, value) in record.iter().enumerate() {
+            if value.is_empty() {
+                continue;
+            }
+            let column = u32::try_from(column).map_err(|_| {
+                spreadsheet_error("SPREADSHEET_TOO_MANY_CELLS", "CSV column index exceeds u32")
+            })?;
+            if push_cell(&mut cells, 0, row, column, Data::String(value.to_string()))? {
+                match &mut bounds {
+                    Some(bounds) => bounds.include(row, column),
+                    None => bounds = Some(CellBounds::new(row, column)),
+                }
+            }
+        }
+    }
+
+    Ok(SpreadsheetWorkbookSnapshot {
+        version,
+        sheets: vec![sheet_from_bounds("CSV".to_string(), 0, true, bounds)],
+        cells,
+    })
+}
+
 fn parse_spreadsheet(
     extension: &str,
     bytes: Vec<u8>,
     version: String,
 ) -> Result<SpreadsheetWorkbookSnapshot, String> {
     match extension {
+        "csv" => parse_csv(bytes, version),
         "xlsx" => parse_xlsx(bytes, version),
         "xls" => {
             let mut workbook: Xls<_> = Xls::new(Cursor::new(bytes))
@@ -387,7 +434,7 @@ fn spreadsheet_path(state: &WorkspaceState, path: &Path) -> Result<PathBuf, Stri
     }
 
     let extension = extension_lowercase(&path);
-    if !matches!(extension.as_str(), "xls" | "xlsx" | "ods") {
+    if !matches!(extension.as_str(), "csv" | "xls" | "xlsx" | "ods") {
         return Err(spreadsheet_error(
             "SPREADSHEET_UNSUPPORTED",
             format!("{} is not a supported spreadsheet", path.display()),
@@ -476,6 +523,84 @@ mod tests {
     #[test]
     fn parses_ods_fixture() {
         assert_basic_fixture("ods");
+    }
+
+    #[test]
+    fn parses_csv_fixture_as_one_text_preserving_sheet() {
+        let snapshot = parse_spreadsheet("csv", fixture("basic.csv"), "csv-v1".to_string())
+            .expect("parse CSV fixture");
+
+        assert_eq!(snapshot.version, "csv-v1");
+        assert_eq!(snapshot.sheets.len(), 1);
+        assert_eq!(snapshot.sheets[0].name, "CSV");
+        assert_eq!(snapshot.sheets[0].end_row, 4);
+        assert_eq!(snapshot.sheets[0].end_column, 2);
+        assert!(snapshot
+            .cells
+            .iter()
+            .any(|cell| { cell.row == 0 && cell.column == 0 && cell.display_value == "Name" }));
+        assert!(snapshot
+            .cells
+            .iter()
+            .any(|cell| { cell.row == 1 && cell.column == 1 && cell.display_value == "00123" }));
+        assert!(snapshot.cells.iter().any(|cell| {
+            cell.row == 1 && cell.column == 2 && cell.display_value == "quoted, value"
+        }));
+        assert!(snapshot.cells.iter().any(|cell| {
+            cell.row == 2 && cell.column == 2 && cell.display_value == "line one\nline two"
+        }));
+        assert!(snapshot.cells.iter().any(|cell| {
+            cell.row == 4 && cell.column == 2 && cell.display_value == "said \"hello\""
+        }));
+        assert!(snapshot
+            .cells
+            .iter()
+            .all(|cell| cell.kind == SpreadsheetCellKind::String));
+    }
+
+    #[test]
+    fn parses_utf8_bom_and_empty_csv() {
+        let snapshot = parse_csv(
+            b"\xef\xbb\xbfname,value\n\xe4\xb8\xad\xe6\x96\x87,001".to_vec(),
+            "bom-v1".to_string(),
+        )
+        .expect("parse UTF-8 BOM CSV");
+        assert!(snapshot
+            .cells
+            .iter()
+            .any(|cell| cell.display_value == "name"));
+        assert!(snapshot
+            .cells
+            .iter()
+            .any(|cell| cell.display_value == "中文"));
+        assert!(snapshot
+            .cells
+            .iter()
+            .any(|cell| cell.display_value == "001"));
+
+        let empty = parse_csv(Vec::new(), "empty-v1".to_string()).expect("parse empty CSV");
+        assert_eq!(empty.sheets.len(), 1);
+        assert!(empty.cells.is_empty());
+        assert_eq!(empty.sheets[0].end_row, 0);
+        assert_eq!(empty.sheets[0].end_column, 0);
+    }
+
+    #[test]
+    fn rejects_non_utf8_csv_with_stable_error() {
+        let error = parse_csv(b"name\n\xff".to_vec(), "invalid-v1".to_string())
+            .expect_err("non-UTF-8 CSV should fail");
+        assert!(error.starts_with("SPREADSHEET_INVALID_ENCODING:"));
+    }
+
+    #[test]
+    fn enforces_csv_non_empty_cell_limit() {
+        let mut source = String::with_capacity((MAX_NON_EMPTY_CELLS + 1) * 2);
+        for _ in 0..=MAX_NON_EMPTY_CELLS {
+            source.push_str("x\n");
+        }
+        let error = parse_csv(source.into_bytes(), "large-v1".to_string())
+            .expect_err("CSV cell limit should fail");
+        assert!(error.starts_with("SPREADSHEET_TOO_MANY_CELLS:"));
     }
 
     #[test]
@@ -569,6 +694,10 @@ mod tests {
         assert_eq!(
             extension_lowercase(std::path::Path::new("Budget.XLSX")),
             "xlsx"
+        );
+        assert_eq!(
+            extension_lowercase(std::path::Path::new("Export.CSV")),
+            "csv"
         );
     }
 

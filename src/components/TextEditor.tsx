@@ -26,6 +26,7 @@ import {
   type MarkdownCommand,
   type MarkdownCommandArgument,
   type MarkdownCommandContext,
+  type GfmTableModel,
 } from '../lib/markdownEditing';
 import {
   findTopLevelGfmTableRange,
@@ -33,9 +34,14 @@ import {
 } from '../lib/markdownLanguage';
 import {
   createMarkdownLivePreviewExtension,
+  flushActiveMarkdownTableCell,
+  getActiveMarkdownTableCell,
+  setActiveMarkdownTableCell,
+  type ActiveMarkdownTableCell,
   type LivePreviewPresentation,
 } from '../lib/markdownLivePreview';
 import MarkdownTableMenu from './MarkdownTableMenu';
+import { clipboardImages, type PasteImagesHandler } from '../lib/imagePaste';
 import MarkdownSelectionToolbar, {
   type MarkdownSelectionToolbarHandle,
   type MarkdownToolbarAnchor,
@@ -51,12 +57,15 @@ type Props = {
   resolveMarkdownImageSource: (source: string) => string;
   onChange: (value: string) => void;
   onMarkdownOverlayOpen?: () => void;
+  onPasteImages?: PasteImagesHandler;
+  onPasteError?: (message: string) => void;
 };
 
 export type MarkdownTableToolsAnchor = { x: number; y: number };
 
 export type TextEditorHandle = {
   openMarkdownTableTools: (anchor: MarkdownTableToolsAnchor) => boolean;
+  flushMarkdownCellEdit: () => boolean;
 };
 
 type SurfaceSnapshot = {
@@ -65,10 +74,15 @@ type SurfaceSnapshot = {
   doc: Text;
   selection: EditorSelection;
   context: MarkdownCommandContext;
+  liveTableActive: ActiveMarkdownTableCell | null;
 };
 
 type TableMenuSnapshot = SurfaceSnapshot & { x: number; y: number };
-type ToolbarState = { snapshot: SurfaceSnapshot; anchor: MarkdownToolbarAnchor };
+type ToolbarState = {
+  snapshot: SurfaceSnapshot;
+  anchor: MarkdownToolbarAnchor;
+  origin: 'selection' | 'context';
+};
 
 const TABLE_MAX_CHARACTERS = 64 * 1024;
 
@@ -88,6 +102,8 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   resolveMarkdownImageSource,
   onChange,
   onMarkdownOverlayOpen,
+  onPasteImages,
+  onPasteError,
 }: Props, forwardedRef) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const tableMenuSnapshotRef = useRef<TableMenuSnapshot | null>(null);
@@ -154,9 +170,18 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       || view.state.selection.ranges.length !== 1) return null;
     const selection = view.state.selection;
     const main = selection.main;
-    const tableRange = findTopLevelGfmTableRange(view.state, contextPosition);
-    let table = null;
-    if (tableRange && tableRange.to - tableRange.from <= TABLE_MAX_CHARACTERS) {
+    const activeTable = getActiveMarkdownTableCell(view);
+    const tableRange = activeTable
+      ? { from: activeTable.model.from, to: activeTable.model.to }
+      : findTopLevelGfmTableRange(view.state, contextPosition);
+    let table: GfmTableModel | null = activeTable
+      ? {
+        ...activeTable.model,
+        currentRow: activeTable.active.row,
+        currentColumn: activeTable.active.column,
+      }
+      : null;
+    if (!table && tableRange && tableRange.to - tableRange.from <= TABLE_MAX_CHARACTERS) {
       table = parseEditableGfmTableRange(
         view.state.sliceDoc(tableRange.from, tableRange.to),
         tableRange.from,
@@ -168,6 +193,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       documentKey: current.documentKey,
       doc: view.state.doc,
       selection,
+      liveTableActive: activeTable?.active ?? null,
       context: {
         selection: { anchor: main.anchor, head: main.head },
         selectionCount: selection.ranges.length,
@@ -198,6 +224,21 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   const scheduleToolbarMeasure = useCallback((view: EditorView) => {
     const current = latestRef.current;
     const selection = view.state.selection;
+    const retainedContext = toolbarStateRef.current;
+    if (selection.main.empty && retainedContext?.origin === 'context') {
+      if (current.kind === 'md'
+        && current.editable
+        && selection.ranges.length === 1
+        && retainedContext.snapshot.documentKey === current.documentKey
+        && retainedContext.snapshot.doc === view.state.doc
+        && retainedContext.snapshot.selection.eq(selection)
+        && !contextMenuSuppressedRef.current
+        && !composingRef.current
+        && !view.composing
+        && !view.compositionStarted) return;
+      closeToolbar(false);
+      return;
+    }
     if (current.kind !== 'md'
       || !current.editable
       || selection.ranges.length !== 1
@@ -264,7 +305,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
           closeToolbar(false);
           return;
         }
-        const next = { snapshot, anchor };
+        const next = { snapshot, anchor, origin: 'selection' as const };
         const previous = toolbarStateRef.current;
         if (previous
           && previous.snapshot === snapshot
@@ -284,6 +325,65 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     });
   }, [closeToolbar, createSurfaceSnapshot]);
 
+  const openToolbarAtPointer = useCallback((
+    view: EditorView,
+    event: globalThis.MouseEvent,
+  ) => {
+    const current = latestRef.current;
+    const selection = view.state.selection;
+    const target = event.target;
+    if (current.kind !== 'md'
+      || !current.editable
+      || event.shiftKey
+      || selection.ranges.length !== 1
+      || !selection.main.empty
+      || composingRef.current
+      || view.composing
+      || view.compositionStarted
+      || (target instanceof Element && target.closest(
+        'input, textarea, button, a, .cm-live-table-wrap, .cm-live-image',
+      ))) return false;
+    const pane = view.dom.closest<HTMLElement>('.editor-pane');
+    if (!pane) return false;
+    const position = view.posAtCoords({ x: event.clientX, y: event.clientY })
+      ?? selection.main.head;
+    if (position !== selection.main.head) {
+      view.dispatch({
+        selection: { anchor: position },
+        scrollIntoView: false,
+        userEvent: 'select.pointer',
+      });
+    }
+    const snapshot = createSurfaceSnapshot(view, position);
+    if (!snapshot) return false;
+    const paneRect = pane.getBoundingClientRect();
+    const anchor = {
+      head: {
+        left: event.clientX,
+        top: event.clientY,
+        bottom: event.clientY + 1,
+      },
+      pane: {
+        left: paneRect.left,
+        top: paneRect.top,
+        right: paneRect.right,
+        bottom: paneRect.bottom,
+      },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    } satisfies MarkdownToolbarAnchor;
+    cancelFocusFrame();
+    closeTableMenu(false);
+    closeToolbar(false);
+    contextMenuSuppressedRef.current = false;
+    const next = { snapshot, anchor, origin: 'context' as const };
+    toolbarSnapshotRef.current = snapshot;
+    toolbarStateRef.current = next;
+    current.onMarkdownOverlayOpen?.();
+    setToolbar(next);
+    event.preventDefault();
+    return true;
+  }, [cancelFocusFrame, closeTableMenu, closeToolbar, createSurfaceSnapshot]);
+
   const openMarkdownTableTools = useCallback((anchor: MarkdownTableToolsAnchor) => {
     const view = editorRef.current?.view;
     const current = latestRef.current;
@@ -299,14 +399,23 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     return true;
   }, [cancelFocusFrame, closeToolbar, createSurfaceSnapshot]);
 
-  useImperativeHandle(forwardedRef, () => ({ openMarkdownTableTools }), [openMarkdownTableTools]);
+  const flushMarkdownCellEdit = useCallback(() => {
+    const view = editorRef.current?.view;
+    return !view || flushActiveMarkdownTableCell(view);
+  }, []);
+
+  useImperativeHandle(forwardedRef, () => ({
+    openMarkdownTableTools,
+    flushMarkdownCellEdit,
+  }), [flushMarkdownCellEdit, openMarkdownTableTools]);
 
   const markdownInteractionExtension = useMemo(() => {
     if (kind !== 'md' || !editable) return [];
     return EditorView.domEventHandlers({
-      contextmenu() {
+      contextmenu(event, view) {
+        if (openToolbarAtPointer(view, event)) return true;
         contextMenuSuppressedRef.current = true;
-        closeToolbar(false);
+        if (event.shiftKey || view.state.selection.main.empty) closeToolbar(false);
         return false;
       },
       keydown(event) {
@@ -325,11 +434,16 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
         }
         return false;
       },
-      pointerdown(event) {
+      pointerdown(event, view) {
         if (event.button !== 0) {
           if (event.button === 2) {
-            contextMenuSuppressedRef.current = true;
-            closeToolbar(false);
+            if (event.shiftKey) {
+              contextMenuSuppressedRef.current = true;
+              closeToolbar(false);
+            } else {
+              contextMenuSuppressedRef.current = false;
+              if (view.state.selection.main.empty) closeToolbar(false);
+            }
           }
           return false;
         }
@@ -357,7 +471,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
         return false;
       },
     });
-  }, [closeToolbar, editable, kind, scheduleToolbarMeasure]);
+  }, [closeToolbar, editable, kind, openToolbarAtPointer, scheduleToolbarMeasure]);
 
   const livePreviewExtension = useMemo(
     () => kind === 'md' && markdownPresentation === 'live'
@@ -440,6 +554,39 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     toolbarStateRef.current = null;
     setTableMenu(null);
     setToolbar(null);
+    const liveTableActive = isMarkdownTableCommand(command)
+      ? snapshot.liveTableActive
+      : null;
+    if (liveTableActive && snapshot.context.table?.from === liveTableActive.tableFrom) {
+      const nextModel = result.change.insert
+        ? parseEditableGfmTableRange(
+          result.change.insert,
+          result.change.from,
+          result.selection.head,
+        )
+        : null;
+      const nextActive = nextModel && nextModel.currentRow !== 'delimiter'
+        ? {
+          tableFrom: nextModel.from,
+          row: nextModel.currentRow,
+          column: nextModel.currentColumn,
+          selectionStart: 0,
+          selectionEnd: nextModel.currentRow === 'header'
+            ? nextModel.headers[nextModel.currentColumn].length
+            : nextModel.rows[nextModel.currentRow][nextModel.currentColumn].length,
+          composing: false,
+        }
+        : null;
+      view.dispatch({
+        changes: result.change,
+        effects: [],
+        scrollIntoView: true,
+        userEvent: 'input.format',
+      });
+      setActiveMarkdownTableCell(view, nextActive);
+      if (!nextActive) view.focus();
+      return true;
+    }
     view.dispatch({
       changes: result.change,
       selection: result.selection,
@@ -535,12 +682,22 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       const target = event.target;
       if (target instanceof Node
         && document.querySelector('.markdown-selection-toolbar')?.contains(target)) return;
+      const view = editorRef.current?.view;
+      if (event.button === 2
+        && !event.shiftKey
+        && target instanceof Node
+        && view?.dom.contains(target)
+        && !view.state.selection.main.empty) return;
       closeToolbar(false);
     };
     const reposition = (event?: Event) => {
       const target = event?.target;
       if (target instanceof Node
         && document.querySelector('.markdown-selection-toolbar')?.contains(target)) return;
+      if (toolbar.origin === 'context') {
+        closeToolbar(false);
+        return;
+      }
       const view = editorRef.current?.view;
       if (view) scheduleToolbarMeasure(view);
     };
@@ -573,6 +730,45 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   return <div
     className="editor-pane"
     data-markdown-presentation={kind === 'md' ? markdownPresentation : undefined}
+    onPasteCapture={(event) => {
+      if (kind !== 'md' || !onPasteImages) return;
+      const files = clipboardImages(event.clipboardData);
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!editable) return;
+      const view = editorRef.current?.view;
+      if (!view) return;
+      if (event.target instanceof HTMLTextAreaElement && event.target.closest('.cm-live-table-wrap')) {
+        onPasteError?.('请在正文或分栏源码中粘贴图片');
+        return;
+      }
+      if (view.composing || view.compositionStarted || view.state.selection.ranges.length !== 1) {
+        onPasteError?.('请完成当前输入，并保留一个插入位置后粘贴图片');
+        return;
+      }
+      const key = documentKey;
+      const doc = view.state.doc;
+      const { from, to } = view.state.selection.main;
+      closeToolbar(false);
+      closeTableMenu(false);
+      void onPasteImages(files, (sources) => {
+        // Async disk writes must never insert into a replacement document or draft.
+        if (editorRef.current?.view !== view || latestRef.current.documentKey !== key
+          || view.state.doc !== doc) return false;
+        const insert = sources.map((source) => `![截图](${source})`).join('\n');
+        view.dispatch({
+          changes: { from, to, insert },
+          selection: { anchor: from + insert.length },
+          userEvent: 'input.paste',
+          scrollIntoView: true,
+        });
+        return true;
+      }).catch((error: unknown) => onPasteError?.(error instanceof Error ? error.message : String(error)))
+        .finally(() => {
+          if (editorRef.current?.view === view && latestRef.current.documentKey === key) restoreEditorFocus();
+        });
+    }}
   >
     <CodeMirror
       ref={editorRef}

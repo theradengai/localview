@@ -1,4 +1,5 @@
 import { syntaxTree } from '@codemirror/language';
+import { redo, undo } from '@codemirror/commands';
 import {
   Decoration,
   EditorState,
@@ -13,7 +14,15 @@ import {
 } from '@uiw/react-codemirror';
 import type { Range } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
-import { parseEditableGfmTableRange, type GfmTableModel } from './markdownEditing';
+import {
+  parseEditableGfmTableRange,
+  normalizeGfmTableCellInput,
+  updateGfmTableCell,
+  type EditableTableRow,
+  type GfmTableModel,
+} from './markdownEditing';
+import { findTopLevelGfmTableRange } from './markdownLanguage';
+import { renderMarkdownTable } from './markdownTableRendering';
 import {
   scanLocalInlineStylePairs,
   type LocalInlineStylePair,
@@ -41,6 +50,114 @@ export const MARKDOWN_LIVE_PREVIEW_LIMITS = {
 
 type ScanRange = { from: number; to: number };
 type BlockRange = { from: number; to: number };
+
+export type ActiveMarkdownTableCell = {
+  tableFrom: number;
+  row: EditableTableRow;
+  column: number;
+  selectionStart: number;
+  selectionEnd: number;
+  composing: boolean;
+};
+
+export type ActiveMarkdownTableCellSnapshot = {
+  active: ActiveMarkdownTableCell;
+  model: GfmTableModel;
+};
+
+const setActiveTableCellEffect = StateEffect.define<ActiveMarkdownTableCell | null>();
+const setRevealedTableSourceEffect = StateEffect.define<{ from: number; to: number } | null>();
+
+const revealedTableSourceField = StateField.define<{ from: number; to: number } | null>({
+  create: () => null,
+  update(value, transaction) {
+    const explicit = transaction.effects.find(
+      (effect) => effect.is(setRevealedTableSourceEffect),
+    );
+    let next = explicit ? explicit.value : value;
+    if (!next) return null;
+    if (!explicit && !transaction.changes.empty) {
+      next = {
+        from: transaction.changes.mapPos(next.from, -1),
+        to: transaction.changes.mapPos(next.to, 1),
+      };
+    }
+    if (!explicit
+      && !transaction.startState.selection.eq(transaction.state.selection)
+      && !transaction.state.selection.ranges.some((range) => {
+        const start = Math.min(range.anchor, range.head);
+        const end = Math.max(range.anchor, range.head);
+        return start <= next.to && end >= next.from;
+      })) return null;
+    return next;
+  },
+});
+
+function activeTableSnapshotForState(
+  state: EditorState,
+  active: ActiveMarkdownTableCell | null,
+): ActiveMarkdownTableCellSnapshot | null {
+  if (!active || !state.facet(EditorView.editable)) return null;
+  const range = findTopLevelGfmTableRange(state, active.tableFrom);
+  if (!range || range.from !== active.tableFrom) return null;
+  const source = state.sliceDoc(range.from, range.to);
+  const model = parseEditableGfmTableRange(source, range.from, range.from);
+  if (!model
+    || active.column < 0
+    || active.column >= model.headers.length
+    || (typeof active.row === 'number'
+      && (active.row < 0 || active.row >= model.rows.length))) return null;
+  return { active, model };
+}
+
+const activeTableCellField = StateField.define<ActiveMarkdownTableCell | null>({
+  create: () => null,
+  update(value, transaction) {
+    const explicit = transaction.effects.find((effect) => effect.is(setActiveTableCellEffect));
+    let next = explicit ? explicit.value : value;
+    if (!explicit && next && !transaction.changes.empty) {
+      next = {
+        ...next,
+        tableFrom: transaction.changes.mapPos(next.tableFrom, -1),
+      };
+    }
+    return activeTableSnapshotForState(transaction.state, next)?.active ?? null;
+  },
+});
+
+function sameActiveTableCell(
+  left: ActiveMarkdownTableCell | null,
+  right: ActiveMarkdownTableCell | null,
+) {
+  return left === right || Boolean(left && right
+    && left.tableFrom === right.tableFrom
+    && left.row === right.row
+    && left.column === right.column
+    && left.selectionStart === right.selectionStart
+    && left.selectionEnd === right.selectionEnd
+    && left.composing === right.composing);
+}
+
+function activeTableSnapshot(view: EditorView): ActiveMarkdownTableCellSnapshot | null {
+  if (typeof view.state.field !== 'function') return null;
+  return activeTableSnapshotForState(
+    view.state,
+    view.state.field(activeTableCellField, false) ?? null,
+  );
+}
+
+export function getActiveMarkdownTableCell(
+  view: EditorView,
+): ActiveMarkdownTableCellSnapshot | null {
+  return activeTableSnapshot(view);
+}
+
+export function setActiveMarkdownTableCell(
+  view: EditorView,
+  active: ActiveMarkdownTableCell | null,
+) {
+  dispatchActiveTableCell(view, active);
+}
 
 type BuildResult = {
   decorations: DecorationSet;
@@ -111,6 +228,9 @@ function syncLiveWidgetEditability(view: EditorView) {
   ).forEach((button) => {
     button.disabled = disabled;
   });
+  view.dom.querySelectorAll<HTMLTextAreaElement>('.cm-live-table-input').forEach((input) => {
+    input.disabled = disabled;
+  });
 }
 
 function revealSource(
@@ -137,6 +257,24 @@ function revealEditableSource(
 ) {
   if (!view.state.facet(EditorView.editable)) return false;
   return revealSource(view, from, to, expected);
+}
+
+function revealEditableTableSource(
+  view: EditorView,
+  from: number,
+  to: number,
+  expected: string,
+) {
+  if (!view.state.facet(EditorView.editable)
+    || !sourceStillMatches(view, from, to, expected)) return false;
+  view.dispatch({
+    effects: setRevealedTableSourceEffect.of({ from, to }),
+    selection: { anchor: from },
+    scrollIntoView: true,
+    userEvent: 'select.pointer',
+  });
+  view.focus();
+  return true;
 }
 
 abstract class LiveWidget extends WidgetType {
@@ -244,22 +382,440 @@ function displayTableCell(value: string) {
   return value.replace(/\\\|/g, '|');
 }
 
+const tableScrollPositions = new WeakMap<EditorView, Map<number, number>>();
+
+function tableCellValue(model: GfmTableModel, row: EditableTableRow, column: number) {
+  return row === 'header' ? model.headers[column] : model.rows[row]?.[column];
+}
+
+function normalizedSelection(value: string, position: number) {
+  const safe = Math.max(0, Math.min(value.length, position));
+  return normalizeGfmTableCellInput(value.slice(0, safe)).length;
+}
+
+function dispatchActiveTableCell(
+  view: EditorView,
+  active: ActiveMarkdownTableCell | null,
+) {
+  view.dispatch({ effects: setActiveTableCellEffect.of(active) });
+}
+
+function syncTableCellInput(
+  view: EditorView,
+  rawValue: string,
+  selectionStart: number,
+  selectionEnd: number,
+  composing: boolean,
+) {
+  const snapshot = activeTableSnapshot(view);
+  if (!snapshot) return false;
+  const result = updateGfmTableCell(
+    snapshot.model,
+    snapshot.active.row,
+    snapshot.active.column,
+    rawValue,
+  );
+  if (!result) return false;
+  const nextActive: ActiveMarkdownTableCell = {
+    ...snapshot.active,
+    selectionStart: normalizedSelection(rawValue, selectionStart),
+    selectionEnd: normalizedSelection(rawValue, selectionEnd),
+    composing,
+  };
+  const currentValue = tableCellValue(
+    snapshot.model,
+    snapshot.active.row,
+    snapshot.active.column,
+  );
+  if (currentValue === result.change.insert) {
+    dispatchActiveTableCell(view, nextActive);
+  } else {
+    view.dispatch({
+      changes: result.change,
+      effects: setActiveTableCellEffect.of(nextActive),
+      userEvent: 'input.type',
+    });
+  }
+  return true;
+}
+
+function cellSequence(model: GfmTableModel) {
+  const cells: Array<{ row: EditableTableRow; column: number }> = [];
+  model.headers.forEach((_value, column) => cells.push({ row: 'header', column }));
+  model.rows.forEach((_row, row) => {
+    model.headers.forEach((_value, column) => cells.push({ row, column }));
+  });
+  return cells;
+}
+
+function nextTableCell(
+  model: GfmTableModel,
+  active: ActiveMarkdownTableCell,
+  key: 'Enter' | 'Tab',
+  backwards: boolean,
+) {
+  if (key === 'Enter') {
+    if (active.row === 'header') return { row: 0 as const, column: active.column };
+    const row = active.row + 1;
+    return row < model.rows.length ? { row, column: active.column } : null;
+  }
+  const cells = cellSequence(model);
+  const index = cells.findIndex((cell) => (
+    cell.row === active.row && cell.column === active.column
+  ));
+  return cells[index + (backwards ? -1 : 1)] ?? null;
+}
+
+function focusTableCell(view: EditorView, active: ActiveMarkdownTableCell) {
+  window.requestAnimationFrame(() => {
+    const selector = `.cm-live-table-cell[data-table-from="${active.tableFrom}"][data-row="${active.row}"][data-column="${active.column}"]`;
+    view.dom.querySelector<HTMLElement>(selector)?.focus();
+  });
+}
+
+export function flushActiveMarkdownTableCell(view: EditorView) {
+  const snapshot = activeTableSnapshot(view);
+  if (!snapshot) {
+    if (typeof view.state.field !== 'function') return true;
+    const stale = view.state.field(activeTableCellField, false);
+    if (stale) dispatchActiveTableCell(view, null);
+    return true;
+  }
+  const input = view.dom.querySelector<HTMLTextAreaElement>(
+    `.cm-live-table-input[data-table-from="${snapshot.active.tableFrom}"]`,
+  );
+  if (!input) return !snapshot.active.composing;
+  return syncTableCellInput(
+    view,
+    input.value,
+    input.selectionStart,
+    input.selectionEnd,
+    false,
+  );
+}
+
+type TableDomController = {
+  view: EditorView;
+  section: HTMLElement;
+  scroller: HTMLElement;
+  table: HTMLTableElement;
+  widget: TableWidget;
+  editable: boolean;
+  alive: boolean;
+};
+
+const tableDomControllers = new WeakMap<HTMLElement, TableDomController>();
+const renderedCellSources = new WeakMap<HTMLTableCellElement, { value: string; resolveImage: (source: string) => string }>();
+
+function renderTableCell(widget: TableWidget, cell: HTMLTableCellElement, value: string, row: EditableTableRow, column: number) {
+  const previous = renderedCellSources.get(cell);
+  if (previous?.value === value && previous.resolveImage === widget.resolveImageSource) return;
+  const rendered = widget.renderedTable?.rows[row === 'header' ? 0 : row + 1]?.cells[column];
+  if (rendered) cell.replaceChildren(...Array.from(rendered.childNodes, (node) => node.cloneNode(true)));
+  else cell.textContent = displayTableCell(value);
+  renderedCellSources.set(cell, { value, resolveImage: widget.resolveImageSource });
+}
+
+function sameActiveTableCoordinate(
+  left: ActiveMarkdownTableCell | null,
+  right: ActiveMarkdownTableCell | null,
+) {
+  return left === right || Boolean(left && right
+    && left.tableFrom === right.tableFrom
+    && left.row === right.row
+    && left.column === right.column);
+}
+
+function sameTableStructure(left: GfmTableModel, right: GfmTableModel) {
+  return left.headers.length === right.headers.length
+    && left.rows.length === right.rows.length
+    && left.rows.every((row, index) => row.length === right.rows[index]?.length)
+    && left.alignments.every((alignment, index) => alignment === right.alignments[index]);
+}
+
+function tableControllerIsLive(controller: TableDomController) {
+  return controller.alive && controller.section.isConnected;
+}
+
+function tableCellCoordinate(cell: HTMLTableCellElement) {
+  const rowValue = cell.dataset.row;
+  const column = Number(cell.dataset.column);
+  if ((rowValue !== 'header' && !/^\d+$/.test(rowValue ?? '')) || !Number.isInteger(column)) {
+    return null;
+  }
+  return {
+    row: rowValue === 'header' ? 'header' as const : Number(rowValue),
+    column,
+  };
+}
+
+function resizeTableInput(input: HTMLTextAreaElement) {
+  input.style.height = 'auto';
+  input.style.height = `${Math.max(30, input.scrollHeight)}px`;
+}
+
+function configureTableCell(
+  controller: TableDomController,
+  cell: HTMLTableCellElement,
+  value: string,
+  row: EditableTableRow,
+  column: number,
+) {
+  const { widget, editable, view } = controller;
+  const active = widget.active?.tableFrom === widget.from
+    && widget.active.row === row
+    && widget.active.column === column
+    ? widget.active
+    : null;
+  cell.dataset.alignment = widget.model.alignments[column];
+  cell.dataset.tableFrom = String(widget.from);
+  cell.dataset.row = String(row);
+  cell.dataset.column = String(column);
+  cell.className = `cm-live-table-cell${active && editable ? ' active' : ''}`;
+
+  if (!active || !editable) {
+    renderTableCell(widget, cell, value, row, column);
+    if (!editable) return;
+    cell.tabIndex = 0;
+    cell.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列：${displayTableCell(value)}`);
+    const activate = (selectAll = false) => {
+      if (!tableControllerIsLive(controller) || !controller.editable) return;
+      const coordinate = tableCellCoordinate(cell);
+      if (!coordinate) return;
+      const currentValue = tableCellValue(
+        controller.widget.model,
+        coordinate.row,
+        coordinate.column,
+      ) ?? '';
+      dispatchActiveTableCell(view, {
+        tableFrom: controller.widget.from,
+        ...coordinate,
+        selectionStart: selectAll ? 0 : currentValue.length,
+        selectionEnd: currentValue.length,
+        composing: false,
+      });
+    };
+    cell.addEventListener('click', (event) => {
+      event.preventDefault();
+      activate();
+    });
+    cell.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== 'F2') return;
+      event.preventDefault();
+      activate(event.key === 'F2');
+    });
+    return;
+  }
+
+  cell.removeAttribute('tabindex');
+  cell.removeAttribute('aria-label');
+  const input = document.createElement('textarea');
+  input.className = 'cm-live-table-input';
+  input.value = value;
+  input.rows = 1;
+  input.dataset.tableFrom = String(widget.from);
+  input.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列编辑`);
+  input.addEventListener('input', () => {
+    if (!tableControllerIsLive(controller)) return;
+    const accepted = syncTableCellInput(
+      view,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+      view.state.field(activeTableCellField, false)?.composing ?? false,
+    );
+    if (!accepted) {
+      const current = activeTableSnapshot(view);
+      input.value = current
+        ? tableCellValue(current.model, current.active.row, current.active.column) ?? ''
+        : input.defaultValue;
+    }
+    resizeTableInput(input);
+  });
+  input.addEventListener('compositionstart', () => {
+    const current = activeTableSnapshot(view);
+    if (current) dispatchActiveTableCell(view, { ...current.active, composing: true });
+  });
+  input.addEventListener('compositionend', () => {
+    syncTableCellInput(
+      view,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+      false,
+    );
+  });
+  input.addEventListener('blur', () => {
+    queueMicrotask(() => {
+      if (!tableControllerIsLive(controller) || controller.section.contains(document.activeElement)) {
+        return;
+      }
+      const before = activeTableSnapshot(view);
+      if (!before) return;
+      const coordinate = tableCellCoordinate(cell);
+      if (!coordinate
+        || before.active.row !== coordinate.row
+        || before.active.column !== coordinate.column) return;
+      if (!syncTableCellInput(
+        view,
+        input.value,
+        input.selectionStart,
+        input.selectionEnd,
+        false,
+      )) return;
+      const after = activeTableSnapshot(view);
+      if (after
+        && after.active.row === coordinate.row
+        && after.active.column === coordinate.column) {
+        dispatchActiveTableCell(view, null);
+      }
+    });
+  });
+  input.addEventListener('keydown', (event) => {
+    const composing = event.isComposing
+      || view.state.field(activeTableCellField, false)?.composing === true;
+    if (composing && (event.key === 'Enter' || event.key === 'Tab' || event.key === 'Escape')) return;
+    if (event.metaKey && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      (event.shiftKey ? redo : undo)(view);
+      return;
+    }
+    const current = activeTableSnapshot(view);
+    if (!current) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      dispatchActiveTableCell(view, null);
+      focusTableCell(view, current.active);
+      return;
+    }
+    if (event.key !== 'Enter' && event.key !== 'Tab') return;
+    event.preventDefault();
+    if (!syncTableCellInput(
+      view,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+      false,
+    )) return;
+    const synchronized = activeTableSnapshot(view);
+    if (!synchronized) return;
+    const next = nextTableCell(
+      synchronized.model,
+      synchronized.active,
+      event.key,
+      event.key === 'Tab' && event.shiftKey,
+    );
+    if (!next) {
+      const boundary = synchronized.active;
+      dispatchActiveTableCell(view, null);
+      focusTableCell(view, boundary);
+      return;
+    }
+    const nextValue = tableCellValue(synchronized.model, next.row, next.column) ?? '';
+    dispatchActiveTableCell(view, {
+      tableFrom: synchronized.active.tableFrom,
+      ...next,
+      selectionStart: 0,
+      selectionEnd: nextValue.length,
+      composing: false,
+    });
+  });
+  cell.appendChild(input);
+  window.requestAnimationFrame(() => {
+    if (!tableControllerIsLive(controller) || !input.isConnected) return;
+    const current = activeTableSnapshot(view);
+    if (!current || current.active.row !== row || current.active.column !== column) return;
+    input.focus();
+    input.setSelectionRange(current.active.selectionStart, current.active.selectionEnd);
+    resizeTableInput(input);
+    controller.scroller.scrollLeft = tableScrollPositions.get(view)?.get(widget.from)
+      ?? controller.scroller.scrollLeft;
+  });
+}
+
+function patchTableController(controller: TableDomController) {
+  const { widget, table } = controller;
+  controller.section.dataset.sourceFrom = String(widget.from);
+  controller.section.dataset.sourceTo = String(widget.to);
+  const cells = Array.from(table.querySelectorAll<HTMLTableCellElement>('th, td'));
+  const values = [
+    ...widget.model.headers.map((value, column) => ({ value, row: 'header' as const, column })),
+    ...widget.model.rows.flatMap((row, rowIndex) => (
+      row.map((value, column) => ({ value, row: rowIndex, column }))
+    )),
+  ];
+  values.forEach(({ value, row, column }, index) => {
+    const cell = cells[index];
+    if (!cell) return;
+    cell.dataset.alignment = widget.model.alignments[column];
+    cell.dataset.tableFrom = String(widget.from);
+    const active = widget.active?.row === row && widget.active.column === column;
+    if (active && controller.editable) {
+      const input = cell.querySelector<HTMLTextAreaElement>('.cm-live-table-input');
+      if (input) {
+        input.dataset.tableFrom = String(widget.from);
+        if (document.activeElement !== input
+          && !widget.active?.composing
+          && input.value !== value) input.value = value;
+      }
+      return;
+    }
+    const displayed = displayTableCell(value);
+    renderTableCell(widget, cell, value, row, column);
+    if (controller.editable) {
+      cell.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列：${displayed}`);
+    }
+  });
+}
+
 class TableWidget extends LiveWidget {
+  private rendered: HTMLTableElement | null | undefined;
+
+  get renderedTable() {
+    if (this.rendered === undefined) this.rendered = renderMarkdownTable(this.markdown, this.resolveImageSource);
+    return this.rendered;
+  }
+
   constructor(
     readonly from: number,
     readonly to: number,
     readonly markdown: string,
     readonly model: GfmTableModel,
+    readonly active: ActiveMarkdownTableCell | null,
+    readonly resolveImageSource: (source: string) => string,
   ) { super(); }
 
   eq(other: TableWidget) {
     return this.from === other.from
       && this.to === other.to
-      && this.markdown === other.markdown;
+      && this.markdown === other.markdown
+      && this.resolveImageSource === other.resolveImageSource
+      && sameActiveTableCell(this.active, other.active);
   }
 
   get estimatedHeight() {
     return Math.min(520, 54 + (this.model.rows.length + 1) * 34);
+  }
+
+  updateDOM(dom: HTMLElement, view: EditorView, previous: this) {
+    const controller = tableDomControllers.get(dom);
+    const editable = view.state.facet(EditorView.editable);
+    if (!controller
+      || controller.view !== view
+      || controller.widget !== previous
+      || controller.editable !== editable
+      || !sameTableStructure(previous.model, this.model)
+      || !sameActiveTableCoordinate(previous.active, this.active)) return false;
+    controller.widget = this;
+    controller.alive = true;
+    this.track(dom);
+    patchTableController(controller);
+    return true;
+  }
+
+  destroy(dom: HTMLElement) {
+    const controller = tableDomControllers.get(dom);
+    if (controller?.widget === this) controller.alive = false;
   }
 
   toDOM(view: EditorView) {
@@ -267,28 +823,46 @@ class TableWidget extends LiveWidget {
     section.className = 'cm-live-table-wrap';
     section.dataset.sourceFrom = String(this.from);
     section.dataset.sourceTo = String(this.to);
-
     const scroller = document.createElement('div');
     scroller.className = 'cm-live-table-scroll';
+    const storedScroll = tableScrollPositions.get(view)?.get(this.from) ?? 0;
+    scroller.scrollLeft = storedScroll;
     const table = document.createElement('table');
+    const controller: TableDomController = {
+      view,
+      section,
+      scroller,
+      table,
+      widget: this,
+      editable: view.state.facet(EditorView.editable),
+      alive: true,
+    };
+    tableDomControllers.set(section, controller);
+    scroller.addEventListener('scroll', () => {
+      if (!controller.alive) return;
+      let positions = tableScrollPositions.get(view);
+      if (!positions) {
+        positions = new Map();
+        tableScrollPositions.set(view, positions);
+      }
+      positions.set(controller.widget.from, scroller.scrollLeft);
+    });
+
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
     this.model.headers.forEach((value, index) => {
       const cell = document.createElement('th');
-      cell.textContent = displayTableCell(value);
-      cell.dataset.alignment = this.model.alignments[index];
+      configureTableCell(controller, cell, value, 'header', index);
       headRow.appendChild(cell);
     });
     head.appendChild(headRow);
     table.appendChild(head);
-
     const body = document.createElement('tbody');
-    this.model.rows.forEach((row) => {
+    this.model.rows.forEach((row, rowIndex) => {
       const tableRow = document.createElement('tr');
       row.forEach((value, index) => {
         const cell = document.createElement('td');
-        cell.textContent = displayTableCell(value);
-        cell.dataset.alignment = this.model.alignments[index];
+        configureTableCell(controller, cell, value, rowIndex, index);
         tableRow.appendChild(cell);
       });
       body.appendChild(tableRow);
@@ -297,29 +871,44 @@ class TableWidget extends LiveWidget {
     scroller.appendChild(table);
     section.appendChild(scroller);
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'cm-live-source-button';
-    button.textContent = '编辑表格源码';
-    button.setAttribute('aria-label', '编辑表格 Markdown 源码');
-    button.disabled = !view.state.facet(EditorView.editable);
-    button.addEventListener('click', () => {
-      const editable = view.state.facet(EditorView.editable);
-      button.disabled = !editable;
-      if (editable && this.alive.has(section)) {
-        revealEditableSource(view, this.from, this.to, this.markdown);
-      }
-    });
-    section.addEventListener('click', (event) => {
-      if (event.target === button
-        || event.button !== 0
-        || !this.alive.has(section)
-        || !view.state.facet(EditorView.editable)) return;
-      revealEditableSource(view, this.from, this.to, this.markdown);
-    });
-    section.appendChild(button);
+    if (controller.editable) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'cm-live-source-button';
+      button.textContent = '编辑表格源码';
+      button.setAttribute('aria-label', '编辑表格 Markdown 源码');
+      button.addEventListener('click', () => {
+        if (!flushActiveMarkdownTableCell(view) || !tableControllerIsLive(controller)) return;
+        dispatchActiveTableCell(view, null);
+        const from = controller.widget.from;
+        const currentRange = findTopLevelGfmTableRange(view.state, from);
+        if (!currentRange || currentRange.from !== from) return;
+        revealEditableTableSource(
+          view,
+          currentRange.from,
+          currentRange.to,
+          view.state.sliceDoc(currentRange.from, currentRange.to),
+        );
+      });
+      section.appendChild(button);
+    }
     return section;
   }
+}
+
+class ListMarkerWidget extends WidgetType {
+  constructor(readonly label: string) { super(); }
+
+  eq(other: ListMarkerWidget) { return this.label === other.label; }
+
+  toDOM() {
+    const marker = document.createElement('span');
+    marker.className = 'cm-live-list-marker';
+    marker.textContent = this.label;
+    return marker;
+  }
+
+  ignoreEvent() { return false; }
 }
 
 class TaskWidget extends LiveWidget {
@@ -422,6 +1011,7 @@ function buildDecorations(
   const scanCharacterCount = ranges.reduce((total, range) => total + range.to - range.from, 0);
   const tree = syntaxTree(view.state);
   const processedInlineStyleContainers = new Set<string>();
+  const orderedLists = new Map<number, Map<number, number>>();
 
   const add = (key: string, range: Range<Decoration>) => {
     if (seen.has(key)) return;
@@ -452,6 +1042,26 @@ function buildDecorations(
       || inspectedCharacters + length > options.maxBuildCharacters) return null;
     inspectedCharacters += length;
     return view.state.sliceDoc(from, to);
+  };
+  const orderedLabel = (item: SyntaxNode, list: SyntaxNode) => {
+    let numbers = orderedLists.get(list.from);
+    if (!numbers) {
+      numbers = new Map();
+      orderedLists.set(list.from, numbers);
+      // Bound work for long/offscreen lists just like the other decorations.
+      if (consume(list.from, list.to, options.maxBuildCharacters) === null) return null;
+      let number = 1;
+      for (let child = list.firstChild; child; child = child.nextSibling) {
+        if (child.name !== 'ListItem') continue;
+        const mark = child.firstChild;
+        if (!numbers.size && mark?.name === 'ListMark') {
+          number = parseInt(view.state.sliceDoc(mark.from, mark.to), 10);
+        }
+        numbers.set(child.from, number++);
+      }
+    }
+    const number = numbers.get(item.from);
+    return number === undefined ? null : `${number}.`;
   };
   const addBlockLines = (from: number, to: number, className: string) => {
     let line = view.state.doc.lineAt(from);
@@ -536,14 +1146,66 @@ function buildDecorations(
       return true;
     }
 
+    if (/^SetextHeading[12]$/.test(node.name)) {
+      const level = node.name.slice(-1);
+      const mark = childNodes(node).find((child) => child.name === 'HeaderMark');
+      if (!mark) return true;
+      const textTo = view.state.doc.lineAt(mark.from).from - 1;
+      addMark(node.from, textTo, `cm-live-heading-${level}`);
+      addBlockLines(node.from, textTo, `cm-live-heading-line-${level}`);
+      decorateLocalInlineStyles(node);
+      if (!composing && !lineIsActive(view, node.from, node.to)) addReplace(mark.from, mark.to);
+      return true;
+    }
+
+    if (node.name === 'HardBreak') {
+      const line = view.state.doc.lineAt(node.from);
+      if (!composing && !lineIsActive(view, line.from, line.to)) {
+        addReplace(node.from, Math.min(node.to, line.to));
+      }
+      return false;
+    }
+
+    if (node.name === 'Escape') {
+      if (!composing && !selectionIntersectsClosed(view, node.from, node.to)) {
+        addReplace(node.from, node.from + 1);
+      }
+      return false;
+    }
+
     if (node.name === 'Blockquote') {
       addBlockLines(node.from, node.to, 'cm-live-blockquote-line');
       return true;
     }
 
-    if (node.name === 'QuoteMark' || node.name === 'ListMark') {
+    if (node.name === 'QuoteMark') {
       const line = view.state.doc.lineAt(node.from);
       if (!composing && !lineIsActive(view, line.from, line.to)) addReplace(node.from, node.to);
+      return false;
+    }
+
+    if (node.name === 'ListMark') {
+      const line = view.state.doc.lineAt(node.from);
+      if (composing || lineIsActive(view, line.from, line.to)) return false;
+      const item = node.parent;
+      let depth = -1;
+      for (let parent = item?.parent; parent; parent = parent.parent) {
+        if (parent.name === 'BulletList' || parent.name === 'OrderedList') depth++;
+      }
+      const indentation = consume(line.from, node.from, 1024);
+      if (indentation !== null && /^[ \t]*$/.test(indentation)) {
+        addReplace(line.from, node.from);
+        add(`list-indent:${line.from}`, Decoration.line({
+          attributes: { style: `padding-left:${8 + Math.max(0, depth) * 24}px` },
+        }).range(line.from));
+      }
+      if (node.nextSibling?.name === 'Task') {
+        addReplace(node.from, node.to);
+      } else if (item?.name === 'ListItem') {
+        const list = item.parent;
+        const label = list?.name === 'OrderedList' ? orderedLabel(item, list) : '•';
+        if (label !== null) addReplace(node.from, node.to, new ListMarkerWidget(label));
+      }
       return false;
     }
 
@@ -563,11 +1225,16 @@ function buildDecorations(
 
     if (node.name === 'FencedCode') {
       addBlockLines(node.from, node.to, 'cm-live-code-line');
-      if (composing || selectionIntersectsClosed(view, node.from, node.to)) return false;
       const children = childNodes(node);
       const marks = children.filter((child) => child.name === 'CodeMark');
       const info = children.find((child) => child.name === 'CodeInfo');
       const first = marks[0];
+      const sourceMarkerActive = marks.some((mark, index) => selectionIntersectsClosed(
+        view,
+        mark.from,
+        index === 0 ? info?.to ?? mark.to : mark.to,
+      ));
+      if (composing || sourceMarkerActive) return false;
       if (first) {
         const replaceTo = info?.to ?? first.to;
         const markdown = consume(first.from, replaceTo, 256);
@@ -662,6 +1329,19 @@ function stateSelectionIntersectsClosed(state: EditorState, from: number, to: nu
   });
 }
 
+function stateNonEmptySelectionIntersectsClosed(
+  state: EditorState,
+  from: number,
+  to: number,
+) {
+  return state.selection.ranges.some((range) => {
+    if (range.empty) return false;
+    const start = Math.min(range.anchor, range.head);
+    const end = Math.max(range.anchor, range.head);
+    return start <= to && end >= from;
+  });
+}
+
 function sameScanRanges(left: readonly ScanRange[], right: readonly ScanRange[]) {
   return left.length === right.length
     && left.every((range, index) => (
@@ -737,9 +1417,10 @@ function buildBlockDecorations(
         const fullyInsideRange = nodeRef.from >= range.from && nodeRef.to <= range.to;
         if (!fullyInsideRange && node.name !== 'Document') return false;
         if (node.name !== 'Image' && node.name !== 'Table') return true;
-        if (composing || stateSelectionIntersectsClosed(state, node.from, node.to)) return false;
+        if (composing) return false;
 
         if (node.name === 'Image') {
+          if (stateSelectionIntersectsClosed(state, node.from, node.to)) return false;
           const parent = node.parent;
           const line = state.doc.lineAt(node.from);
           const standalone = parent?.name === 'Paragraph'
@@ -774,6 +1455,9 @@ function buildBlockDecorations(
         }
 
         if (node.parent?.name !== 'Document') return false;
+        const revealed = state.field(revealedTableSourceField, false);
+        if ((revealed?.from === node.from && revealed.to === node.to)
+          || stateNonEmptySelectionIntersectsClosed(state, node.from, node.to)) return false;
         const markdown = consume(
           node.from,
           node.to,
@@ -784,7 +1468,15 @@ function buildBlockDecorations(
         if (!model
           || model.headers.length * (model.rows.length + 1)
             > MARKDOWN_LIVE_PREVIEW_LIMITS.tableCells) return false;
-        addCandidate(node.from, node.to, new TableWidget(node.from, node.to, markdown, model));
+        const active = state.field(activeTableCellField, false);
+        addCandidate(node.from, node.to, new TableWidget(
+          node.from,
+          node.to,
+          markdown,
+          model,
+          active?.tableFrom === node.from ? active : null,
+          options.resolveImageSource,
+        ));
         return false;
       },
     });
@@ -870,6 +1562,13 @@ export function createMarkdownLivePreviewExtension(
       const tree = syntaxTree(transaction.state);
       const docChanged = !transaction.changes.empty;
       const selectionChanged = !transaction.startState.selection.eq(transaction.state.selection);
+      const previousActive = transaction.startState.field(activeTableCellField, false) ?? null;
+      const active = transaction.state.field(activeTableCellField, false) ?? null;
+      const activeChanged = !sameActiveTableCell(previousActive, active);
+      const previousRevealed = transaction.startState.field(revealedTableSourceField, false) ?? null;
+      const revealed = transaction.state.field(revealedTableSourceField, false) ?? null;
+      const revealedChanged = previousRevealed?.from !== revealed?.from
+        || previousRevealed?.to !== revealed?.to;
       const ranges = refresh
         ? refresh.ranges
         : docChanged
@@ -885,8 +1584,26 @@ export function createMarkdownLivePreviewExtension(
       const composing = refresh?.composing ?? value.composing;
       const generation = refresh?.generation ?? value.generation;
       const treeChanged = tree !== value.tree || tree.length !== value.tree.length;
+      const sameComposingCell = active?.composing
+        && previousActive
+        && previousActive.tableFrom === active.tableFrom
+        && previousActive.row === active.row
+        && previousActive.column === active.column;
+      if (sameComposingCell && (docChanged || activeChanged)) {
+        return {
+          decorations: docChanged ? value.decorations.map(transaction.changes) : value.decorations,
+          atomic: docChanged ? value.atomic.map(transaction.changes) : value.atomic,
+          ranges: [...ranges],
+          retained,
+          composing,
+          generation,
+          tree,
+        };
+      }
       if (!docChanged
         && !selectionChanged
+        && !activeChanged
+        && !revealedChanged
         && !treeChanged
         && (!refresh || (
           composing === value.composing
@@ -1097,11 +1814,22 @@ export function createMarkdownLivePreviewExtension(
       (view) => view.plugin(extension)?.atomic ?? Decoration.none,
     ),
     eventHandlers: {
-      compositionstart(_event, view) {
+      pointerdown(event, view) {
+        if (!view.state.field(activeTableCellField, false)) return false;
+        const target = event.target;
+        if (target instanceof Element && target.closest('.cm-live-table-input')) return false;
+        dispatchActiveTableCell(view, null);
+        return false;
+      },
+      compositionstart(event, view) {
+        const target = event.target;
+        if (target instanceof Element && target.closest('.cm-live-table-input')) return false;
         view.plugin(plugin)?.dispatchComposition(view, true);
         return false;
       },
-      compositionend(_event, view) {
+      compositionend(event, view) {
+        const target = event.target;
+        if (target instanceof Element && target.closest('.cm-live-table-input')) return false;
         const instance = view.plugin(plugin);
         if (!instance) return false;
         queueMicrotask(() => {
@@ -1116,6 +1844,8 @@ export function createMarkdownLivePreviewExtension(
 
   return [
     EditorView.editorAttributes.of({ class: 'cm-live-preview-editor' }),
+    activeTableCellField,
+    revealedTableSourceField,
     blockField,
     plugin,
   ];

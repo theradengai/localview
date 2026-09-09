@@ -92,7 +92,7 @@ beforeEach(() => {
 describe('SpreadsheetRenderer', () => {
   it('keeps the browser demo honest without invoking Tauri', () => {
     render(<SpreadsheetRenderer {...props()} desktop={false} />);
-    expect(screen.getByText(/桌面版可读取 Excel/)).toBeTruthy();
+    expect(screen.getByText(/桌面版可读取 CSV、Excel、ODS/)).toBeTruthy();
     expect(mocks.readSpreadsheet).not.toHaveBeenCalled();
   });
 

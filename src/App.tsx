@@ -1,13 +1,25 @@
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import DecisionDialog, { type DecisionDialogConfig } from './components/DecisionDialog';
-import FileTree, { type FileTreeNode, type TreeCreateKind } from './components/FileTree';
+import FileTree, {
+  isLocalTreeDrag,
+  type FileTreeNode,
+  type FileTreeRenameDraft,
+  type TreeCreateKind,
+} from './components/FileTree';
 import type { TreeCreateInputHandle } from './components/TreeCreateInput';
+import TreeRenameInput, {
+  type RenameCancelReason,
+  type RenameSubmitReason,
+  type TreeRenameInputHandle,
+} from './components/TreeRenameInput';
+import type { MarkdownPrintSnapshot } from './components/MarkdownPrintSurface';
 import type { TextEditorHandle } from './components/TextEditor';
 import {
   assetUrl,
   basename,
   chooseFolder,
+  chooseMoveDestination,
   createDirectory,
   createWorkspaceWindow,
   createMarkdownFile,
@@ -21,10 +33,12 @@ import {
   listenForAppQuitAborts,
   listenForAppQuitRequests,
   listenForOpenPath,
+  listenForPrintRequests,
   listenForWindowOpenFailures,
   listenForWorkspaceChanges,
   listenForWorkspaceWatchFailures,
   moveToTrash,
+  moveWorkspaceEntry,
   normalizeCommandError,
   normalizePath,
   openInDefaultApp,
@@ -32,17 +46,28 @@ import {
   parentPath,
   prepareHtmlPreview,
   prepareTrash,
+  prepareWorkspaceMove,
+  prepareWorkspaceRename,
+  printCurrentWindow,
   previewAssetUrl,
   readTextFile,
+  reconcileWorkspaceMove,
+  reconcileWorkspaceRename,
+  renameWorkspaceEntry,
   releaseHtmlPreview,
   revealPath,
   resolveMarkdownAssetSource,
   respondAppQuit,
   setWorkspaceRoot,
+  savePastedImages,
   type CreatedTextFile,
   type DesktopEntry,
   type FileKind,
   type HtmlPreviewCapability,
+  type MoveCandidate,
+  type MovedWorkspaceEntry,
+  type RenameCandidate,
+  type RenamedWorkspaceEntry,
   type TextFileSnapshot,
   type WorkspaceBinding,
   type WorkspaceChangeBatch,
@@ -55,18 +80,27 @@ import {
   applyDirectoryResultsInDepthOrder,
   containsPath,
   loadedDirectoryPaths,
+  moveTreeEntry,
+  renameTreeEntry,
   removeTreePath,
   replaceDirectoryWithMergedEntries,
 } from './lib/directoryTree';
 import { normalizeDirectoryName } from './lib/directoryName';
 import { reduceWorkspaceChanges } from './lib/workspaceChangeReducer';
 import { normalizeMarkdownFileName } from './lib/markdownFilename';
+import { readPastedImage, validatePastedImages, type PasteImagesHandler } from './lib/imagePaste';
+import {
+  entryRenameCollision,
+  normalizeEntryRenameName,
+  splitEntryRenameName,
+} from './lib/entryRename';
 import {
   SaveCoordinator,
   type PersistedSave,
   type SaveCoordinatorState,
   type SaveOutcome,
 } from './lib/saveCoordinator';
+import { waitForPrintableAssets } from './lib/print';
 import {
   clearWorkspaceSession,
   clearWorkspaceSessionIfInactive,
@@ -85,17 +119,48 @@ type ViewMode = 'edit' | 'split' | 'preview';
 type FileNode = FileTreeNode;
 type DecisionResult = 'confirm' | 'cancel';
 type CreateEntryDraft = { id: number; parentPath: string; workspaceEpoch: number; kind: TreeCreateKind };
+type RenameEntryDraft = FileTreeRenameDraft & {
+  sourceNode: FileNode;
+  workspaceEpoch: number;
+  workspaceGeneration: number | undefined;
+  surface: 'tree' | 'toolbar';
+};
 type WorkspaceRequest = { id: number; workspacePath: string; targetPath?: string };
 type WorkspaceTransition = { requestId: number; targetPath: string };
-type DocumentActionGate = 'idle' | 'navigating' | 'closing' | 'reloading' | 'deleting' | 'creating' | 'quitting';
+type DocumentActionGate = 'idle' | 'navigating' | 'closing' | 'reloading' | 'deleting' | 'creating' | 'moving' | 'renaming' | 'printing' | 'quitting' | 'pasting-image';
 type DocumentSaveTarget = { key: string; path: string; workspaceEpoch: number };
+type MarkdownPrintJob = MarkdownPrintSnapshot & { workspaceEpoch: number };
+type PrintReadyWaiter = {
+  id: number;
+  timer: number;
+  resolve: (root: HTMLElement) => void;
+  reject: (error: Error) => void;
+};
 type TreeActionMenu = {
   node: FileNode | null;
   parentPath: string;
   mode: 'create' | 'node';
   x: number;
   y: number;
-  trigger: HTMLButtonElement | null;
+  trigger: HTMLElement | null;
+};
+type MoveDragState = {
+  id: number;
+  source: FileNode;
+  targetPath: string | null;
+  targetAllowed: boolean;
+};
+type ActiveRelocation = {
+  kind: 'move' | 'rename';
+  id: number;
+  workspaceEpoch: number;
+  workspaceGeneration: number | undefined;
+  sourcePath: string;
+  sourceParent: string;
+  destinationDirectory: string;
+  destinationPath: string;
+  batches: WorkspaceChangeBatch[];
+  needsRescan: boolean;
 };
 type CommittedWorkspaceSnapshot = {
   rootPath: string;
@@ -113,9 +178,24 @@ type CommittedWorkspaceSnapshot = {
 };
 
 const RENDERER_STATUS_PREFIX = 'LOCALVIEW_STATUS:';
+const MOVE_WATCH_BATCH_LIMIT = 32;
+
+function workspaceBatchTouchesRelocation(
+  batch: WorkspaceChangeBatch,
+  relocation: ActiveRelocation,
+): boolean {
+  return batch.events.some((event) => event.paths.some((rawPath) => {
+    const path = normalizePath(rawPath);
+    return path === relocation.sourceParent
+      || path === relocation.destinationDirectory
+      || containsPath(relocation.sourcePath, path)
+      || containsPath(relocation.destinationPath, path);
+  }));
+}
 const loadTextEditor = () => import('./components/TextEditor');
 const TextEditor = lazy(loadTextEditor);
 const MarkdownPreview = lazy(() => import('./components/MarkdownPreview'));
+const MarkdownPrintSurface = lazy(() => import('./components/MarkdownPrintSurface'));
 const SpreadsheetRenderer = lazy(() => import('./renderers/SpreadsheetRenderer'));
 const SystemPreviewRenderer = lazy(() => import('./renderers/SystemPreviewRenderer'));
 
@@ -236,6 +316,29 @@ function findNode(nodes: FileNode[], path: string): FileNode | undefined {
   return undefined;
 }
 
+function replacePathPrefix(path: string, oldPath: string, newPath: string): string {
+  const normalized = normalizePath(path);
+  const oldPrefix = normalizePath(oldPath);
+  const newPrefix = normalizePath(newPath);
+  return containsPath(oldPrefix, normalized)
+    ? `${newPrefix}${normalized.slice(oldPrefix.length)}`
+    : normalized;
+}
+
+function migrateOpenFolderPaths(
+  paths: Set<string>,
+  oldPath: string,
+  newPath: string,
+  destinationDirectory: string,
+  rootPath: string,
+): Set<string> {
+  const migrated = new Set([...paths].map((path) => replacePathPrefix(path, oldPath, newPath)));
+  if (normalizePath(destinationDirectory) !== normalizePath(rootPath)) {
+    migrated.add(normalizePath(destinationDirectory));
+  }
+  return migrated;
+}
+
 function updateNode(nodes: FileNode[], path: string, updater: (node: FileNode) => FileNode): FileNode[] {
   const target = normalizePath(path);
   return nodes.map((node) => {
@@ -326,6 +429,45 @@ function trashError(error: unknown): string {
   return message.replace(/^TRASH_FAILED:\s*/, '移到废纸篓失败：');
 }
 
+function moveError(error: unknown): string {
+  const failure = normalizeCommandError(error);
+  if (failure.code === 'MOVE_SOURCE_CHANGED') return '源项目在移动期间发生变化，请刷新后重试';
+  if (failure.code === 'MOVE_DESTINATION_CHANGED') return '目标文件夹在移动期间发生变化，请重试';
+  if (failure.code === 'MOVE_SOURCE_UNSUPPORTED') return '当前项目不支持移动';
+  if (failure.code === 'MOVE_SAME_PARENT') return '项目已经位于该文件夹中';
+  if (failure.code === 'MOVE_DESTINATION_INSIDE_SOURCE') return '不能把文件夹移到它自己或子文件夹中';
+  if (failure.code === 'MOVE_DESTINATION_EXISTS') return '目标文件夹中已存在同名项目';
+  if (failure.code === 'MOVE_CROSS_DEVICE_UNSUPPORTED') return '暂不支持跨磁盘移动项目';
+  if (failure.code === 'MOVE_SECURE_RENAME_UNAVAILABLE') return '当前系统或磁盘不支持安全移动';
+  if (failure.code === 'MOVE_BUNDLE_BOUNDARY') return 'Numbers、Pages 或 Keynote 文稿包只能整体移动';
+  if (failure.code === 'MOVE_OUTCOME_UNCERTAIN') return '移动结果不确定；已刷新源目录和目标目录';
+  if (failure.code === 'WORKSPACE_CHANGED') return '工作区已经变化，请重新操作';
+  return `移动失败：${failure.message}`;
+}
+
+function renameErrorMessage(error: unknown): string {
+  const failure = normalizeCommandError(error);
+  const code = failure.code === 'IO_ERROR' && failure.message.startsWith('RENAME_')
+    ? failure.message
+    : failure.code;
+  if (code === 'RENAME_INVALID_NAME') return '请输入有效名称';
+  if (code === 'RENAME_NAME_TOO_LONG') return '名称过长，请缩短后重试';
+  if (code === 'RENAME_RESERVED_NAME') return '该名称由 LocalView 或系统保留';
+  if (code === 'RENAME_EXTENSION_CHANGE_UNSUPPORTED') return '暂不支持更改文件扩展名';
+  if (code === 'RENAME_CASE_ONLY_UNSUPPORTED') return '暂不支持只修改名称大小写';
+  if (code === 'RENAME_UNCHANGED') return '名称没有变化';
+  if (code === 'RENAME_ROOT_FORBIDDEN') return '不能重命名当前工作区根目录';
+  if (code === 'RENAME_SOURCE_UNSUPPORTED') return '当前项目不支持重命名';
+  if (code === 'RENAME_SOURCE_CHANGED') return '项目在重命名期间发生变化，请刷新后重试';
+  if (code === 'RENAME_DESTINATION_EXISTS') return '当前文件夹中已存在同名项目';
+  if (code === 'RENAME_PARENT_CHANGED') return '所在文件夹在重命名期间发生变化，请重试';
+  if (code === 'RENAME_BUNDLE_BOUNDARY') return 'Numbers、Pages 或 Keynote 文稿包只能整体重命名';
+  if (code === 'RENAME_SECURE_UNAVAILABLE') return '当前系统或磁盘不支持安全重命名';
+  if (code === 'RENAME_OUTCOME_UNCERTAIN') return '重命名结果不确定；已刷新所在文件夹';
+  if (code === 'WORKSPACE_CHANGED') return '工作区已经变化，请重新操作';
+  return `重命名失败：${failure.message}`;
+}
+
 function fileTypeLabel(kind: FileKind): string {
   return ({ folder: 'Folder', md: 'Markdown', html: 'HTML', text: 'Text', image: 'Image', pdf: 'PDF', spreadsheet: 'Spreadsheet', presentation: 'Presentation', document: 'Document', other: 'File' })[kind];
 }
@@ -403,13 +545,20 @@ export default function App() {
     error: null,
   });
   const [documentActionGate, setDocumentActionGate] = useState<DocumentActionGate>('idle');
+  const [printJob, setPrintJob] = useState<MarkdownPrintJob | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [treeActionMenu, setTreeActionMenu] = useState<TreeActionMenu | null>(null);
+  const [moveDrag, setMoveDrag] = useState<MoveDragState | null>(null);
+  const moveDragRef = useRef<MoveDragState | null>(null);
+  const moveDragSequenceRef = useRef(0);
   const [editorEpoch, setEditorEpoch] = useState(0);
   const [decision, setDecision] = useState<DecisionDialogConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [showLoadingMask, setShowLoadingMask] = useState(false);
   const [notice, setNotice] = useState('');
+  const [demoImages, setDemoImages] = useState<Record<string, string>>({});
+  const demoImagesRef = useRef(demoImages);
+  const demoImageSequenceRef = useRef(0);
   const [rendererStatus, setRendererStatus] = useState('Local-first');
   const [htmlPreviewCapability, setHtmlPreviewCapability] = useState<HtmlPreviewCapability | null>(null);
   const [createDraft, setCreateDraft] = useState<CreateEntryDraft | null>(null);
@@ -419,7 +568,24 @@ export default function App() {
   const createBusyRef = useRef<number | null>(null);
   const createOperationRef = useRef(0);
   const createInputRef = useRef<TreeCreateInputHandle>(null);
+  const [renameDraft, setRenameDraft] = useState<RenameEntryDraft | null>(null);
+  const renameDraftRef = useRef<RenameEntryDraft | null>(null);
+  const [renameInvalid, setRenameInvalid] = useState(false);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const renameBusyRef = useRef<number | null>(null);
+  const renameOperationRef = useRef(0);
+  const renameInputRef = useRef<TreeRenameInputHandle>(null);
+  const documentTitleRef = useRef<HTMLButtonElement>(null);
+  const pendingTreeClickAfterRenameRef = useRef<FileNode | null>(null);
+  const handleNodeClickRef = useRef<((node: FileNode) => Promise<void>) | null>(null);
   const textEditorRef = useRef<TextEditorHandle>(null);
+  const printJobRef = useRef<MarkdownPrintJob | null>(null);
+  const printSequenceRef = useRef(0);
+  const printFlowRef = useRef<Promise<void> | null>(null);
+  const printFlowJobIdRef = useRef<number | null>(null);
+  const printReadyWaiterRef = useRef<PrintReadyWaiter | null>(null);
+  const printDispatchStartedIdRef = useRef<number | null>(null);
+  const retainedPrintJobIdRef = useRef<number | null>(null);
   const [pendingTreeFocusPath, setPendingTreeFocusPath] = useState<string | null>(null);
   const [workspaceTransition, setWorkspaceTransition] = useState<WorkspaceTransition | null>(null);
   const [windowSessionId, setWindowSessionId] = useState('');
@@ -439,6 +605,8 @@ export default function App() {
   const [preparingFolders, setPreparingFolders] = useState<Set<string>>(() => new Set());
   const documentLoadOperationRef = useRef(0);
   const renameFollowOperationRef = useRef(0);
+  const moveOperationRef = useRef(0);
+  const activeRelocationRef = useRef<ActiveRelocation | null>(null);
   const documentTargetRef = useRef<string | null>(selected?.path ?? null);
   const documentSaveTargetRef = useRef<DocumentSaveTarget | null>(null);
   const saveCoordinatorRef = useRef<SaveCoordinator | null>(null);
@@ -449,7 +617,7 @@ export default function App() {
   const closeFlowRef = useRef<Promise<void> | null>(null);
   const contextMenuItemRef = useRef<HTMLButtonElement>(null);
   const projectMenuItemRef = useRef<HTMLButtonElement>(null);
-  const lastContextTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const lastContextTriggerRef = useRef<HTMLElement | null>(null);
   const sidebarFocusFallbackRef = useRef<HTMLButtonElement>(null);
   const bootstrapPromiseRef = useRef<Promise<WindowBootstrap> | null>(null);
   const windowSessionIdRef = useRef('');
@@ -479,7 +647,6 @@ export default function App() {
   const dirtyRef = useRef(dirty);
   const savedContentRef = useRef(savedContent);
   const decisionResolverRef = useRef<((result: DecisionResult) => void) | null>(null);
-  const allowCloseRef = useRef(false);
   const allowUnloadRef = useRef(false);
   const quitGenerationRef = useRef<number | null>(null);
   const quitFlowRef = useRef<Promise<void> | null>(null);
@@ -510,6 +677,27 @@ export default function App() {
     setCreateInvalid(false);
   }, []);
 
+  const replaceRenameDraft = useCallback((next: RenameEntryDraft | null) => {
+    renameDraftRef.current = next;
+    setRenameDraft(next);
+    setRenameInvalid(false);
+  }, []);
+
+  const cancelRename = useCallback((restoreFocus = true) => {
+    const draft = renameDraftRef.current;
+    if (!draft || renameBusyRef.current !== null) return false;
+    renameOperationRef.current += 1;
+    replaceRenameDraft(null);
+    if (restoreFocus) {
+      if (draft.surface === 'toolbar') {
+        window.setTimeout(() => documentTitleRef.current?.focus(), 0);
+      } else {
+        setPendingTreeFocusPath(draft.sourcePath);
+      }
+    }
+    return true;
+  }, [replaceRenameDraft]);
+
   const showNotice = useCallback((message: string) => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
     setNotice(message);
@@ -517,6 +705,35 @@ export default function App() {
       noticeTimerRef.current = null;
       setNotice((current) => current === message ? '' : current);
     }, 2600);
+  }, []);
+
+  const clearPrintJob = useCallback((id: number) => {
+    if (printJobRef.current?.id !== id) return;
+    printJobRef.current = null;
+    setPrintJob((current) => current?.id === id ? null : current);
+  }, []);
+
+  const waitForPrintSurface = useCallback((id: number): Promise<HTMLElement> => (
+    new Promise((resolve, reject) => {
+      const previous = printReadyWaiterRef.current;
+      if (previous) {
+        window.clearTimeout(previous.timer);
+        previous.reject(new Error('PRINT_SURFACE_REPLACED'));
+      }
+      const timer = window.setTimeout(() => {
+        if (printReadyWaiterRef.current?.id === id) printReadyWaiterRef.current = null;
+        reject(new Error('PRINT_SURFACE_TIMEOUT'));
+      }, 3000);
+      printReadyWaiterRef.current = { id, timer, resolve, reject };
+    })
+  ), []);
+
+  const handlePrintSurfaceReady = useCallback((id: number, root: HTMLElement) => {
+    const waiter = printReadyWaiterRef.current;
+    if (!waiter || waiter.id !== id) return;
+    window.clearTimeout(waiter.timer);
+    printReadyWaiterRef.current = null;
+    waiter.resolve(root);
   }, []);
 
   useEffect(() => {
@@ -638,15 +855,27 @@ export default function App() {
     }
     return () => {
       unmountedRef.current = true;
+      const printWaiter = printReadyWaiterRef.current;
+      if (printWaiter) {
+        window.clearTimeout(printWaiter.timer);
+        printReadyWaiterRef.current = null;
+        printWaiter.reject(new Error('PRINT_SURFACE_UNMOUNTED'));
+      }
+      printJobRef.current = null;
+      printFlowJobIdRef.current = null;
+      printDispatchStartedIdRef.current = null;
+      retainedPrintJobIdRef.current = null;
       saveCoordinatorRef.current?.cancel();
       directoryRefreshCoordinatorRef.current?.cancel();
       pendingWorkspaceBatchesRef.current.clear();
+      activeRelocationRef.current = null;
       if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
       if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       decisionResolverRef.current?.('cancel');
       decisionResolverRef.current = null;
       workspaceMutationWaitersRef.current.splice(0).forEach((resolve) => resolve());
       folderPreparationRef.current.clear();
+      Object.values(demoImagesRef.current).forEach((url) => URL.revokeObjectURL(url));
     };
   }, []);
 
@@ -782,11 +1011,18 @@ export default function App() {
     });
   }
 
+  const flushActiveEditorSurface = useCallback((): boolean => (
+    textEditorRef.current?.flushMarkdownCellEdit() ?? true
+  ), []);
+
   const flushCurrentDocument = useCallback(async (): Promise<SaveOutcome> => {
     const coordinator = saveCoordinatorRef.current;
     if (!coordinator) throw new Error('SAVE_COORDINATOR_UNAVAILABLE');
+    if (!flushActiveEditorSurface()) {
+      coordinator.fail('error', 'MARKDOWN_CELL_FLUSH_FAILED: active table cell changed');
+    }
     return coordinator.flush();
-  }, []);
+  }, [flushActiveEditorSurface]);
 
   const runWithSaveGuard = useCallback(async (
     gate: Exclude<DocumentActionGate, 'idle'>,
@@ -795,6 +1031,10 @@ export default function App() {
   ): Promise<boolean> => {
     if (documentActionGateRef.current !== 'idle') {
       showNotice('正在完成当前操作，请稍候');
+      return false;
+    }
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格状态已经变化，无法离开当前编辑状态');
       return false;
     }
     documentActionGateRef.current = gate;
@@ -831,7 +1071,7 @@ export default function App() {
       documentActionGateRef.current = 'idle';
       if (!unmountedRef.current) setDocumentActionGate('idle');
     }
-  }, [flushCurrentDocument, requestDecision, showNotice]);
+  }, [flushActiveEditorSurface, flushCurrentDocument, requestDecision, showNotice]);
 
   const loadFile = useCallback(async (node: FileNode) => {
     if (workspaceTransitionRef.current) {
@@ -980,6 +1220,7 @@ export default function App() {
     setMode(snapshot.mode);
     setRendererStatus(snapshot.rendererStatus);
     replaceCreateDraft(snapshot.createDraft);
+    replaceRenameDraft(null);
     configureCurrentDocumentSave(
       snapshot.selected && isTextKind(snapshot.selected.kind) && snapshot.savedVersion
         ? snapshot.selected
@@ -989,7 +1230,7 @@ export default function App() {
         : null,
     );
     if (snapshot.content !== snapshot.savedContent) saveCoordinatorRef.current?.update(snapshot.content);
-  }, [configureCurrentDocumentSave, replaceCreateDraft]);
+  }, [configureCurrentDocumentSave, replaceCreateDraft, replaceRenameDraft]);
 
   const clearUntrustedWorkspace = useCallback(() => {
     pendingWorkspaceBatchesRef.current.clear();
@@ -1017,8 +1258,9 @@ export default function App() {
     setExternalChange(false);
     setRendererStatus('Local-first');
     replaceCreateDraft(null);
+    replaceRenameDraft(null);
     configureCurrentDocumentSave(null, null);
-  }, [configureCurrentDocumentSave, replaceCreateDraft]);
+  }, [configureCurrentDocumentSave, replaceCreateDraft, replaceRenameDraft]);
 
   const processWorkspaceQueue = useCallback(async (initialRequest: WorkspaceRequest) => {
     const snapshot = captureCommittedWorkspace();
@@ -1107,6 +1349,10 @@ export default function App() {
           createBusyRef.current = null;
           setCreateBusy(false);
           replaceCreateDraft(null);
+          renameOperationRef.current += 1;
+          renameBusyRef.current = null;
+          setRenameBusy(false);
+          replaceRenameDraft(null);
           rootPathRef.current = preparedRoot;
           treeRef.current = preparedTree;
           projectNameRef.current = basename(preparedRoot).toUpperCase() || 'LOCALVIEW';
@@ -1180,9 +1426,11 @@ export default function App() {
     if (targetToLoad && !unmountedRef.current && !workspaceTransitionRef.current) {
       await loadFile(targetToLoad);
     }
-  }, [captureCommittedWorkspace, clearUntrustedWorkspace, configureCurrentDocumentSave, desktop, expandTargetInTree, loadFile, replaceCreateDraft, restoreCommittedWorkspace, showNotice, waitForWorkspaceMutations]);
+  }, [captureCommittedWorkspace, clearUntrustedWorkspace, configureCurrentDocumentSave, desktop, expandTargetInTree, loadFile, replaceCreateDraft, replaceRenameDraft, restoreCommittedWorkspace, showNotice, waitForWorkspaceMutations]);
 
   const requestWorkspaceTransition = useCallback(async (workspacePath: string, targetPath?: string) => {
+    if (renameBusyRef.current !== null) await waitForWorkspaceMutations();
+    cancelRename(false);
     const request: WorkspaceRequest = {
       id: ++workspaceRequestRef.current,
       workspacePath: normalizePath(workspacePath),
@@ -1210,7 +1458,7 @@ export default function App() {
       workspaceGuardPendingRef.current = null;
       workspaceGuardRunningRef.current = false;
     }
-  }, [processWorkspaceQueue, runWithSaveGuard]);
+  }, [cancelRename, processWorkspaceQueue, runWithSaveGuard, waitForWorkspaceMutations]);
 
   const openIncomingPath = useCallback(async (path: string) => {
     try {
@@ -1225,7 +1473,11 @@ export default function App() {
     }
   }, [requestWorkspaceTransition, showNotice]);
 
-  const followPairedRename = useCallback(async (oldPath: string, newPath: string) => {
+  const followPairedRename = useCallback(async (
+    oldPath: string,
+    newPath: string,
+    trustedWorkspaceMove = false,
+  ) => {
     const oldPrefix = normalizePath(oldPath);
     const newPrefix = normalizePath(newPath);
     const active = selectedRef.current;
@@ -1240,8 +1492,22 @@ export default function App() {
     documentTargetRef.current = nextPath;
     fileSnapshotCoordinatorRef.current?.invalidate();
     setSelected(migrated);
-    if (!isTextKind(migrated.kind) || !desktop) return;
     const workspaceEpoch = workspaceEpochRef.current;
+    if (trustedWorkspaceMove && savedVersionRef.current) {
+      const target: DocumentSaveTarget = {
+        key: documentKey(workspaceEpoch, nextPath),
+        path: nextPath,
+        workspaceEpoch,
+      };
+      documentSaveTargetRef.current = target;
+      saveCoordinatorRef.current?.retarget({
+        key: target.key,
+        content: savedContentRef.current,
+        version: savedVersionRef.current,
+      });
+      return;
+    }
+    if (!isTextKind(migrated.kind) || !desktop) return;
     const workspaceGeneration = workspaceBindingRef.current?.generation;
     const operationId = ++renameFollowOperationRef.current;
     const isCurrent = () => !unmountedRef.current
@@ -1304,6 +1570,21 @@ export default function App() {
       return;
     }
 
+    const activeRelocation = activeRelocationRef.current;
+    if (activeRelocation
+      && activeRelocation.workspaceEpoch === workspaceEpochRef.current
+      && activeRelocation.workspaceGeneration === batch.generation
+      && workspaceBatchTouchesRelocation(batch, activeRelocation)) {
+      if (activeRelocation.needsRescan) return;
+      if (activeRelocation.batches.length < MOVE_WATCH_BATCH_LIMIT) {
+        activeRelocation.batches.push(batch);
+      } else {
+        activeRelocation.batches = [];
+        activeRelocation.needsRescan = true;
+      }
+      return;
+    }
+
     const coordinator = directoryRefreshCoordinatorRef.current;
     for (const event of batch.events) {
       if (event.kind === 'rename' && event.paths.length === 2) {
@@ -1317,6 +1598,7 @@ export default function App() {
       tree: treeRef.current,
       openFolders: openFoldersRef.current,
       createDraft: createDraftRef.current,
+      renameDraft: renameDraftRef.current,
       batch,
       rootPath: rootPathRef.current,
       selectedPath: selectedRef.current?.path ?? null,
@@ -1330,11 +1612,18 @@ export default function App() {
       setOpenFolders(result.openFolders);
     }
     if (result.createDraft !== createDraftRef.current) replaceCreateDraft(result.createDraft);
+    if (result.renameDraft !== renameDraftRef.current) {
+      const cancelledPath = renameDraftRef.current?.sourcePath;
+      replaceRenameDraft(result.renameDraft);
+      if (!result.renameDraft && cancelledPath && findNode(result.tree, cancelledPath)) {
+        setPendingTreeFocusPath(cancelledPath);
+      }
+    }
     result.pairedRenames.forEach(([oldPath, newPath]) => void followPairedRename(oldPath, newPath));
     const loaded = loadedDirectoryPaths(result.tree, rootPathRef.current);
     coordinator?.request([...result.refreshTargets].filter((path) => loaded.has(path)));
     if (result.selectedNeedsRecheck) void recheckSelectedSnapshot();
-  }, [followPairedRename, recheckSelectedSnapshot, replaceCreateDraft]);
+  }, [followPairedRename, recheckSelectedSnapshot, replaceCreateDraft, replaceRenameDraft]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1451,11 +1740,16 @@ export default function App() {
   }, [applyAuthoritativeSnapshot, requestDecision, showNotice, showTransitionNotice]);
 
   const handleExplicitSave = useCallback(async () => {
+    if (documentActionGateRef.current === 'pasting-image') await waitForWorkspaceMutations();
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     const target = selectedRef.current;
     if (!target || !isTextKind(target.kind)) return;
     const coordinator = saveCoordinatorRef.current;
     if (!coordinator) return;
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格仍在输入中，暂时无法保存');
+      return;
+    }
     const state = coordinator.getState();
     if (state.kind === 'conflict') {
       await resolveExternalConflict();
@@ -1479,10 +1773,11 @@ export default function App() {
     } catch (error) {
       showNotice(`保存失败：${errorMessage(error)}`);
     }
-  }, [resolveExternalConflict, showNotice, showTransitionNotice]);
+  }, [flushActiveEditorSurface, resolveExternalConflict, showNotice, showTransitionNotice, waitForWorkspaceMutations]);
 
   const requestReload = useCallback(async () => {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
+    cancelRename(false);
     await waitForWorkspaceMutations();
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     await runWithSaveGuard('reloading', '重新载入 LocalView', async () => {
@@ -1490,7 +1785,7 @@ export default function App() {
       allowUnloadRef.current = true;
       window.location.reload();
     });
-  }, [runWithSaveGuard, showTransitionNotice, waitForWorkspaceMutations]);
+  }, [cancelRename, runWithSaveGuard, showTransitionNotice, waitForWorkspaceMutations]);
 
   const handleNewWindow = useCallback(async () => {
     setProjectMenuOpen(false);
@@ -1500,6 +1795,127 @@ export default function App() {
       showNotice(`新建窗口失败：${errorMessage(error)}`);
     }
   }, [showNotice]);
+
+  const requestMarkdownPrint = useCallback(() => {
+    if (printFlowRef.current) return;
+    const target = selectedRef.current;
+    if (!target || target.kind !== 'md') {
+      showNotice('当前仅支持打印 Markdown 文件');
+      return;
+    }
+    if (decisionResolverRef.current) {
+      showNotice('请先处理当前确认');
+      return;
+    }
+    if (workspaceTransitionRef.current) {
+      showTransitionNotice();
+      return;
+    }
+    if (documentActionGateRef.current !== 'idle') {
+      showNotice('正在完成当前操作，请稍候');
+      return;
+    }
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格状态已经变化，暂时无法打印');
+      return;
+    }
+
+    const active = selectedRef.current;
+    if (!active || active.kind !== 'md') return;
+    const id = printSequenceRef.current += 1;
+    const job: MarkdownPrintJob = {
+      id,
+      content: contentRef.current,
+      desktop,
+      rootPath: rootPathRef.current,
+      selectedPath: normalizePath(active.path),
+      assetScope: workspaceBindingRef.current?.assetScope ?? '',
+      demoImages: demoImagesRef.current,
+      workspaceEpoch: workspaceEpochRef.current,
+    };
+    const surfaceReady = waitForPrintSurface(id);
+    printJobRef.current = job;
+    retainedPrintJobIdRef.current = null;
+    setPrintJob(job);
+    documentActionGateRef.current = 'printing';
+    setDocumentActionGate('printing');
+
+    const stillCurrent = () => !unmountedRef.current
+      && printJobRef.current?.id === id
+      && documentActionGateRef.current === 'printing'
+      && workspaceEpochRef.current === job.workspaceEpoch
+      && normalizePath(selectedRef.current?.path ?? '') === job.selectedPath
+      && selectedRef.current?.kind === 'md';
+    printFlowJobIdRef.current = id;
+    const flow = (async () => {
+      let dispatched = false;
+      try {
+        const surface = await surfaceReady;
+        if (!stillCurrent()) throw new Error('PRINT_CONTEXT_CHANGED');
+        const readiness = await waitForPrintableAssets(surface, 3000);
+        if (!stillCurrent()) throw new Error('PRINT_CONTEXT_CHANGED');
+        printDispatchStartedIdRef.current = id;
+        await printCurrentWindow();
+        dispatched = true;
+        retainedPrintJobIdRef.current = id;
+        if (readiness.timedOut) {
+          showNotice('部分打印资源尚未加载，已继续打开打印设置');
+        } else if (readiness.failedImages.length) {
+          showNotice(`${readiness.failedImages.length} 张图片无法加载，其他内容仍可打印`);
+        }
+      } catch (error) {
+        if (!unmountedRef.current) {
+          const message = error instanceof Error && error.message === 'PRINT_SURFACE_TIMEOUT'
+            ? '打印预览准备超时，请重试'
+            : error instanceof Error && error.message === 'PRINT_CONTEXT_CHANGED'
+              ? '文件状态已经变化，已取消打印'
+              : `无法打开打印设置：${errorMessage(error)}`;
+          showNotice(message);
+        }
+      } finally {
+        if (printDispatchStartedIdRef.current === id) printDispatchStartedIdRef.current = null;
+        if (!dispatched) clearPrintJob(id);
+        if (documentActionGateRef.current === 'printing') {
+          documentActionGateRef.current = 'idle';
+          if (!unmountedRef.current) setDocumentActionGate('idle');
+        }
+        if (printFlowJobIdRef.current === id) {
+          printFlowJobIdRef.current = null;
+          printFlowRef.current = null;
+        }
+      }
+    })();
+    printFlowRef.current = flow;
+  }, [clearPrintJob, desktop, flushActiveEditorSurface, showNotice, showTransitionNotice, waitForPrintSurface]);
+
+  useEffect(() => {
+    const handleAfterPrint = () => {
+      const id = printDispatchStartedIdRef.current ?? retainedPrintJobIdRef.current;
+      if (id === null) return;
+      clearPrintJob(id);
+      if (retainedPrintJobIdRef.current === id) retainedPrintJobIdRef.current = null;
+    };
+    const handlePrintShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'p') return;
+      event.preventDefault();
+      requestMarkdownPrint();
+    };
+    window.addEventListener('afterprint', handleAfterPrint);
+    window.addEventListener('keydown', handlePrintShortcut, true);
+
+    let disposePrintRequest: (() => void) | undefined;
+    let cancelled = false;
+    if (desktop) {
+      void listenForPrintRequests(requestMarkdownPrint)
+        .then((dispose) => cancelled ? dispose() : (disposePrintRequest = dispose));
+    }
+    return () => {
+      cancelled = true;
+      disposePrintRequest?.();
+      window.removeEventListener('afterprint', handleAfterPrint);
+      window.removeEventListener('keydown', handlePrintShortcut, true);
+    };
+  }, [clearPrintJob, desktop, requestMarkdownPrint]);
 
   useEffect(() => {
     if (workspaceTransition || !desktop || !selected || !isTextKind(selected.kind) || !savedVersion) return;
@@ -1511,7 +1927,7 @@ export default function App() {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       if (allowUnloadRef.current) return;
-      if (!saveCoordinatorRef.current?.hasPendingChanges() && !dirtyRef.current) return;
+      if (!saveCoordinatorRef.current?.hasPendingChanges() && !dirtyRef.current && workspaceMutationCountRef.current === 0) return;
       event.preventDefault();
       event.returnValue = '';
     };
@@ -1523,13 +1939,11 @@ export default function App() {
     let cancelled = false;
     void getCurrentWindow().onCloseRequested((event) => {
       if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
-      if (allowCloseRef.current) {
-        allowCloseRef.current = false;
-        if (windowSessionIdRef.current) clearWorkspaceSessionIfInactive(windowSessionIdRef.current);
-        return;
-      }
       const coordinator = saveCoordinatorRef.current;
-      const mutationBusy = workspaceMutationCountRef.current > 0 || createBusyRef.current !== null;
+      cancelRename(false);
+      const mutationBusy = workspaceMutationCountRef.current > 0
+        || createBusyRef.current !== null
+        || renameBusyRef.current !== null;
       if (!coordinator?.hasPendingChanges() && !dirtyRef.current && !mutationBusy) {
         if (windowSessionIdRef.current) clearWorkspaceSessionIfInactive(windowSessionIdRef.current);
         return;
@@ -1539,11 +1953,20 @@ export default function App() {
       const flow = (async () => {
         await waitForWorkspaceMutations();
         await runWithSaveGuard('closing', '关闭 LocalView', async () => {
-          allowCloseRef.current = true;
+          const sessionId = windowSessionIdRef.current;
+          const session = rootPathRef.current ? {
+            rootPath: rootPathRef.current,
+            selectedPath: selectedRef.current?.path ?? null,
+            openFolders: [...openFoldersRef.current],
+            mode: modeRef.current,
+          } : null;
+          allowUnloadRef.current = true;
+          if (sessionId) clearWorkspaceSessionIfInactive(sessionId);
           try {
-            await getCurrentWindow().close();
+            await getCurrentWindow().destroy();
           } catch (error) {
-            allowCloseRef.current = false;
+            allowUnloadRef.current = false;
+            if (sessionId && session) writeWorkspaceSession(sessionId, session);
             showNotice(`关闭失败：${errorMessage(error)}`);
           }
         });
@@ -1558,7 +1981,7 @@ export default function App() {
       unlisten?.();
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
-  }, [desktop, runWithSaveGuard, showNotice, waitForWorkspaceMutations]);
+  }, [cancelRename, desktop, runWithSaveGuard, showNotice, waitForWorkspaceMutations]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1575,8 +1998,15 @@ export default function App() {
       if (!unmountedRef.current) setDocumentActionGate('idle');
     };
 
-    void listenForAppQuitRequests(({ generation }) => {
+    const handleQuitRequest = async ({ generation }: { generation: number }) => {
       if (quitGenerationRef.current === generation) return;
+      cancelRename(false);
+      if (renameBusyRef.current !== null) {
+        quitGenerationRef.current = generation;
+        await waitForWorkspaceMutations();
+        if (quitGenerationRef.current !== generation) return;
+        quitGenerationRef.current = null;
+      }
       if (
         workspaceTransitionRef.current
         || documentActionGateRef.current !== 'idle'
@@ -1584,7 +2014,12 @@ export default function App() {
         || createBusyRef.current !== null
         || workspaceMutationCountRef.current > 0
       ) {
-        void respondAppQuit(generation, 'cancel');
+        await respondAppQuit(generation, 'cancel');
+        return;
+      }
+      if (!flushActiveEditorSurface()) {
+        showNotice('表格单元格状态已经变化，已取消退出');
+        await respondAppQuit(generation, 'cancel');
         return;
       }
       quitGenerationRef.current = generation;
@@ -1633,6 +2068,10 @@ export default function App() {
         }
       });
       quitFlowRef.current = flow;
+    };
+
+    void listenForAppQuitRequests((event) => {
+      void handleQuitRequest(event);
     }).then((dispose) => cancelled ? dispose() : (disposeRequest = dispose));
 
     void listenForAppQuitAborts(({ generation }) => {
@@ -1650,7 +2089,7 @@ export default function App() {
       disposeRequest?.();
       disposeAbort?.();
     };
-  }, [desktop, finishDecision, flushCurrentDocument, requestDecision, showNotice]);
+  }, [cancelRename, desktop, finishDecision, flushActiveEditorSurface, flushCurrentDocument, requestDecision, showNotice, waitForWorkspaceMutations]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1828,6 +2267,7 @@ export default function App() {
     parentPath: string,
     parentNode?: FileNode,
   ) => {
+    cancelRename(false);
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     if (!rootPathRef.current || createBusyRef.current !== null) return;
     const operationId = ++createOperationRef.current;
@@ -1860,7 +2300,7 @@ export default function App() {
         return next;
       });
     }
-  }, [desktop, prepareFolder, replaceCreateDraft, showNotice, showTransitionNotice]);
+  }, [cancelRename, desktop, prepareFolder, replaceCreateDraft, showNotice, showTransitionNotice]);
 
   const cancelCreate = useCallback(() => {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
@@ -2126,8 +2566,593 @@ export default function App() {
     else void submitMarkdownCreate(draft, rawName);
   }, [submitDirectoryCreate, submitMarkdownCreate]);
 
+  const releaseRelocationWatcherBatches = useCallback((relocation: ActiveRelocation, forceRescan = false) => {
+    if (activeRelocationRef.current?.id !== relocation.id) return;
+    activeRelocationRef.current = null;
+    if (relocation.needsRescan || forceRescan) {
+      const loaded = loadedDirectoryPaths(treeRef.current, rootPathRef.current);
+      directoryRefreshCoordinatorRef.current?.request([
+        ...loaded,
+        relocation.sourceParent,
+        relocation.destinationDirectory,
+      ]);
+      return;
+    }
+    relocation.batches.forEach(handleWorkspaceChangeBatch);
+  }, [handleWorkspaceChangeBatch]);
+
+  const workspaceMoveProblem = useCallback((node: FileNode, destinationPath: string): string | null => {
+    if (createDraftRef.current) return '请先完成或取消当前新建操作';
+    if (renameDraftRef.current) return '请先完成或取消当前重命名操作';
+    const root = normalizePath(rootPathRef.current);
+    const sourcePath = normalizePath(node.path);
+    const destination = normalizePath(destinationPath);
+    if (!root || sourcePath === root) return '不能移动当前工作区根目录';
+    if (!containsPath(root, sourcePath) || !containsPath(root, destination)) {
+      return '移动源或目标不在当前工作区';
+    }
+    if (parentPath(sourcePath) === destination) return '项目已经位于该文件夹中';
+    if (node.kind === 'folder' && containsPath(sourcePath, destination)) {
+      return '不能把文件夹移到它自己或子文件夹中';
+    }
+    const destinationNode = destination === root ? null : findNode(treeRef.current, destination);
+    if (destination !== root && destinationNode?.kind !== 'folder') {
+      return '移动目标不是当前工作区内的文件夹';
+    }
+    const destinationItems = destination === root ? treeRef.current : destinationNode?.children;
+    if (destinationItems?.some((item) => normalizePath(item.path) !== sourcePath
+      && item.name.localeCompare(basename(sourcePath), undefined, { sensitivity: 'base' }) === 0)) {
+      return '目标文件夹中已存在同名项目';
+    }
+    return null;
+  }, []);
+
+  const strictSaveCurrentForRelocation = useCallback(async (
+    sourcePath: string,
+    actionLabel: '移动' | '重命名',
+  ): Promise<boolean> => {
+    const current = selectedRef.current;
+    if (!current
+      || !containsPath(sourcePath, current.path)
+      || !isTextKind(current.kind)) return true;
+    const coordinator = saveCoordinatorRef.current;
+    if (!coordinator) return false;
+    if (!flushActiveEditorSurface()) {
+      showNotice(`无法${actionLabel}当前项目：表格单元格状态已经变化`);
+      return false;
+    }
+    const before = coordinator.getState();
+    const outcome = await coordinator.flush();
+    const after = coordinator.getState();
+    const stable = before.documentKey === after.documentKey
+      && outcome.documentKey === after.documentKey
+      && outcome.revision === after.revision;
+    if (stable && !after.dirty && !outcome.dirty && outcome.kind === 'idle') return true;
+    const detail = outcome.kind === 'conflict'
+      ? '磁盘文件已经变化'
+      : outcome.kind === 'missing'
+        ? '原文件已经不存在'
+        : `保存失败：${outcome.error ?? '未知错误'}`;
+    showNotice(`无法${actionLabel}当前项目：${detail}；本地内容仍保留`);
+    return false;
+  }, [flushActiveEditorSurface, showNotice]);
+
+  const applyConfirmedMove = useCallback(async (
+    move: ActiveRelocation,
+    result: MovedWorkspaceEntry,
+  ) => {
+    if (activeRelocationRef.current?.id !== move.id
+      || workspaceEpochRef.current !== move.workspaceEpoch
+      || workspaceBindingRef.current?.generation !== move.workspaceGeneration) return false;
+    const next = moveTreeEntry(
+      treeRef.current,
+      rootPathRef.current,
+      result.originalPath,
+      result.entry,
+    ) as FileNode[];
+    treeRef.current = next;
+    setTree(next);
+    const destination = normalizePath(move.destinationDirectory);
+    const expanded = migrateOpenFolderPaths(
+      openFoldersRef.current,
+      result.originalPath,
+      result.movedPath,
+      destination,
+      rootPathRef.current,
+    );
+    openFoldersRef.current = expanded;
+    setOpenFolders(expanded);
+    const active = selectedRef.current;
+    const activeInsideMove = Boolean(active && containsPath(result.originalPath, active.path));
+    const committed = committedWorkspaceSnapshotRef.current;
+    if (committed && normalizePath(committed.rootPath) === normalizePath(rootPathRef.current)) {
+      committed.tree = moveTreeEntry(
+        committed.tree,
+        committed.rootPath,
+        result.originalPath,
+        result.entry,
+      ) as FileNode[];
+      committed.openFolders = migrateOpenFolderPaths(
+        committed.openFolders,
+        result.originalPath,
+        result.movedPath,
+        destination,
+        committed.rootPath,
+      );
+      if (committed.selected && containsPath(result.originalPath, committed.selected.path)) {
+        const migratedPath = replacePathPrefix(
+          committed.selected.path,
+          result.originalPath,
+          result.movedPath,
+        );
+        committed.selected = findNode(committed.tree, migratedPath) ?? {
+          ...committed.selected,
+          path: migratedPath,
+          name: basename(migratedPath),
+        };
+      }
+    }
+    if (activeInsideMove) {
+      await followPairedRename(result.originalPath, result.movedPath, true);
+    }
+    if (desktop && destination !== normalizePath(rootPathRef.current)) {
+      const folder = findNode(treeRef.current, destination);
+      if (folder?.kind === 'folder' && !folder.loaded) {
+        try { await prepareFolder(destination, move.workspaceEpoch); } catch { /* refresh fallback below */ }
+      }
+    }
+    if (!activeInsideMove) setPendingTreeFocusPath(result.movedPath);
+    if (desktop) directoryRefreshCoordinatorRef.current?.request([move.sourceParent, destination]);
+    showNotice(desktop
+      ? `已将 ${result.entry.name} 移到 ${basename(destination)}`
+      : `浏览器 Demo 已模拟移动 ${result.entry.name}；未改动磁盘`);
+    return true;
+  }, [desktop, followPairedRename, prepareFolder, showNotice]);
+
+  const performWorkspaceMove = useCallback(async (node: FileNode, destinationPath: string) => {
+    const sourcePath = normalizePath(node.path);
+    const destination = normalizePath(destinationPath);
+    const sourceParent = parentPath(sourcePath);
+    const problem = workspaceMoveProblem(node, destination);
+    if (problem) {
+      showNotice(problem);
+      return;
+    }
+    const operationId = ++moveOperationRef.current;
+    const move: ActiveRelocation = {
+      kind: 'move',
+      id: operationId,
+      workspaceEpoch: workspaceEpochRef.current,
+      workspaceGeneration: workspaceBindingRef.current?.generation,
+      sourcePath,
+      sourceParent,
+      destinationDirectory: destination,
+      destinationPath: joinPath(destination, basename(sourcePath)),
+      batches: [],
+      needsRescan: false,
+    };
+    activeRelocationRef.current = move;
+    if (desktop) {
+      directoryRefreshCoordinatorRef.current?.invalidate(sourceParent);
+      directoryRefreshCoordinatorRef.current?.invalidate(destination);
+    }
+    let ambiguous = false;
+    try {
+      if (!await strictSaveCurrentForRelocation(sourcePath, '移动')) return;
+      if (activeRelocationRef.current?.id !== operationId
+        || workspaceEpochRef.current !== move.workspaceEpoch
+        || workspaceBindingRef.current?.generation !== move.workspaceGeneration) {
+        showNotice('工作区已经变化，已取消移动');
+        return;
+      }
+      if (!desktop) {
+        await applyConfirmedMove(move, {
+          originalPath: sourcePath,
+          movedPath: move.destinationPath,
+          entry: { ...node, path: move.destinationPath, name: basename(move.destinationPath) },
+        });
+        return;
+      }
+
+      const candidate: MoveCandidate = await prepareWorkspaceMove(sourcePath, destination);
+      if (activeRelocationRef.current?.id !== operationId
+        || workspaceEpochRef.current !== move.workspaceEpoch
+        || workspaceBindingRef.current?.generation !== move.workspaceGeneration
+        || candidate.workspaceGeneration !== move.workspaceGeneration) {
+        showNotice('工作区已经变化，已取消移动');
+        return;
+      }
+      let result: MovedWorkspaceEntry | null = null;
+      try {
+        result = await runWorkspaceMutation(() => moveWorkspaceEntry(candidate));
+      } catch (error) {
+        const failure = normalizeCommandError(error);
+        if (failure.code !== 'IO_ERROR' && failure.code !== 'MOVE_OUTCOME_UNCERTAIN') throw error;
+        const outcomeUncertain = failure.code === 'MOVE_OUTCOME_UNCERTAIN';
+        try {
+          const reconciliation = await reconcileWorkspaceMove(candidate);
+          if (!outcomeUncertain
+            && reconciliation.outcome === 'destination'
+            && reconciliation.entry) {
+            result = {
+              originalPath: candidate.sourcePath,
+              movedPath: candidate.destinationPath,
+              entry: reconciliation.entry,
+            };
+          } else if (!outcomeUncertain && reconciliation.outcome === 'source') {
+            throw error;
+          } else {
+            ambiguous = true;
+          }
+        } catch (reconcileError) {
+          if (reconcileError === error) throw error;
+          ambiguous = true;
+        }
+      }
+      if (ambiguous || !result) {
+        showNotice('移动结果不确定；已刷新源目录和目标目录，请确认后再操作');
+        return;
+      }
+      await applyConfirmedMove(move, result);
+    } catch (error) {
+      showNotice(moveError(error));
+    } finally {
+      if (desktop) directoryRefreshCoordinatorRef.current?.request([sourceParent, destination]);
+      releaseRelocationWatcherBatches(move, ambiguous);
+    }
+  }, [applyConfirmedMove, desktop, releaseRelocationWatcherBatches, runWorkspaceMutation, showNotice, strictSaveCurrentForRelocation, workspaceMoveProblem]);
+
+  const applyConfirmedRename = useCallback(async (
+    draft: RenameEntryDraft,
+    relocation: ActiveRelocation,
+    result: RenamedWorkspaceEntry,
+    submitReason: RenameSubmitReason,
+  ) => {
+    if (activeRelocationRef.current?.id !== relocation.id
+      || renameDraftRef.current?.id !== draft.id
+      || workspaceEpochRef.current !== draft.workspaceEpoch
+      || workspaceBindingRef.current?.generation !== draft.workspaceGeneration
+      || normalizePath(renameDraftRef.current.sourcePath) !== normalizePath(result.originalPath)) {
+      return false;
+    }
+    const next = renameTreeEntry(
+      treeRef.current,
+      rootPathRef.current,
+      result.originalPath,
+      result.entry,
+    ) as FileNode[];
+    treeRef.current = next;
+    setTree(next);
+    const parent = parentPath(result.renamedPath);
+    const expanded = migrateOpenFolderPaths(
+      openFoldersRef.current,
+      result.originalPath,
+      result.renamedPath,
+      parent,
+      rootPathRef.current,
+    );
+    openFoldersRef.current = expanded;
+    setOpenFolders(expanded);
+    const active = selectedRef.current;
+    const activeInsideRename = Boolean(active && containsPath(result.originalPath, active.path));
+    const committed = committedWorkspaceSnapshotRef.current;
+    if (committed && normalizePath(committed.rootPath) === normalizePath(rootPathRef.current)) {
+      committed.tree = renameTreeEntry(
+        committed.tree,
+        committed.rootPath,
+        result.originalPath,
+        result.entry,
+      ) as FileNode[];
+      committed.openFolders = migrateOpenFolderPaths(
+        committed.openFolders,
+        result.originalPath,
+        result.renamedPath,
+        parent,
+        committed.rootPath,
+      );
+      if (committed.selected && containsPath(result.originalPath, committed.selected.path)) {
+        const migratedPath = replacePathPrefix(
+          committed.selected.path,
+          result.originalPath,
+          result.renamedPath,
+        );
+        committed.selected = findNode(committed.tree, migratedPath) ?? {
+          ...committed.selected,
+          path: migratedPath,
+          name: basename(migratedPath),
+        };
+      }
+    }
+    if (activeInsideRename) {
+      await followPairedRename(result.originalPath, result.renamedPath, true);
+    }
+    replaceRenameDraft(null);
+    if (submitReason === 'enter') {
+      if (draft.surface === 'toolbar') {
+        window.setTimeout(() => documentTitleRef.current?.focus(), 0);
+      } else {
+        setPendingTreeFocusPath(result.renamedPath);
+      }
+    }
+    if (desktop) directoryRefreshCoordinatorRef.current?.request([parent]);
+    showNotice(desktop
+      ? `已重命名为 ${result.entry.name}`
+      : `浏览器 Demo 已模拟重命名为 ${result.entry.name}；未改动磁盘`);
+    return true;
+  }, [desktop, followPairedRename, replaceRenameDraft, showNotice]);
+
+  const submitRename = useCallback(async (
+    rawEditableName: string,
+    submitReason: RenameSubmitReason,
+  ) => {
+    const draft = renameDraftRef.current;
+    if (!draft || renameBusyRef.current !== null) return;
+    let fullName: string;
+    try {
+      fullName = normalizeEntryRenameName(draft.sourceNode, rawEditableName);
+      const parent = parentPath(draft.sourcePath);
+      const parentNode = normalizePath(parent) === normalizePath(rootPathRef.current)
+        ? null
+        : findNode(treeRef.current, parent);
+      const siblings = parentNode ? parentNode.children : treeRef.current;
+      if (entryRenameCollision(siblings, draft.sourcePath, fullName)) {
+        throw new Error('RENAME_DESTINATION_EXISTS');
+      }
+    } catch (error) {
+      setRenameInvalid(true);
+      showNotice(renameErrorMessage(error));
+      window.setTimeout(() => renameInputRef.current?.focusAndSelect(), 0);
+      return;
+    }
+
+    const operationId = ++renameOperationRef.current;
+    const sourcePath = normalizePath(draft.sourcePath);
+    const destinationPath = joinPath(parentPath(sourcePath), fullName);
+    const relocation: ActiveRelocation = {
+      kind: 'rename',
+      id: operationId,
+      workspaceEpoch: draft.workspaceEpoch,
+      workspaceGeneration: draft.workspaceGeneration,
+      sourcePath,
+      sourceParent: parentPath(sourcePath),
+      destinationDirectory: parentPath(sourcePath),
+      destinationPath,
+      batches: [],
+      needsRescan: false,
+    };
+    activeRelocationRef.current = relocation;
+    renameBusyRef.current = operationId;
+    workspaceMutationCountRef.current += 1;
+    setRenameBusy(true);
+    setRenameInvalid(false);
+    documentActionGateRef.current = 'renaming';
+    setDocumentActionGate('renaming');
+    if (desktop) {
+      directoryRefreshCoordinatorRef.current?.invalidatePrefix(sourcePath);
+      directoryRefreshCoordinatorRef.current?.invalidate(relocation.sourceParent);
+    }
+    let ambiguous = false;
+    let applied = false;
+    const isCurrent = () => activeRelocationRef.current?.id === operationId
+      && renameDraftRef.current?.id === draft.id
+      && workspaceEpochRef.current === draft.workspaceEpoch
+      && workspaceBindingRef.current?.generation === draft.workspaceGeneration
+      && normalizePath(renameDraftRef.current.sourcePath) === sourcePath;
+    try {
+      if (!await strictSaveCurrentForRelocation(sourcePath, '重命名')) return;
+      if (!isCurrent()) {
+        showNotice('工作区已经变化，已取消重命名');
+        return;
+      }
+      if (!desktop) {
+        applied = await applyConfirmedRename(draft, relocation, {
+          originalPath: sourcePath,
+          renamedPath: destinationPath,
+          entry: { ...draft.sourceNode, name: fullName, path: destinationPath },
+        }, submitReason);
+        return;
+      }
+
+      const candidate: RenameCandidate = await prepareWorkspaceRename(sourcePath, fullName);
+      if (!isCurrent() || candidate.workspaceGeneration !== draft.workspaceGeneration) {
+        showNotice('工作区已经变化，已取消重命名');
+        return;
+      }
+      let result: RenamedWorkspaceEntry | null = null;
+      try {
+        result = await runWorkspaceMutation(() => renameWorkspaceEntry(candidate));
+      } catch (error) {
+        const failure = normalizeCommandError(error);
+        if (failure.code !== 'IO_ERROR' && failure.code !== 'RENAME_OUTCOME_UNCERTAIN') throw error;
+        const outcomeUncertain = failure.code === 'RENAME_OUTCOME_UNCERTAIN';
+        try {
+          const reconciliation = await reconcileWorkspaceRename(candidate);
+          if (!outcomeUncertain
+            && reconciliation.outcome === 'destination'
+            && reconciliation.entry) {
+            result = {
+              originalPath: candidate.sourcePath,
+              renamedPath: candidate.destinationPath,
+              entry: reconciliation.entry,
+            };
+          } else if (!outcomeUncertain && reconciliation.outcome === 'source') {
+            throw error;
+          } else {
+            ambiguous = true;
+          }
+        } catch (reconcileError) {
+          if (reconcileError === error) throw error;
+          ambiguous = true;
+        }
+      }
+      if (ambiguous || !result) {
+        replaceRenameDraft(null);
+        showNotice('重命名结果不确定；已刷新所在文件夹，请确认后再操作');
+        return;
+      }
+      applied = await applyConfirmedRename(draft, relocation, result, submitReason);
+    } catch (error) {
+      if (isCurrent()) {
+        setRenameInvalid(true);
+        showNotice(renameErrorMessage(error));
+      }
+    } finally {
+      if (desktop) directoryRefreshCoordinatorRef.current?.request([relocation.sourceParent]);
+      releaseRelocationWatcherBatches(relocation, ambiguous);
+      if (renameBusyRef.current === operationId) {
+        renameBusyRef.current = null;
+        setRenameBusy(false);
+      }
+      if (documentActionGateRef.current === 'renaming') {
+        documentActionGateRef.current = 'idle';
+        if (!unmountedRef.current) setDocumentActionGate('idle');
+      }
+      workspaceMutationCountRef.current -= 1;
+      if (workspaceMutationCountRef.current === 0) {
+        const waiters = workspaceMutationWaitersRef.current.splice(0);
+        waiters.forEach((resolve) => resolve());
+      }
+      if (!applied && !ambiguous && renameDraftRef.current?.id === draft.id) {
+        window.setTimeout(() => renameInputRef.current?.focusAndSelect(), 0);
+      }
+      const pendingTreeClick = pendingTreeClickAfterRenameRef.current;
+      pendingTreeClickAfterRenameRef.current = null;
+      if (applied && pendingTreeClick) {
+        const pendingPath = replacePathPrefix(
+          pendingTreeClick.path,
+          sourcePath,
+          destinationPath,
+        );
+        window.setTimeout(() => {
+          const latest = findNode(treeRef.current, pendingPath);
+          if (latest) void handleNodeClickRef.current?.(latest);
+        }, 0);
+      }
+    }
+  }, [applyConfirmedRename, desktop, releaseRelocationWatcherBatches, replaceRenameDraft, runWorkspaceMutation, showNotice, strictSaveCurrentForRelocation]);
+
+  const beginRename = useCallback((
+    node: FileNode,
+    surface: 'tree' | 'toolbar' = 'tree',
+  ) => {
+    setTreeActionMenu(null);
+    if (workspaceTransitionRef.current
+      || documentActionGateRef.current !== 'idle'
+      || createDraftRef.current
+      || createBusyRef.current !== null
+      || renameDraftRef.current
+      || renameBusyRef.current !== null) {
+      showNotice('请先完成当前操作');
+      return;
+    }
+    const sourcePath = normalizePath(node.path);
+    if (!rootPathRef.current || sourcePath === normalizePath(rootPathRef.current)) return;
+    const parts = splitEntryRenameName(node);
+    const draft: RenameEntryDraft = {
+      id: ++renameOperationRef.current,
+      sourceNode: node,
+      sourcePath,
+      workspaceEpoch: workspaceEpochRef.current,
+      workspaceGeneration: workspaceBindingRef.current?.generation,
+      editableName: parts.editableName,
+      lockedSuffix: parts.lockedSuffix,
+      surface,
+    };
+    moveDragRef.current = null;
+    setMoveDrag(null);
+    replaceRenameDraft(draft);
+  }, [replaceRenameDraft, showNotice]);
+
+  const beginTreeRename = useCallback(async (node: FileNode) => {
+    const workspaceEpoch = workspaceEpochRef.current;
+    const selectionFlow = fileSelectionFlowRef.current;
+    if (selectionFlow) await selectionFlow;
+    if (node.kind === 'folder') {
+      const preparation = folderPreparationRef.current.get(
+        `${workspaceEpoch}:${normalizePath(node.path)}`,
+      );
+      if (preparation) {
+        try {
+          await preparation;
+        } catch {
+          return;
+        }
+      }
+    }
+    if (workspaceEpochRef.current !== workspaceEpoch || workspaceTransitionRef.current) return;
+    const latest = findNode(treeRef.current, node.path);
+    if (latest) beginRename(latest, 'tree');
+  }, [beginRename]);
+
+  const beginWorkspaceMove = useCallback(async (node: FileNode, destinationPath: string) => {
+    setTreeActionMenu(null);
+    moveDragRef.current = null;
+    setMoveDrag(null);
+    if (documentActionGateRef.current !== 'idle' || workspaceTransitionRef.current) {
+      showNotice('正在完成当前操作，请稍候');
+      return;
+    }
+    const problem = workspaceMoveProblem(node, destinationPath);
+    if (problem) {
+      showNotice(problem);
+      return;
+    }
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格状态已经变化，无法开始移动');
+      return;
+    }
+    documentActionGateRef.current = 'moving';
+    setDocumentActionGate('moving');
+    try {
+      await performWorkspaceMove(node, destinationPath);
+    } finally {
+      documentActionGateRef.current = 'idle';
+      if (!unmountedRef.current) setDocumentActionGate('idle');
+    }
+  }, [flushActiveEditorSurface, performWorkspaceMove, showNotice, workspaceMoveProblem]);
+
+  const chooseWorkspaceMoveDestination = useCallback(async (node: FileNode) => {
+    setTreeActionMenu(null);
+    if (!desktop) {
+      showNotice('浏览器 Demo 请把项目拖到左侧文件夹；不会打开系统选择器');
+      return;
+    }
+    if (documentActionGateRef.current !== 'idle' || workspaceTransitionRef.current) {
+      showNotice('正在完成当前操作，请稍候');
+      return;
+    }
+    if (createDraftRef.current) {
+      showNotice('请先完成或取消当前新建操作');
+      return;
+    }
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格状态已经变化，无法开始移动');
+      return;
+    }
+    const workspaceEpoch = workspaceEpochRef.current;
+    const workspaceGeneration = workspaceBindingRef.current?.generation;
+    const workspace = normalizePath(rootPathRef.current);
+    documentActionGateRef.current = 'moving';
+    setDocumentActionGate('moving');
+    try {
+      const destination = await chooseMoveDestination(workspace);
+      if (!destination) return;
+      if (workspaceEpochRef.current !== workspaceEpoch
+        || workspaceBindingRef.current?.generation !== workspaceGeneration
+        || normalizePath(rootPathRef.current) !== workspace) {
+        showNotice('工作区已经变化，已取消移动');
+        return;
+      }
+      await performWorkspaceMove(node, destination);
+    } finally {
+      documentActionGateRef.current = 'idle';
+      if (!unmountedRef.current) setDocumentActionGate('idle');
+    }
+  }, [desktop, flushActiveEditorSurface, performWorkspaceMove, showNotice]);
+
   const requestTrash = useCallback(async (node: FileNode) => {
     setTreeActionMenu(null);
+    cancelRename(false);
     if (createBusyRef.current !== null) return;
     const targetPath = normalizePath(node.path);
     if (!rootPathRef.current || targetPath === normalizePath(rootPathRef.current)) return;
@@ -2205,6 +3230,10 @@ export default function App() {
           showNotice('正在完成当前操作，请稍候');
           return;
         }
+        if (!flushActiveEditorSurface()) {
+          showNotice('表格单元格状态已经变化，无法删除其他文件');
+          return;
+        }
         documentActionGateRef.current = 'deleting';
         setDocumentActionGate('deleting');
         try {
@@ -2219,7 +3248,7 @@ export default function App() {
     } finally {
       if (!trashSucceeded) restoreFocus();
     }
-  }, [clearCurrentDocument, desktop, requestDecision, runWithSaveGuard, runWorkspaceMutation, showNotice]);
+  }, [cancelRename, clearCurrentDocument, desktop, flushActiveEditorSurface, requestDecision, runWithSaveGuard, runWorkspaceMutation, showNotice]);
 
   useEffect(() => {
     if (!treeActionMenu) return;
@@ -2281,7 +3310,7 @@ export default function App() {
       if (!(event.metaKey || event.ctrlKey) || event.key !== 'Backspace') return;
       if (createBusyRef.current !== null) return;
       const target = event.target as Element | null;
-      const row = target?.closest<HTMLButtonElement>('.tree-row-main[data-tree-path]');
+      const row = target?.closest<HTMLElement>('.tree-row-main[data-tree-path]');
       const path = row?.dataset.treePath;
       if (!path) return;
       const node = findNode(treeRef.current, path);
@@ -2324,13 +3353,124 @@ export default function App() {
     });
   }, [desktop, prepareFolder, showNotice, showTransitionNotice]);
 
+  const handleMoveStart = useCallback((node: FileNode) => {
+    if (documentActionGateRef.current !== 'idle' || createDraftRef.current || renameDraftRef.current) return false;
+    setTreeActionMenu(null);
+    setProjectMenuOpen(false);
+    const next = {
+      id: ++moveDragSequenceRef.current,
+      source: node,
+      targetPath: null,
+      targetAllowed: false,
+    };
+    moveDragRef.current = next;
+    setMoveDrag(next);
+    return true;
+  }, []);
+
+  const handleMoveTarget = useCallback((targetPath: string | null) => {
+    const current = moveDragRef.current;
+    if (!current) return false;
+    const normalizedTarget = targetPath === null ? null : normalizePath(targetPath);
+    if (current.targetPath === normalizedTarget) return current.targetAllowed;
+    const targetAllowed = normalizedTarget !== null
+      && documentActionGateRef.current === 'idle'
+      && workspaceMoveProblem(current.source, normalizedTarget) === null;
+    const next = { ...current, targetPath: normalizedTarget, targetAllowed };
+    moveDragRef.current = next;
+    setMoveDrag(next);
+    return targetAllowed;
+  }, [workspaceMoveProblem]);
+
+  const handleMoveEnd = useCallback(() => {
+    moveDragRef.current = null;
+    setMoveDrag(null);
+  }, []);
+
+  const handleMoveHoverExpand = useCallback(async (
+    node: FileNode,
+    dragId: number,
+    targetPath: string,
+  ) => {
+    const path = normalizePath(targetPath);
+    const workspaceEpoch = workspaceEpochRef.current;
+    const stillCurrent = () => {
+      const current = moveDragRef.current;
+      return Boolean(current
+        && current.id === dragId
+        && current.targetAllowed
+        && current.targetPath === path
+        && workspaceEpochRef.current === workspaceEpoch
+        && documentActionGateRef.current === 'idle'
+        && !workspaceTransitionRef.current);
+    };
+    if (node.kind !== 'folder' || openFoldersRef.current.has(path) || !stillCurrent()) return;
+    if (desktop && !node.loaded) {
+      try {
+        await prepareFolder(path, workspaceEpoch);
+      } catch (error) {
+        if (stillCurrent()) showNotice(errorMessage(error));
+        return;
+      }
+    }
+    if (!stillCurrent() || openFoldersRef.current.has(path)) return;
+    setOpenFolders((current) => {
+      if (!stillCurrent() || current.has(path)) return current;
+      const next = new Set(current).add(path);
+      openFoldersRef.current = next;
+      return next;
+    });
+  }, [desktop, prepareFolder, showNotice]);
+
+  const handleMoveDrop = useCallback((destinationPath: string) => {
+    const current = moveDragRef.current;
+    const source = current?.source;
+    const allowed = Boolean(current
+      && current.targetAllowed
+      && current.targetPath === normalizePath(destinationPath));
+    moveDragRef.current = null;
+    setMoveDrag(null);
+    if (source && allowed) {
+      void beginWorkspaceMove(source, destinationPath);
+    }
+  }, [beginWorkspaceMove]);
+
+  useEffect(() => {
+    if (!moveDrag) return;
+    const cancel = handleMoveEnd;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('blur', cancel);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('blur', cancel);
+    };
+  }, [handleMoveEnd, moveDrag]);
+
   const handleNodeClick = useCallback(async (node: FileNode) => {
+    const rename = renameDraftRef.current;
+    if (renameBusyRef.current !== null) {
+      if (rename && normalizePath(rename.sourcePath) !== normalizePath(node.path)) {
+        pendingTreeClickAfterRenameRef.current = node;
+      }
+      return;
+    }
+    if (rename) return;
     if (node.kind === 'folder') await toggleFolder(node);
     else await selectFile(node);
   }, [selectFile, toggleFolder]);
 
+  useEffect(() => {
+    handleNodeClickRef.current = handleNodeClick;
+    return () => {
+      if (handleNodeClickRef.current === handleNodeClick) handleNodeClickRef.current = null;
+    };
+  }, [handleNodeClick]);
+
   const openTreeActionMenu = useCallback((
-    event: React.MouseEvent<HTMLButtonElement>,
+    event: React.MouseEvent<HTMLElement>,
     node: FileNode | null,
     parentPath: string,
     mode: 'create' | 'node',
@@ -2340,10 +3480,13 @@ export default function App() {
     event.stopPropagation();
     if (workspaceTransitionRef.current
       || documentActionGateRef.current !== 'idle'
-      || createBusyRef.current !== null) return;
+      || createBusyRef.current !== null
+      || renameDraftRef.current !== null
+      || renameBusyRef.current !== null) return;
+    cancelRename(false);
     const menuWidth = 176;
     const createItems = mode === 'create' || node?.kind === 'folder';
-    const menuHeight = createItems ? (mode === 'node' ? 120 : 78) : 42;
+    const menuHeight = createItems ? (mode === 'node' ? 154 : 78) : 112;
     const bounds = event.currentTarget.getBoundingClientRect();
     const proposedX = pointerPosition ? event.clientX : bounds.right - menuWidth;
     const proposedY = pointerPosition ? event.clientY : bounds.bottom + 4;
@@ -2357,9 +3500,9 @@ export default function App() {
       trigger: event.currentTarget,
     });
     lastContextTriggerRef.current = event.currentTarget;
-  }, []);
+  }, [cancelRename]);
 
-  const handleNodeContextMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FileNode) => {
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent<HTMLElement>, node: FileNode) => {
     openTreeActionMenu(
       event,
       node,
@@ -2390,10 +3533,75 @@ export default function App() {
     void beginCreate(kind, menu.parentPath, menu.node?.kind === 'folder' ? menu.node : undefined);
   }, [beginCreate, treeActionMenu]);
 
+  const beginRenameFromMenu = useCallback(() => {
+    const node = treeActionMenu?.node;
+    if (!node) return;
+    beginRename(node);
+  }, [beginRename, treeActionMenu]);
+
   const handleMarkdownOverlayOpen = useCallback(() => {
     setTreeActionMenu(null);
     setProjectMenuOpen(false);
   }, []);
+
+  const handlePasteImages = useCallback<PasteImagesHandler>(async (files, insert) => {
+    const target = selectedRef.current;
+    if (!target || target.kind !== 'md' || workspaceTransitionRef.current
+      || documentActionGateRef.current !== 'idle' || loadingOperationRef.current !== null) return;
+    const epoch = workspaceEpochRef.current;
+    const key = documentSaveTargetRef.current?.key;
+    const generation = workspaceBindingRef.current?.generation;
+    documentActionGateRef.current = 'pasting-image';
+    setDocumentActionGate('pasting-image');
+    await runWorkspaceMutation(async () => {
+      try {
+        validatePastedImages(files);
+        let sources: string[];
+        if (desktop) {
+          if (generation === undefined) throw new Error('工作区尚未就绪');
+          const images = await Promise.all(files.map(readPastedImage));
+          sources = await savePastedImages(target.path, generation, images);
+        } else {
+          const folder = joinPath(parentPath(target.path), 'assets');
+          const existing = findNode(treeRef.current, folder);
+          if (existing && existing.kind !== 'folder') throw new Error('文档旁的 assets 已存在且不是文件夹');
+          sources = files.map((file) => `assets/screenshot-${Date.now()}-${++demoImageSequenceRef.current}.${file.type === 'image/jpeg' ? 'jpg' : file.type.slice(6)}`);
+          const nextImages = { ...demoImagesRef.current };
+          let nextTree = existing ? treeRef.current : insertCreatedNode(treeRef.current, rootPathRef.current, parentPath(target.path), {
+            name: 'assets', path: folder, kind: 'folder', children: [], loaded: true,
+          });
+          files.forEach((file, index) => {
+            const path = joinPath(parentPath(target.path), sources[index]);
+            nextImages[path] = URL.createObjectURL(file);
+            nextTree = insertCreatedNode(nextTree, rootPathRef.current, folder, { name: basename(path), path, kind: 'image', loaded: true });
+          });
+          demoImagesRef.current = nextImages;
+          setDemoImages(nextImages);
+          treeRef.current = nextTree;
+          setTree(nextTree);
+        }
+        if (unmountedRef.current || workspaceEpochRef.current !== epoch
+          || documentSaveTargetRef.current?.key !== key || selectedRef.current?.path !== target.path
+          || workspaceTransitionRef.current) throw new Error('文档已经变化；已保存的图片保留在原文档旁的 assets 目录');
+        // Only this synchronous editor transaction can pass the operation gate.
+        documentActionGateRef.current = 'idle';
+        if (!insert(sources)) throw new Error('文档内容已经变化；已保存的图片保留在 assets 目录，请重新粘贴');
+        showNotice(desktop ? `已插入 ${sources.length} 张图片` : `已插入 ${sources.length} 张图片（浏览器演示，仅保存在内存中）`);
+      } catch (error) {
+        if (!unmountedRef.current) showNotice(`图片粘贴失败：${errorMessage(error)}`);
+      } finally {
+        documentActionGateRef.current = 'idle';
+        if (!unmountedRef.current) setDocumentActionGate('idle');
+        if (desktop && workspaceEpochRef.current === epoch) {
+          const assets = joinPath(parentPath(target.path), 'assets');
+          const loaded = loadedDirectoryPaths(treeRef.current, rootPathRef.current);
+          directoryRefreshCoordinatorRef.current?.request([
+            parentPath(target.path), ...(loaded.has(assets) ? [assets] : []),
+          ]);
+        }
+      }
+    });
+  }, [desktop, runWorkspaceMutation, showNotice]);
 
   const resolveMarkdownImageSource = useCallback((source: string) => (
     resolveMarkdownAssetSource(source, {
@@ -2401,8 +3609,9 @@ export default function App() {
       rootPath,
       selectedPath: selected?.path ?? '',
       assetScope: workspaceBindingRef.current?.assetScope ?? '',
+      demoImages,
     })
-  ), [desktop, rootPath, selected?.path, workspaceBindingRef.current?.assetScope]);
+  ), [desktop, rootPath, selected?.path, workspaceBindingRef.current?.assetScope, demoImages]);
 
   async function handleOpenFolder() {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
@@ -2448,6 +3657,11 @@ export default function App() {
 
   function handleModeChange(nextMode: ViewMode) {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
+    if (nextMode === modeRef.current) return;
+    if (!flushActiveEditorSurface()) {
+      showNotice('表格单元格状态已经变化，无法切换视图');
+      return;
+    }
     modeRef.current = nextMode;
     setMode(nextMode);
   }
@@ -2467,7 +3681,7 @@ export default function App() {
       documentKey={`${selected.path}:${editorEpoch}`}
       kind={selected.kind}
       value={content}
-      editable={!workspaceTransition && documentActionGate === 'idle'}
+      editable={mode !== 'preview' && !workspaceTransition && documentActionGate === 'idle'}
       markdownPresentation={selected.kind === 'md' && mode === 'edit' ? 'live' : 'source'}
       resolveMarkdownImageSource={resolveMarkdownImageSource}
       hint={mode === 'edit'
@@ -2475,6 +3689,8 @@ export default function App() {
         : null}
       onChange={handleEditorChange}
       onMarkdownOverlayOpen={handleMarkdownOverlayOpen}
+      onPasteImages={handlePasteImages}
+      onPasteError={showNotice}
     />
   </Suspense> : null;
 
@@ -2484,7 +3700,7 @@ export default function App() {
     preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button disabled={Boolean(workspaceTransition)} onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
   } else if (selectedRenderer === 'markdown') {
     preview = <Suspense fallback={<div className="empty-state"><strong>正在载入 Markdown 预览…</strong></div>}>
-      <MarkdownPreview content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path} assetScope={workspaceBindingRef.current?.assetScope ?? ''} />
+      <MarkdownPreview content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path} assetScope={workspaceBindingRef.current?.assetScope ?? ''} demoImages={demoImages} />
     </Suspense>;
   } else if (selectedRenderer === 'html') {
     const useDisk = desktop && mode === 'preview' && !dirty;
@@ -2505,7 +3721,7 @@ export default function App() {
       preview = <div className="html-pane"><iframe key={`${selected.path}:${useDisk ? savedVersion ?? 'disk' : deferredContent}`} title={selected.name} sandbox="allow-scripts allow-modals" src={useDisk ? diskUrl : undefined} srcDoc={useDisk ? undefined : liveSource} /></div>;
     }
   } else if (selectedRenderer === 'image') {
-    preview = <div className="media-pane">{desktop ? <img src={assetUrl(selected.path, rootPath, workspaceBindingRef.current?.assetScope ?? '')} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
+    preview = <div className="media-pane">{desktop || demoImages[selected.path] ? <img src={desktop ? assetUrl(selected.path, rootPath, workspaceBindingRef.current?.assetScope ?? '') : demoImages[selected.path]} alt={selected.name} /> : <div className="image-placeholder">◫</div>}</div>;
   } else if (selectedRenderer === 'pdf') {
     preview = <div className="html-pane">{desktop ? <iframe title={selected.name} src={assetUrl(selected.path, rootPath, workspaceBindingRef.current?.assetScope ?? '')} /> : null}</div>;
   } else if (selectedRenderer === 'text') {
@@ -2534,9 +3750,14 @@ export default function App() {
     preview = <div className="empty-state"><strong>{selected.name}</strong><span>{fileTypeLabel(selected.kind)} 预览将在后续 Renderer 中支持。</span></div>;
   }
 
-  const documentContent = mode === 'split' && canEdit
-    ? <>{preview}{editor}</>
-    : mode === 'edit' && canEdit ? editor : preview;
+  // Keep the same CodeMirror instance across modes so selection and undo history
+  // survive a reading/preview round trip. Hidden editors are also read-only.
+  const documentContent = canEdit
+    ? <>
+      {mode !== 'edit' ? preview : null}
+      <div className="editor-surface" hidden={mode === 'preview'}>{editor}</div>
+    </>
+    : preview;
 
   const saveStatusLabel = saveState.kind === 'saving'
     ? '正在保存…'
@@ -2555,7 +3776,10 @@ export default function App() {
       ? 'dirty'
       : '';
   const interactionLocked = Boolean(workspaceTransition) || documentActionGate !== 'idle';
-  const treeLocked = interactionLocked || createBusy;
+  const treeLocked = (interactionLocked && documentActionGate !== 'renaming') || createBusy;
+  const toolbarRenaming = Boolean(selected
+    && renameDraft?.surface === 'toolbar'
+    && normalizePath(renameDraft.sourcePath) === normalizePath(selected.path));
   const handleTreeFocusHandled = () => setPendingTreeFocusPath(null);
 
   const handleOpenMarkdownTableTools = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -2564,24 +3788,73 @@ export default function App() {
   };
 
   return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''}`}>
-    <header className="titlebar" data-tauri-drag-region>
+    <header className="titlebar" data-tauri-drag-region="deep">
       <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
-      <div className="window-title" data-tauri-drag-region>{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
+      <div className="window-title">{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
       <div className="title-actions"><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>打开文件夹</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>在 Finder 中显示</button></div>
     </header>
     <div className="workspace">
-      <aside className="sidebar" aria-busy={Boolean(workspaceTransition)}><div className="sidebar-header"><span>{projectName}</span>{workspaceTransition ? <span className="sidebar-transition-status">切换中…</span> : null}<div className="sidebar-header-actions">{rootPath ? <button
+      <aside className="sidebar" aria-busy={Boolean(workspaceTransition)}><div
+        className={`sidebar-header${moveDrag?.targetPath === normalizePath(rootPath)
+          ? moveDrag.targetAllowed ? ' move-target-valid' : ' move-target-invalid'
+          : ''}`}
+        onDragEnter={(event) => {
+          if (!isLocalTreeDrag(event.dataTransfer, moveDragRef.current?.source.path ?? null)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = handleMoveTarget(rootPath) ? 'move' : 'none';
+        }}
+        onDragOver={(event) => {
+          if (!isLocalTreeDrag(event.dataTransfer, moveDragRef.current?.source.path ?? null)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = handleMoveTarget(rootPath) ? 'move' : 'none';
+        }}
+        onDragLeave={(event) => {
+          const nextTarget = event.relatedTarget;
+          if (moveDragRef.current?.targetPath !== normalizePath(rootPath)
+            || (nextTarget instanceof Node && event.currentTarget.contains(nextTarget))) return;
+          handleMoveTarget(null);
+        }}
+        onDrop={(event) => {
+          if (!isLocalTreeDrag(event.dataTransfer, moveDragRef.current?.source.path ?? null)) return;
+          event.preventDefault();
+          handleMoveDrop(rootPath);
+        }}
+      ><span>{projectName}</span>{workspaceTransition ? <span className="sidebar-transition-status">切换中…</span> : null}<div className="sidebar-header-actions">{rootPath ? <button
         className="sidebar-root-create"
         type="button"
-        disabled={createBusy || interactionLocked}
+        disabled={createBusy || interactionLocked || renameDraft !== null}
         aria-label={`在 ${projectName} 根目录新建`}
         onClick={handleRootCreateMenu}
-      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={treeLocked} aria-label="工作区菜单" aria-expanded={projectMenuOpen} onClick={() => {
+      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={treeLocked || renameDraft !== null} aria-label="工作区菜单" aria-expanded={projectMenuOpen} onClick={() => {
         setTreeActionMenu(null);
         setProjectMenuOpen((current) => !current);
-      }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>新建窗口</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} focusPath={pendingTreeFocusPath} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} /><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
+      }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>新建窗口</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} renameDraft={renameDraft} renameBusy={renameBusy} renameInvalid={renameInvalid} renameInputRef={renameInputRef} focusPath={pendingTreeFocusPath} moveSourcePath={moveDrag?.source.path ?? null} moveTargetPath={moveDrag?.targetPath ?? null} moveTargetAllowed={moveDrag?.targetAllowed ?? false} moveDragId={moveDrag?.id ?? null} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} onBeginRename={(node) => { void beginTreeRename(node); }} onSubmitRename={(value, reason) => { void submitRename(value, reason); }} onCancelRename={(reason) => { cancelRename(reason === 'escape'); }} onMoveStart={handleMoveStart} onMoveTarget={handleMoveTarget} onMoveHoverExpand={handleMoveHoverExpand} onMoveDrop={handleMoveDrop} onMoveEnd={handleMoveEnd} /><div className="sidebar-footer">真实文件夹 · 无索引 · 按需读取</div></aside>
       <main className="document-area">
-        <div className="document-toolbar"><div><strong>{selected?.name ?? 'LocalView'}</strong><span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
+        <div className="document-toolbar"><div className="document-toolbar-title">{toolbarRenaming && renameDraft ? <TreeRenameInput
+          key={renameDraft.id}
+          ref={renameInputRef}
+          ariaLabel={`重命名 ${selected?.name ?? ''}`}
+          disabled={renameBusy}
+          invalid={renameInvalid}
+          initialValue={renameDraft.editableName}
+          lockedSuffix={renameDraft.lockedSuffix}
+          maxLength={255}
+          onSubmit={(value, reason) => { void submitRename(value, reason); }}
+          onCancel={(reason: RenameCancelReason) => { cancelRename(reason === 'escape'); }}
+        /> : selected ? <button
+          ref={documentTitleRef}
+          type="button"
+          className="document-title-trigger"
+          aria-label="编辑当前文件名称"
+          title="双击重命名"
+          disabled={interactionLocked}
+          onDoubleClick={() => beginRename(selected, 'toolbar')}
+          onKeyDown={(event) => {
+            if (event.key !== 'F2' && event.key !== 'Enter') return;
+            event.preventDefault();
+            beginRename(selected, 'toolbar');
+          }}
+        ><strong>{selected.name}</strong></button> : <strong>LocalView</strong>}<span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}{selected.kind === 'md' ? <button type="button" className="markdown-print-trigger" disabled={interactionLocked} onClick={requestMarkdownPrint}>打印</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? '切换工作区…' : '读取中…'}</div> : null}</div>
       </main>
     </div>
@@ -2593,10 +3866,15 @@ export default function App() {
       </> : null}
       {treeActionMenu.mode === 'node' && treeActionMenu.node ? <>
         {treeActionMenu.node.kind === 'folder' ? <div className="context-menu-separator" role="separator" /> : null}
-        <button ref={treeActionMenu.node.kind === 'folder' ? undefined : contextMenuItemRef} type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrash(treeActionMenu.node!)}>移到废纸篓</button>
+        <button ref={treeActionMenu.node.kind === 'folder' ? undefined : contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={beginRenameFromMenu}>重命名</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => void chooseWorkspaceMoveDestination(treeActionMenu.node!)}>移动到文件夹…</button>
+        <button type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrash(treeActionMenu.node!)}>移到废纸篓</button>
       </> : null}
     </div> : null}
     {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}
+    {printJob ? <Suspense fallback={null}>
+      <MarkdownPrintSurface snapshot={printJob} onReady={handlePrintSurfaceReady} />
+    </Suspense> : null}
     {decision ? <DecisionDialog {...decision} onConfirm={() => finishDecision('confirm')} onCancel={() => finishDecision('cancel')} /> : null}
   </div>;
 }
