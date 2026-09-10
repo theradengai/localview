@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react';
 import MarkdownContent from './MarkdownContent';
+import type { MarkdownTaskChange, MarkdownTaskHistory } from '../lib/markdownTasks';
 import {
   resolveMarkdownAssetSource,
 } from '../lib/desktop';
@@ -11,9 +12,11 @@ type Props = {
   selectedPath: string;
   assetScope: string;
   demoImages?: Readonly<Record<string, string>>;
+  onTaskToggle?: (change: MarkdownTaskChange) => boolean;
+  onTaskHistory?: (direction: MarkdownTaskHistory) => boolean;
 };
 
-function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope, demoImages }: Props) {
+function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope, demoImages, onTaskToggle, onTaskHistory }: Props) {
   const components = useMemo(() => ({
     img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
       const original = typeof src === 'string' ? src : '';
@@ -29,7 +32,7 @@ function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope,
   }), [assetScope, desktop, rootPath, selectedPath, demoImages]);
 
   return <div className="preview-pane markdown-body">
-    <MarkdownContent content={content} components={components} />
+    <MarkdownContent content={content} components={components} onTaskToggle={onTaskToggle} onTaskHistory={onTaskHistory} />
   </div>;
 }
 

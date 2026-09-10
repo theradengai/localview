@@ -628,6 +628,37 @@ describe('Markdown Live Preview decorations', () => {
     editor.destroy();
   });
 
+  it.each(['      ', '        ', '\t\t', '\u00a0\u00a0', '\u3000\u3000'])('renders and edits pasted task continuations with %j indentation', (indent) => {
+    const source = `- [ ] root\n${indent}- [ ] child\n${indent}${indent}- [X] grandchild\n${indent}- [ ] sibling\n\nafter`;
+    const editor = mountLiveEditor(source);
+    const boxes = editor.parent.querySelectorAll<HTMLInputElement>('.cm-live-task-checkbox');
+    expect(boxes).toHaveLength(4);
+    expect(boxes[1].closest<HTMLElement>('.cm-line')?.style.paddingLeft).toBe('32px');
+    expect(boxes[2].closest<HTMLElement>('.cm-line')?.style.paddingLeft).toBe('56px');
+    fireEvent.click(boxes[2]);
+    expect(editor.view.state.doc.toString()).toBe(source.replace('[X]', '[ ]'));
+    expect(editor.updates).toHaveLength(1);
+    editor.destroy();
+  });
+
+  it('preserves code and link continuations when displaying indented tasks', () => {
+    const source = '- [ ] root\n\n      - [ ] code\n\n- [ ] root `inline\n      - [ ] code\n  end`\n\n- [ ] root\n      - [ ](https://example.com)\n\n```md\n- [ ] code\n```\n\nafter';
+    const editor = mountLiveEditor(source);
+    expect(editor.parent.querySelectorAll('.cm-live-task-checkbox')).toHaveLength(3);
+    expect(editor.view.state.doc.toString()).toBe(source);
+    editor.destroy();
+  });
+
+  it('renders compact task markers without changing the missing space in the source', () => {
+    const source = '- [ ]parent\n      - [X]child\n\n- [ ](https://example.com)\n\nafter';
+    const editor = mountLiveEditor(source);
+    const boxes = editor.parent.querySelectorAll<HTMLInputElement>('.cm-live-task-checkbox');
+    expect(boxes).toHaveLength(2);
+    fireEvent.click(boxes[0]);
+    expect(editor.view.state.doc.toString()).toBe(source.replace('[ ]parent', '[x]parent'));
+    editor.destroy();
+  });
+
   it('toggles a task checkbox through one document transaction and tracks runtime locks', async () => {
     const source = '- [ ] task\n\nafter';
     const editor = mountLiveEditor(source);

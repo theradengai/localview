@@ -6,7 +6,7 @@
 
 Open **Apple menu → About This Mac**. Choose `aarch64` for an Apple M-series chip, or `x64` for an Intel processor. The Beta targets **macOS Monterey 12 or later**.
 
-Download from the [official release page](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.1). Quit the existing LocalView normally so pending edits can save. Open the DMG and drag LocalView into Applications, replacing an older copy if present. Eject the disk image, then launch `/Applications/LocalView.app`.
+Download from the [official release page](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.2). Quit the existing LocalView normally so pending edits can save. Open the DMG and drag LocalView into Applications, replacing an older copy if present. Eject the disk image, then launch `/Applications/LocalView.app`.
 
 Launching multiple build copies or leaving installation disks mounted can produce duplicate application search/Open With results. Keep one installed copy in Applications; an Intel installer is for your Intel Mac, not a second app installation on Apple Silicon.
 
@@ -21,15 +21,15 @@ If you trust the source and download, follow [Apple's instructions for opening a
 The release includes `SHA256SUMS.txt`. In the download directory, calculate the SHA-256 of the installer you downloaded and compare it with that file:
 
 ```bash
-shasum -a 256 LocalView_0.2.0-beta.1_aarch64.dmg
+shasum -a 256 LocalView_0.2.0-beta.2_aarch64.dmg
 # Intel:
-shasum -a 256 LocalView_0.2.0-beta.1_x64.dmg
+shasum -a 256 LocalView_0.2.0-beta.2_x64.dmg
 ```
 
 Checksums protect against a mismatched/corrupted download; they are not publisher authentication. macOS can also check the disk-image structure and installed signature:
 
 ```bash
-hdiutil verify LocalView_0.2.0-beta.1_aarch64.dmg
+hdiutil verify LocalView_0.2.0-beta.2_aarch64.dmg
 codesign --verify --deep --strict /Applications/LocalView.app
 ```
 

@@ -6,7 +6,7 @@ A lightweight, macOS-first workspace for local documents. Browse real folders, e
 
 No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
-[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.1) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
+[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.2) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
 
 ![LocalView: preview, edit, split view, tasks and HTML](docs/images/localview-demo.gif)
 
@@ -16,6 +16,7 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
 - **Start with a file or folder.** Open a supported file from Finder and see its folder context. Expand directories on demand.
 - **Work directly in Markdown.** Preview by default, source-preserving Live Preview when editing, or a left-preview/right-source split. Format selected text and edit supported tables cell by cell.
+- **Check off tasks in Preview.** Toggle tasks in Preview, Split or Edit with auto-save and undo. Pasted task lists with deep indentation also render while the original spacing and line endings are preserved.
 - **Preview more formats.** Sandboxed interactive HTML, images, PDFs, CSV, Excel, ODS, and system-provided Office/iWork previews.
 - **Organize in the folder.** Create Markdown files and folders, rename inline, drag files/folders between folders, and move items to macOS Trash.
 - **Keep changes safe.** 600 ms idle auto-save, `⌘S` to save immediately, and conflict detection when another application edits the same file.
@@ -24,12 +25,12 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
 ## Download
 
-**0.2.0-beta.1 · macOS Monterey 12 or later.** The app interface is currently primarily Simplified Chinese. Windows and Linux builds are not supported in this Beta.
+**0.2.0-beta.2 · macOS Monterey 12 or later.** The app interface is currently primarily Simplified Chinese. Windows and Linux builds are not supported in this Beta.
 
 | Your Mac | Installer |
 | --- | --- |
-| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.1/LocalView_0.2.0-beta.1_aarch64.dmg) |
-| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.1/LocalView_0.2.0-beta.1_x64.dmg) |
+| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.2/LocalView_0.2.0-beta.2_aarch64.dmg) |
+| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.2/LocalView_0.2.0-beta.2_x64.dmg) |
 
 Quit an older LocalView, open the DMG, drag **LocalView** into **Applications**, then eject the disk image. Launch the installed copy.
 
@@ -39,7 +40,7 @@ These are **ad-hoc-signed, non-notarized Beta builds**. macOS may block the firs
 
 | Format | Experience |
 | --- | --- |
-| Markdown | Edit, Live Preview, Split, read-only Preview, rendered printing |
+| Markdown | Edit, Live Preview, Split, Preview with task checkboxes, rendered printing |
 | HTML | Source, Split, sandboxed interactive Preview with local resources |
 | Plain text / common code files | Text editing and auto-save |
 | Images / PDF | Preview |
