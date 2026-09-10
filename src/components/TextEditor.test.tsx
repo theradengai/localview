@@ -52,6 +52,7 @@ function renderEditor({
   kind = 'md' as const,
   value = 'hello',
   editable = true,
+  taskToggleEnabled,
   markdownPresentation = 'source' as const,
   onChange = vi.fn(),
   onPasteImages,
@@ -62,6 +63,7 @@ function renderEditor({
   kind?: 'md' | 'html' | 'text';
   value?: string;
   editable?: boolean;
+  taskToggleEnabled?: boolean;
   markdownPresentation?: 'live' | 'source';
   onChange?: (value: string) => void;
   onPasteImages?: import('../lib/imagePaste').PasteImagesHandler;
@@ -74,6 +76,7 @@ function renderEditor({
     kind={kind}
     value={value}
     editable={editable}
+    taskToggleEnabled={taskToggleEnabled}
     markdownPresentation={markdownPresentation}
     resolveMarkdownImageSource={(source) => source}
     hint={null}
@@ -84,6 +87,60 @@ function renderEditor({
 }
 
 describe('TextEditor Markdown interactions', () => {
+  it.each(['\r\n', '\r', '\r\n\n'])('preserves original %j line endings when toggling and undoing a task', (ending) => {
+    const ref = createRef<TextEditorHandle>();
+    const source = `# 😀${ending}- [ ] parent${ending}      - [X] child\ntail\r\n`;
+    const onChange = vi.fn();
+    const editor = renderEditor({ ref, value: source, editable: false, taskToggleEnabled: true, onChange });
+    act(() => expect(ref.current!.toggleMarkdownTask('doc', {
+      source, statusOffset: source.indexOf('[X]') + 1, checked: false,
+    })).toBe(true));
+    const changed = source.replace('[X]', '[ ]');
+    expect(onChange).toHaveBeenLastCalledWith(changed);
+    editor.rerender(<TextEditor ref={ref} documentKey="doc" kind="md" value={changed} editable={false}
+      taskToggleEnabled markdownPresentation="source" resolveMarkdownImageSource={value => value} hint={null} onChange={onChange} />);
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(source);
+    act(() => expect(ref.current!.taskHistory('doc', 'redo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(changed);
+  });
+  it('toggles preview tasks while source input stays locked, with separate undo steps and exact source preservation', async () => {
+    const ref = createRef<TextEditorHandle>();
+    const source = '- [ ] first\n      - [X] second\n\nend';
+    const onChange = vi.fn();
+    const editor = renderEditor({ ref, value: source, editable: false, taskToggleEnabled: true, onChange });
+    const { view } = editorView(editor.container);
+    act(() => expect(ref.current!.toggleMarkdownTask('doc', { source, statusOffset: source.indexOf('[ ]') + 1, checked: true })).toBe(true));
+    const first = source.replace('[ ]', '[x]');
+    expect(view.state.doc.toString()).toBe(first);
+    act(() => expect(ref.current!.toggleMarkdownTask('doc', { source: first, statusOffset: first.indexOf('[X]') + 1, checked: false })).toBe(true));
+    expect(view.state.doc.toString()).toBe(first.replace('[X]', '[ ]'));
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(view.state.doc.toString()).toBe(first);
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(view.state.doc.toString()).toBe(source);
+    act(() => expect(ref.current!.taskHistory('doc', 'redo')).toBe(true));
+    expect(view.state.doc.toString()).toBe(first);
+    expect(view.state.facet(EditorView.editable)).toBe(false);
+    expect(onChange).toHaveBeenCalledTimes(5);
+  });
+
+  it('rejects stale source, wrong document keys, invalid offsets and runtime locks for preview task commands', () => {
+    const ref = createRef<TextEditorHandle>();
+    const source = '- [ ] task';
+    const editor = renderEditor({ ref, value: source, editable: false, taskToggleEnabled: true });
+    const { view } = editorView(editor.container);
+    const change = { source, statusOffset: 3, checked: true };
+    expect(ref.current!.toggleMarkdownTask('other', change)).toBe(false);
+    expect(ref.current!.toggleMarkdownTask('doc', { ...change, source: source + ' stale' })).toBe(false);
+    expect(ref.current!.toggleMarkdownTask('doc', { ...change, statusOffset: 4 })).toBe(false);
+    editor.rerender(<TextEditor ref={ref} documentKey="doc" kind="md" value={source} editable={false}
+      taskToggleEnabled={false} markdownPresentation="source" resolveMarkdownImageSource={value => value} hint={null} onChange={vi.fn()} />);
+    expect(ref.current!.toggleMarkdownTask('doc', change)).toBe(false);
+    expect(ref.current!.taskHistory('doc', 'undo')).toBe(false);
+    expect(view.state.doc.toString()).toBe(source);
+  });
+
   function pasteImage(target: HTMLElement) {
     const image = new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
     fireEvent.paste(target, { clipboardData: {

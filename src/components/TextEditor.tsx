@@ -16,6 +16,9 @@ import CodeMirror, {
   type ViewUpdate,
 } from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
+import { isolateHistory, undo, redo } from '@codemirror/commands';
+import { markdownTaskEdit, type MarkdownTaskChange, type MarkdownTaskHistory } from '../lib/markdownTasks';
+import { applyEditorChanges, editorOffset, normalizeEditorSource } from '../lib/editorSource';
 import type { FileKind } from '../lib/desktop';
 import {
   applyMarkdownCommand,
@@ -52,6 +55,7 @@ type Props = {
   kind: FileKind;
   value: string;
   editable: boolean;
+  taskToggleEnabled?: boolean;
   hint: string | null;
   markdownPresentation: LivePreviewPresentation;
   resolveMarkdownImageSource: (source: string) => string;
@@ -66,6 +70,8 @@ export type MarkdownTableToolsAnchor = { x: number; y: number };
 export type TextEditorHandle = {
   openMarkdownTableTools: (anchor: MarkdownTableToolsAnchor) => boolean;
   flushMarkdownCellEdit: () => boolean;
+  toggleMarkdownTask: (documentKey: string, change: MarkdownTaskChange) => boolean;
+  taskHistory: (documentKey: string, direction: MarkdownTaskHistory) => boolean;
 };
 
 type SurfaceSnapshot = {
@@ -97,6 +103,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   kind,
   value,
   editable,
+  taskToggleEnabled = editable,
   hint,
   markdownPresentation,
   resolveMarkdownImageSource,
@@ -106,6 +113,17 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   onPasteError,
 }: Props, forwardedRef) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const sourceRef = useRef({ documentKey, value, source: value });
+  if (sourceRef.current.documentKey !== documentKey || sourceRef.current.value !== value) {
+    sourceRef.current = { documentKey, value, source: value };
+  }
+  const handleSourceChange = useCallback((next: string, update?: ViewUpdate) => {
+    const previous = sourceRef.current.source;
+    const source = update && normalizeEditorSource(previous) === update.startState.doc.toString()
+      ? applyEditorChanges(previous, update.changes) : next;
+    sourceRef.current.source = source;
+    onChange(source);
+  }, [onChange]);
   const tableMenuSnapshotRef = useRef<TableMenuSnapshot | null>(null);
   const toolbarSnapshotRef = useRef<SurfaceSnapshot | null>(null);
   const toolbarStateRef = useRef<ToolbarState | null>(null);
@@ -120,12 +138,14 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     documentKey,
     kind,
     editable,
+    taskToggleEnabled,
     onMarkdownOverlayOpen,
   });
   latestRef.current = {
     documentKey,
     kind,
     editable,
+    taskToggleEnabled,
     onMarkdownOverlayOpen,
   };
   const [tableMenu, setTableMenu] = useState<TableMenuSnapshot | null>(null);
@@ -407,7 +427,32 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   useImperativeHandle(forwardedRef, () => ({
     openMarkdownTableTools,
     flushMarkdownCellEdit,
-  }), [flushMarkdownCellEdit, openMarkdownTableTools]);
+    toggleMarkdownTask(key, change) {
+      const view = editorRef.current?.view;
+      const current = latestRef.current;
+      if (!view || current.kind !== 'md' || !current.taskToggleEnabled
+        || current.documentKey !== key || view.composing || composingRef.current
+        || sourceRef.current.source !== change.source
+        || view.state.doc.toString() !== normalizeEditorSource(change.source)) return false;
+      const edit = markdownTaskEdit(change);
+      if (!edit || !flushActiveMarkdownTableCell(view)
+        || sourceRef.current.source !== change.source) return false;
+      closeToolbar(false);
+      closeTableMenu(false);
+      const from = editorOffset(change.source, edit.from);
+      view.dispatch({ changes: { from, to: from + 1, insert: edit.insert },
+        userEvent: 'input.task', annotations: isolateHistory.of('full') });
+      return true;
+    },
+    taskHistory(key, direction) {
+      const view = editorRef.current?.view;
+      const current = latestRef.current;
+      if (!view || current.kind !== 'md' || !current.taskToggleEnabled
+        || current.documentKey !== key || view.composing || composingRef.current
+        || !flushActiveMarkdownTableCell(view)) return false;
+      return (direction === 'undo' ? undo : redo)(view);
+    },
+  }), [closeTableMenu, closeToolbar, flushMarkdownCellEdit, openMarkdownTableTools]);
 
   const markdownInteractionExtension = useMemo(() => {
     if (kind !== 'md' || !editable) return [];
@@ -773,11 +818,11 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     <CodeMirror
       ref={editorRef}
       key={documentKey}
-      value={value}
+      value={normalizeEditorSource(value)}
       height="100%"
       editable={editable}
       extensions={extensions}
-      onChange={onChange}
+      onChange={handleSourceChange}
       onUpdate={handleEditorUpdate}
       basicSetup={BASIC_SETUP}
     />

@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import MarkdownPreview from './MarkdownPreview';
+import type { MarkdownTaskChange } from '../lib/markdownTasks';
 
 function preview(content: string) {
   return render(<MarkdownPreview
@@ -13,6 +14,81 @@ function preview(content: string) {
 }
 
 describe('MarkdownPreview LocalView inline styles', () => {
+  it('maps every nested checkbox back to the original CRLF source, including repeated labels', () => {
+    const source = '# 😀\r\n\r\n- [ ] parent\r\n      - [ ] same\r\n            - [X] same\r\n      - [ ] same\r\n\r\n- [ ] end';
+    const onTaskToggle = vi.fn((_change: MarkdownTaskChange) => true);
+    const { container } = render(<MarkdownPreview content={source} desktop={false} rootPath="/workspace"
+      selectedPath="/workspace/note.md" assetScope="" onTaskToggle={onTaskToggle} />);
+    const boxes = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+    expect(boxes).toHaveLength(5);
+    expect(container.querySelectorAll('li ul')).toHaveLength(2);
+    const markers = [...source.matchAll(/\[([ xX])\]/g)];
+    boxes.forEach((box, index) => {
+      expect(box.disabled).toBe(false);
+      fireEvent.click(box);
+      expect(onTaskToggle).toHaveBeenLastCalledWith({
+        source, statusOffset: markers[index].index! + 1, checked: markers[index][1] === ' ',
+      });
+    });
+  });
+
+  it('preserves checkbox focus through updates and handles preview undo/redo shortcuts', () => {
+    const onTaskToggle = vi.fn((_change: MarkdownTaskChange) => true);
+    const onTaskHistory = vi.fn(() => true);
+    const props = { desktop: false, rootPath: '/workspace', selectedPath: '/workspace/note.md', assetScope: '', onTaskToggle, onTaskHistory };
+    const rendered = render(<MarkdownPreview {...props} content="- [ ] task" />);
+    const box = rendered.container.querySelector<HTMLInputElement>('input')!;
+    box.focus();
+    fireEvent.click(box);
+    rendered.rerender(<MarkdownPreview {...props} content="- [x] task" />);
+    expect(rendered.container.querySelector('input')).toBe(box);
+    expect(document.activeElement).toBe(box);
+    fireEvent.keyDown(box, { key: 'z', metaKey: true });
+    expect(onTaskHistory).toHaveBeenLastCalledWith('undo');
+    fireEvent.keyDown(box, { key: 'z', metaKey: true, shiftKey: true });
+    expect(onTaskHistory).toHaveBeenLastCalledWith('redo');
+  });
+
+  it('keeps print/read-only checkboxes disabled and restores rejected clicks', () => {
+    const onTaskToggle = vi.fn(() => false);
+    const props = { desktop: false, rootPath: '/workspace', selectedPath: '/workspace/note.md', assetScope: '' };
+    const rendered = render(<MarkdownPreview {...props} content="- [ ] task" />);
+    expect(rendered.container.querySelector<HTMLInputElement>('input')!.disabled).toBe(true);
+    rendered.rerender(<MarkdownPreview {...props} content="- [ ] task" onTaskToggle={onTaskToggle} />);
+    const box = rendered.container.querySelector<HTMLInputElement>('input')!;
+    fireEvent.click(box);
+    expect(onTaskToggle).toHaveBeenCalledOnce();
+    expect(box.checked).toBe(false);
+  });
+
+  it('does not reinterpret code blocks, multiline inline code, HTML or Markdown links as tasks', () => {
+    const { container } = preview([
+      '- [ ] task', '', '      - [ ] indented code', '',
+      '```md', '- [ ] fenced code', '      - [ ] deep code', '```', '',
+      '- [ ] parent with `inline', '      - [ ] literal', '  code`', '',
+      '- [ ](https://example.com)', '', '<div>', '- [ ] html', '</div>',
+    ].join('\n'));
+    expect(container.querySelectorAll('input')).toHaveLength(2);
+    expect(container.querySelectorAll('pre code')).toHaveLength(2);
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com');
+    expect(container.textContent).toContain('- [ ] literal');
+    expect(container.textContent).toContain('- [ ] html');
+  });
+
+  it('preserves inline styles and ordered/quoted task source positions after indentation repair', () => {
+    const source = '- [ ] root\n      - [ ] <mark>**bright**</mark> and ~~old~~\n\n3. [ ] ordered\n\n> - [x] quoted';
+    const onTaskToggle = vi.fn((_change: MarkdownTaskChange) => true);
+    const { container } = render(<MarkdownPreview content={source} desktop={false} rootPath="/workspace"
+      selectedPath="/workspace/note.md" assetScope="" onTaskToggle={onTaskToggle} />);
+    expect(container.querySelector('mark strong')?.textContent).toBe('bright');
+    expect(container.querySelector('del')?.textContent).toBe('old');
+    const boxes = Array.from(container.querySelectorAll<HTMLInputElement>('input'));
+    expect(boxes).toHaveLength(4);
+    boxes.forEach(box => fireEvent.click(box));
+    expect(onTaskToggle.mock.calls.map(([change]) => change.statusOffset))
+      .toEqual([...source.matchAll(/\[[ xX]\]/g)].map(match => match.index! + 1));
+  });
+
   it('preserves soft and hard line breaks through nested inline formatting without touching code', () => {
     const { container } = preview('first\n**second\nthird**\n\nfourth  \nfifth\\\nsixth\n\n```md\na\nb\n```');
     const paragraphs = container.querySelectorAll('p');
@@ -31,12 +107,11 @@ describe('MarkdownPreview LocalView inline styles', () => {
     expect(container.textContent).not.toContain('[ ]');
   });
 
-  it.each(['      ', '        ', '\t\t'])('keeps malformed list continuation lines readable without guessing their structure: %j', (indent) => {
+  it.each(['      ', '        ', '\t\t', '\u00a0\u00a0', '\u3000'])('renders pasted task continuations with %j indentation', (indent) => {
     const { container } = preview(`- [ ]input\n${indent}- [ ] child\n${indent}- [ ] another`);
-    expect(container.querySelectorAll('li ul')).toHaveLength(0);
-    expect(container.querySelectorAll('br')).toHaveLength(2);
-    expect(container.textContent).toContain('[ ]input');
-    expect(container.textContent).toContain('- [ ] child');
+    expect(container.querySelectorAll('li ul')).toHaveLength(1);
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(3);
+    expect(container.textContent).not.toContain('[ ]');
   });
 
   it('preserves GFM heading, ordered-list start, quote, strike and table semantics', () => {
