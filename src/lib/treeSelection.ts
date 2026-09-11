@@ -50,8 +50,19 @@ export async function runTreeBatch<T>(
 ): Promise<{ completed: T[]; remaining: T[]; failure: string | null }> {
   const completed: T[] = [];
   for (let index = 0; index < items.length; index += 1) {
-    const result = await operate(items[index]);
-    if (!result.ok) return { completed, remaining: items.slice(index), failure: result.message };
+    let result: TreeOperationResult;
+    try {
+      result = await operate(items[index]);
+    } catch (error) {
+      // Rejections are uncertain outcomes, not permission to lose progress or retry.
+      const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      return { completed, remaining: items.slice(index), failure: detail.trim() || '操作结果不确定，请检查实际文件状态' };
+    }
+    if (!result.ok) return {
+      completed,
+      remaining: items.slice(index),
+      failure: result.message.trim() || '操作未完成，请检查实际文件状态',
+    };
     completed.push(items[index]);
   }
   return { completed, remaining: [], failure: null };
