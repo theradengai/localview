@@ -37,3 +37,7 @@ Trash now flushes an included editor before capturing target identities and hold
 This is a candidate build, not a public release. The existing public Beta 1 download links remain unchanged until desktop acceptance and staging promotion. Candidate installers carry their source SHA and SHA256 checksums. Automated checks do not replace real macOS UI acceptance.
 
 The Beta 3 candidate also includes staging commit 1f480c505b35e5ce2fda04771270cd42900c8a18, preserving its Markdown task/preview fixes. It does not replace or publish the separate Beta 2 release.
+
+## 0.2.0-beta.4 validation
+
+The next candidate retains confirmed progress on thrown or empty batch errors. Development-only dependency fixes are bounded by a production-lock comparison and a zero-vulnerability npm audit gate. `scripts/verify-tree-selection-browser.mjs` exercises the production in-memory demo in Chromium and WebKit, including real pointer group drag, cancellation and confirmation. macOS CI explicitly runs the two disposable native Trash tests that remain opt-in for local contributors. Browser checks plus native command tests are not a physical-device manual acceptance claim. Installers and evidence identify the exact source commit; this remains a non-notarized candidate, not a public release.

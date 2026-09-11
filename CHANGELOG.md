@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0-beta.4 (candidate)
+
+- Retain confirmed batch progress and remaining selections on rejected operations; empty errors never report success.
+- Update vulnerable development/test dependencies within existing compatible ranges and enforce npm audit in CI.
+- Add production Chromium/WebKit multi-selection regression checks and explicitly run isolated native Trash smoke tests in macOS CI.
+- Refresh locked-dependency notices and Node 24 GitHub Actions. Candidate only; no public release or Apple notarization is implied.
+
 ## 0.2.0-beta.3 — candidate (not released)
 
 - Directory/file multi-selection and batch move/Trash.
