@@ -6,7 +6,7 @@
 
 Open **Apple menu → About This Mac**. Choose `aarch64` for an Apple M-series chip, or `x64` for an Intel processor. The Beta targets **macOS Monterey 12 or later**.
 
-Download from the [official release page](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.2). Quit the existing LocalView normally so pending edits can save. Open the DMG and drag LocalView into Applications, replacing an older copy if present. Eject the disk image, then launch `/Applications/LocalView.app`.
+Download from the [official release page](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.4). Quit the existing LocalView normally so pending edits can save. Open the DMG and drag LocalView into Applications, replacing an older copy if present. Eject the disk image, then launch `/Applications/LocalView.app`.
 
 Launching multiple build copies or leaving installation disks mounted can produce duplicate application search/Open With results. Keep one installed copy in Applications; an Intel installer is for your Intel Mac, not a second app installation on Apple Silicon.
 
@@ -21,15 +21,15 @@ If you trust the source and download, follow [Apple's instructions for opening a
 The release includes `SHA256SUMS.txt`. In the download directory, calculate the SHA-256 of the installer you downloaded and compare it with that file:
 
 ```bash
-shasum -a 256 LocalView_0.2.0-beta.2_aarch64.dmg
+shasum -a 256 LocalView_0.2.0-beta.4_aarch64.dmg
 # Intel:
-shasum -a 256 LocalView_0.2.0-beta.2_x64.dmg
+shasum -a 256 LocalView_0.2.0-beta.4_x64.dmg
 ```
 
 Checksums protect against a mismatched/corrupted download; they are not publisher authentication. macOS can also check the disk-image structure and installed signature:
 
 ```bash
-hdiutil verify LocalView_0.2.0-beta.2_aarch64.dmg
+hdiutil verify LocalView_0.2.0-beta.4_aarch64.dmg
 codesign --verify --deep --strict /Applications/LocalView.app
 ```
 
@@ -38,6 +38,8 @@ codesign --verify --deep --strict /Applications/LocalView.app
 Open a folder in the app or use **Finder → Open With → LocalView** on a supported file. LocalView does not change your default application. `⌘N` opens another workspace window, `⌘S` saves immediately, and `⌘P` prints rendered Markdown.
 
 Files are edited in place with auto-save. Try a sample folder first. If another application changes a dirty file, resolve the conflict before closing or switching files.
+
+For the new directory/file selection controls, use `⌘`-click to add or remove items and `Shift`-click for a visible range. Drag a selected row to move the group, or use the context menu to move the group to Trash. Batch operations stop on failure and retain remaining selections; they are not all-or-nothing transactions. Start with disposable copies. See [selection controls and validation](FOLDER_SELECTION.md).
 
 ## 中文安装摘要
 
