@@ -1,0 +1,40 @@
+name: Clean multi-selection candidate
+on:
+  push:
+    branches: [fix/folder-multiselect]
+    paths: [.github/workflows/clean-multiselect.yml]
+permissions:
+  contents: read
+concurrency:
+  group: clean-multiselect-diagnostics
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Collect exact source and dependency audit
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/localview-diagnostics
+          git rev-parse HEAD > /tmp/localview-diagnostics/SOURCE_SHA.txt
+          git archive --format=tar.gz HEAD > /tmp/localview-diagnostics/source.tar.gz
+          npm ci
+          npm audit --json > /tmp/localview-diagnostics/audit-before.json || test "$?" = 1
+          npm audit --omit=dev --json > /tmp/localview-diagnostics/audit-production-before.json || test "$?" = 1
+          npm audit fix --dry-run --json > /tmp/localview-diagnostics/audit-fix-plan.json || test "$?" = 1
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: localview-clean-diagnostics
+          path: /tmp/localview-diagnostics/
+          retention-days: 14
+          if-no-files-found: error
