@@ -30,4 +30,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: b5533b5f4ebb5f0c0b0edf404987e4568941a963
-        run: python3 scripts/publish-verified-beta4.py
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/publish-verified-beta4.py')
+          text = path.read_text()
+          old = 'X-GitHub-Api-Version: 2026-03-10'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, 'X-GitHub-Api-Version: 2022-11-28'))
+          PY
+          python3 scripts/publish-verified-beta4.py
