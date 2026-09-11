@@ -3691,6 +3691,110 @@ describe('folder multi-selection and batch operations', () => {
     expect((screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement).value).toBe('# unsaved synthetic draft');
   });
 
+
+  it('captures Trash identities after atomic save for an included dirty file', async () => {
+    await readyFolders();
+    const pendingSave = deferred<string>();
+    let identity = 'before-save';
+    mocks.writeTextFile.mockImplementation(async () => {
+      const version = await pendingSave.promise;
+      identity = 'after-save';
+      return version;
+    });
+    const prepare = mocks.prepareTrash.getMockImplementation()!;
+    mocks.prepareTrash.mockImplementation(async (value: string) => ({
+      ...await prepare(value), targetIdentity: value === path('plan.md') ? identity : 'folder',
+    }));
+    const perform = mocks.moveToTrash.getMockImplementation()!;
+    mocks.moveToTrash.mockImplementation(async (candidate: { originalPath: string; targetIdentity: string }) => {
+      if (candidate.originalPath === path('plan.md') && candidate.targetIdentity !== identity) {
+        throw new Error('TRASH_TARGET_CHANGED');
+      }
+      return perform(candidate);
+    });
+    await editCurrentDocument('# dirty synthetic file');
+    select('alpha', 'plan.md');
+    menu('alpha');
+    fireEvent.click(screen.getByRole('menuitem', { name: '移到废纸篓' }));
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledOnce());
+    expect(mocks.prepareTrash).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await act(async () => pendingSave.resolve('v2'));
+    await screen.findByRole('alertdialog');
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: '移到废纸篓' }));
+    await waitFor(() => expect(row('plan.md')).toBeNull());
+    expect(row('alpha')).toBeNull();
+    expect(mocks.moveToTrash).toHaveBeenCalledTimes(2);
+    expect(mocks.moveToTrash.mock.calls[1][0].targetIdentity).toBe('after-save');
+  });
+
+  it('saves before single-item Trash preflight and cancellation preserves the file', async () => {
+    await readyFolders();
+    const calls: string[] = [];
+    mocks.writeTextFile.mockImplementation(async () => { calls.push('save'); return 'v2'; });
+    const prepare = mocks.prepareTrash.getMockImplementation()!;
+    mocks.prepareTrash.mockImplementation(async (value: string) => { calls.push('prepare'); return prepare(value); });
+    await editCurrentDocument('# single dirty file');
+    select('plan.md');
+    await trash('plan.md');
+    expect(calls).toEqual(['save', 'prepare']);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+    expect(row('plan.md')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('disabled', false));
+  });
+
+  it('never refreshes a Trash identity after confirmation when the selected file was replaced', async () => {
+    await readyFolders();
+    let identity = 'original';
+    const prepare = mocks.prepareTrash.getMockImplementation()!;
+    mocks.prepareTrash.mockImplementation(async (value: string) => ({ ...await prepare(value), targetIdentity: identity }));
+    mocks.moveToTrash.mockImplementation(async (candidate: { targetIdentity: string }) => {
+      if (candidate.targetIdentity !== identity) throw new Error('TRASH_TARGET_CHANGED');
+      throw new Error('Unexpected mutation');
+    });
+    select('alpha', 'beta');
+    await trash('alpha');
+    identity = 'external-replacement';
+    fireEvent.click(screen.getByRole('button', { name: '移到废纸篓' }));
+    await waitFor(() => expect(mocks.moveToTrash).toHaveBeenCalledOnce());
+    await screen.findByText(/0\/2 项/);
+    expect(mocks.prepareTrash).toHaveBeenCalledTimes(2);
+    expect(row('alpha')).toBeTruthy();
+    expect(row('beta')).toBeTruthy();
+    expect(pressed()).toEqual([path('alpha'), path('beta')]);
+  });
+
+  it('retains every preflighted move identity when a later source is replaced', async () => {
+    await readyFolders();
+    let betaIdentity = 'original-beta';
+    const prepare = mocks.prepareWorkspaceMove.getMockImplementation()!;
+    mocks.prepareWorkspaceMove.mockImplementation(async (source: string, destination: string) => ({
+      ...await prepare(source, destination), sourceIdentity: source === path('beta') ? betaIdentity : 'original-alpha',
+    }));
+    const perform = mocks.moveWorkspaceEntry.getMockImplementation()!;
+    mocks.moveWorkspaceEntry.mockImplementation(async (candidate: { sourcePath: string; sourceIdentity: string }) => {
+      if (candidate.sourcePath === path('alpha')) {
+        const result = await perform(candidate);
+        betaIdentity = 'replacement-beta';
+        return result;
+      }
+      if (candidate.sourceIdentity !== betaIdentity) throw new Error('MOVE_SOURCE_CHANGED');
+      return perform(candidate);
+    });
+    select('alpha', 'beta');
+    await move('alpha');
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledTimes(2));
+    await screen.findByText(/已确认移动 1\/2 项/);
+    expect(mocks.prepareWorkspaceMove).toHaveBeenCalledTimes(2);
+    expect(mocks.moveWorkspaceEntry.mock.calls[1][0].sourceIdentity).toBe('original-beta');
+    expect(row('beta')).toBeTruthy();
+    expect(row('target/beta')).toBeNull();
+    expect(pressed()).toEqual([path('beta')]);
+  });
+
   it('keeps delete shortcuts inside the editor away from the tree selection', async () => {
     await readyFolders();
     const editor = await editCurrentDocument('# editable text');

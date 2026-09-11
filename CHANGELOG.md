@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0-beta.2 — candidate (not released)
+
+- Directory/file multi-selection and batch move/Trash.
+- Save-before-preflight Trash ordering and retained move identities.
+- Candidate installers only; pending desktop acceptance and staging promotion.
+
 ## 0.2.0-beta.1 — 2026-09-04
 
 First public open-source Beta under the MIT License. Original source is MIT-licensed; third-party notices remain under their upstream licenses.

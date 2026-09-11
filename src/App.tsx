@@ -2744,7 +2744,7 @@ export default function App() {
     return true;
   }, [desktop, followPairedRename, prepareFolder, showNotice]);
 
-  const performWorkspaceMove = useCallback(async (node: FileNode, destinationPath: string): Promise<TreeOperationResult> => {
+  const performWorkspaceMove = useCallback(async (node: FileNode, destinationPath: string, preparedCandidate?: MoveCandidate): Promise<TreeOperationResult> => {
     const fail = (message: string): TreeOperationResult => {
       showNotice(message);
       return { ok: false, message };
@@ -2789,7 +2789,7 @@ export default function App() {
         return applied ? { ok: true } : fail('工作区已经变化，无法确认移动结果');
       }
 
-      const candidate: MoveCandidate = await prepareWorkspaceMove(sourcePath, destination);
+      const candidate: MoveCandidate = preparedCandidate ?? await prepareWorkspaceMove(sourcePath, destination);
       if (activeRelocationRef.current?.id !== operationId
         || workspaceEpochRef.current !== move.workspaceEpoch
         || workspaceBindingRef.current?.generation !== move.workspaceGeneration
@@ -2851,7 +2851,8 @@ export default function App() {
     if (problem) return void showNotice(problem);
     await runWorkspaceMutation(async () => {
       try {
-        // Save a contained editor and validate every source before the first disk mutation.
+        // Save and capture every identity before the first mutation; do not re-authorize replacements.
+        const candidates = new Map<string, MoveCandidate>();
         for (const node of nodes) {
           if (!current() || !findNode(treeRef.current, node.path)) {
             showNotice('工作区或所选项目已经变化，已取消批量移动');
@@ -2860,6 +2861,7 @@ export default function App() {
           if (!await strictSaveCurrentForRelocation(node.path, '移动')) return;
           if (desktop) {
             const candidate = await prepareWorkspaceMove(node.path, destinationPath);
+            candidates.set(normalizePath(node.path), candidate);
             if (!current() || candidate.workspaceGeneration !== generation) {
               showNotice('工作区已经变化，已取消批量移动');
               return;
@@ -2870,7 +2872,7 @@ export default function App() {
           if (!current()) return { ok: false, message: '工作区已经变化' };
           const latest = findNode(treeRef.current, node.path);
           if (!latest) return { ok: false, message: '所选项目已经不存在' };
-          return performWorkspaceMove(latest, destinationPath);
+          return performWorkspaceMove(latest, destinationPath, candidates.get(normalizePath(node.path)));
         });
         if (!current()) return;
         const paths = result.failure
@@ -3236,115 +3238,12 @@ export default function App() {
     }
   }, [desktop, flushActiveEditorSurface, performWorkspaceMoves, showNotice]);
 
-  const requestTrash = useCallback(async (node: FileNode) => {
-    setTreeActionMenu(null);
-    cancelRename(false);
-    if (createBusyRef.current !== null) return;
-    const targetPath = normalizePath(node.path);
-    if (!rootPathRef.current || targetPath === normalizePath(rootPathRef.current)) return;
-    const workspaceEpoch = workspaceEpochRef.current;
-    const workspaceGeneration = workspaceBindingRef.current?.generation;
-    const restoreFocus = () => window.setTimeout(() => {
-      const trigger = lastContextTriggerRef.current;
-      if (trigger?.isConnected) trigger.focus();
-      else sidebarFocusFallbackRef.current?.focus();
-    }, 0);
-    let trashSucceeded = false;
-    try {
-      const candidate = desktop ? await prepareTrash(targetPath) : null;
-      if (
-        workspaceEpochRef.current !== workspaceEpoch
-        || workspaceBindingRef.current?.generation !== workspaceGeneration
-        || normalizePath(rootPathRef.current) === targetPath
-      ) {
-        showNotice('工作区或文件已经变化，请重新操作');
-        return;
-      }
-      const result = await requestDecision({
-        title: `移到废纸篓？`,
-        message: node.kind === 'folder'
-          ? `“${node.name}”及其中的内容会一起移到 macOS 废纸篓。`
-          : `“${node.name}”会移到 macOS 废纸篓，可以从废纸篓恢复。`,
-        confirmLabel: '移到废纸篓',
-        cancelLabel: '取消',
-        destructive: true,
-      });
-      if (result !== 'confirm') return;
-      if (
-        workspaceEpochRef.current !== workspaceEpoch
-        || workspaceBindingRef.current?.generation !== workspaceGeneration
-      ) {
-        showNotice('工作区已经变化，已取消删除');
-        return;
-      }
-      const performTrash = async () => {
-      const parent = parentPath(targetPath);
-      directoryRefreshCoordinatorRef.current?.invalidate(parent);
-      try {
-        if (desktop && candidate) await runWorkspaceMutation(() => moveToTrash(candidate));
-        const next = removeTreePath(treeRef.current, targetPath) as FileNode[];
-        treeRef.current = next;
-        setTree(next);
-        setOpenFolders((current) => {
-          const remaining = new Set([...current].filter((path) => !containsPath(targetPath, path)));
-          openFoldersRef.current = remaining;
-          return remaining;
-        });
-        if (selectedRef.current && containsPath(targetPath, selectedRef.current.path)) {
-          clearCurrentDocument();
-        }
-        directoryRefreshCoordinatorRef.current?.request([parent]);
-        trashSucceeded = true;
-        if (normalizePath(parent) !== normalizePath(rootPathRef.current) && findNode(next, parent)) {
-          setPendingTreeFocusPath(parent);
-        } else {
-          window.setTimeout(() => sidebarFocusFallbackRef.current?.focus(), 0);
-        }
-        showNotice(desktop
-          ? `已将 ${node.name} 移到废纸篓`
-          : `浏览器 Demo 已模拟删除 ${node.name}；未移动磁盘文件`);
-      } catch (error) {
-        directoryRefreshCoordinatorRef.current?.request([parent]);
-        showNotice(trashError(error));
-      }
-      };
-      const selectedPath = selectedRef.current?.path;
-      if (selectedPath && containsPath(targetPath, selectedPath)) {
-        await runWithSaveGuard('deleting', '移到废纸篓', performTrash);
-      } else {
-        if (documentActionGateRef.current !== 'idle') {
-          showNotice('正在完成当前操作，请稍候');
-          return;
-        }
-        if (!flushActiveEditorSurface()) {
-          showNotice('表格单元格状态已经变化，无法删除其他文件');
-          return;
-        }
-        documentActionGateRef.current = 'deleting';
-        setDocumentActionGate('deleting');
-        try {
-          await performTrash();
-        } finally {
-          documentActionGateRef.current = 'idle';
-          if (!unmountedRef.current) setDocumentActionGate('idle');
-        }
-      }
-    } catch (error) {
-      showNotice(trashError(error));
-    } finally {
-      if (!trashSucceeded) restoreFocus();
-    }
-  }, [cancelRename, clearCurrentDocument, desktop, flushActiveEditorSurface, requestDecision, runWithSaveGuard, runWorkspaceMutation, showNotice]);
-
   const requestTrashSelection = useCallback(async (input: FileNode | FileNode[]) => {
     const nodes = operationRoots(input);
     if (!nodes.length) return;
     if (trashBatchPendingRef.current) return void showNotice('请先处理当前废纸篓操作');
-    if (nodes.length === 1) {
-      await requestTrash(nodes[0]);
-      return;
-    }
     setTreeActionMenu(null);
+    cancelRename(false);
     if (workspaceTransitionRef.current || documentActionGateRef.current !== 'idle'
       || createBusyRef.current !== null || createDraftRef.current || renameDraftRef.current) {
       showNotice('请先完成当前操作');
@@ -3360,84 +3259,91 @@ export default function App() {
     const current = () => !unmountedRef.current && workspaceEpochRef.current === epoch
       && workspaceBindingRef.current?.generation === generation && normalizePath(rootPathRef.current) === root
       && !workspaceTransitionRef.current;
+    const multiple = nodes.length > 1;
     let completedCount = 0;
     trashBatchPendingRef.current = true;
-    try {
-      // Capture identity-checked capabilities for every item before asking once.
+    // The save guard must finish before capturing inode identities. Keep its gate
+    // through preflight, confirmation and commit; never refresh consented identities.
+    const prepareAndTrash = () => runWorkspaceMutation(async () => {
       const candidates = new Map<string, Awaited<ReturnType<typeof prepareTrash>>>();
       for (const node of nodes) {
         if (!current() || !findNode(treeRef.current, node.path)) {
-          showNotice('工作区或所选项目已经变化，已取消批量操作');
+          showNotice('工作区或所选项目已经变化，已取消废纸篓操作');
           return;
         }
         if (desktop) candidates.set(normalizePath(node.path), await prepareTrash(node.path));
       }
       if (!current()) return;
       const names = nodes.slice(0, 5).map((node) => `“${node.name}”`).join('、');
+      const node = nodes[0];
       const decision = await requestDecision({
-        title: `将 ${nodes.length} 项移到废纸篓？`,
-        message: `${names}${nodes.length > 5 ? '等' : ''}将移到 macOS 废纸篓；文件夹及其内容会一起移动，可以从废纸篓恢复。逐项执行，失败时停止，已完成的项目不会自动撤销。`,
-        confirmLabel: '移到废纸篓',
-        cancelLabel: '取消',
-        destructive: true,
+        title: multiple ? `将 ${nodes.length} 项移到废纸篓？` : '移到废纸篓？',
+        message: multiple
+          ? `${names}${nodes.length > 5 ? '等' : ''}将移到 macOS 废纸篓；文件夹及其内容会一起移动，可以从废纸篓恢复。逐项执行，失败时停止，已完成的项目不会自动撤销。`
+          : node.kind === 'folder'
+            ? `“${node.name}”及其中的内容会一起移到 macOS 废纸篓。`
+            : `“${node.name}”会移到 macOS 废纸篓，可以从废纸篓恢复。`,
+        confirmLabel: '移到废纸篓', cancelLabel: '取消', destructive: true,
       });
       if (decision !== 'confirm') return;
-      if (!current()) return void showNotice('工作区已经变化，已取消批量操作');
-      const performTrashBatch = () => runWorkspaceMutation(async () => {
-        const result = await runTreeBatch(nodes, async (node): Promise<TreeOperationResult> => {
-          if (!current()) return { ok: false, message: '工作区已经变化' };
-          const path = normalizePath(node.path);
-          const parent = parentPath(path);
-          directoryRefreshCoordinatorRef.current?.invalidate(parent);
-          try {
-            if (desktop) await moveToTrash(candidates.get(path)!);
-            if (!current()) return { ok: false, message: '磁盘操作已提交，但工作区已经变化，请确认实际结果' };
-            const next = removeTreePath(treeRef.current, path) as FileNode[];
-            const expanded = new Set([...openFoldersRef.current].filter((item) => !containsPath(path, item)));
-            treeRef.current = next;
-            setTree(next);
-            openFoldersRef.current = expanded;
-            setOpenFolders(expanded);
-            const committed = committedWorkspaceSnapshotRef.current;
-            if (committed && normalizePath(committed.rootPath) === root) {
-              committed.tree = removeTreePath(committed.tree, path) as FileNode[];
-              committed.openFolders = new Set([...committed.openFolders].filter((item) => !containsPath(path, item)));
-            }
-            if (selectedRef.current && containsPath(path, selectedRef.current.path)) clearCurrentDocument();
-            completedCount += 1;
-            return { ok: true };
-          } catch (error) {
-            return { ok: false, message: trashError(error) };
-          } finally {
-            if (current()) directoryRefreshCoordinatorRef.current?.request([parent]);
+      if (!current()) return void showNotice('工作区已经变化，已取消废纸篓操作');
+      const result = await runTreeBatch(nodes, async (entry): Promise<TreeOperationResult> => {
+        if (!current()) return { ok: false, message: '工作区已经变化' };
+        const path = normalizePath(entry.path);
+        const parent = parentPath(path);
+        directoryRefreshCoordinatorRef.current?.invalidate(parent);
+        try {
+          if (desktop) await moveToTrash(candidates.get(path)!);
+          if (!current()) return { ok: false, message: '磁盘操作已提交，但工作区已经变化，请确认实际结果' };
+          const next = removeTreePath(treeRef.current, path) as FileNode[];
+          const expanded = new Set([...openFoldersRef.current].filter((item) => !containsPath(path, item)));
+          treeRef.current = next;
+          setTree(next);
+          openFoldersRef.current = expanded;
+          setOpenFolders(expanded);
+          const committed = committedWorkspaceSnapshotRef.current;
+          if (committed && normalizePath(committed.rootPath) === root) {
+            committed.tree = removeTreePath(committed.tree, path) as FileNode[];
+            committed.openFolders = new Set([...committed.openFolders].filter((item) => !containsPath(path, item)));
           }
-        });
-        if (!current()) return;
-        const remaining = result.remaining.map((node) => normalizePath(node.path));
-        replaceTreeSelection(remaining);
-        const focus = remaining[0] ?? parentPath(nodes[0].path);
+          if (selectedRef.current && containsPath(path, selectedRef.current.path)) clearCurrentDocument();
+          completedCount += 1;
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, message: trashError(error) };
+        } finally {
+          if (current()) directoryRefreshCoordinatorRef.current?.request([parent]);
+        }
+      });
+      if (!current()) return;
+      const remaining = result.remaining.map((entry) => normalizePath(entry.path));
+      replaceTreeSelection(remaining);
+      const focus = remaining[0] ?? parentPath(nodes[0].path);
+      if (completedCount > 0) {
         if (focus !== root && findNode(treeRef.current, focus)) setPendingTreeFocusPath(focus);
         else window.setTimeout(() => sidebarFocusFallbackRef.current?.focus(), 0);
-        showNotice(result.failure
-          ? `已移到废纸篓 ${completedCount}/${nodes.length} 项；停在“${result.remaining[0].name}”：${result.failure}；未继续处理其余项目`
-          : desktop ? `已将 ${nodes.length} 项移到废纸篓`
-            : `浏览器 Demo 已模拟删除 ${nodes.length} 项；未移动磁盘文件`);
-      });
+      }
+      showNotice(result.failure
+        ? multiple ? `已移到废纸篓 ${completedCount}/${nodes.length} 项；停在“${result.remaining[0].name}”：${result.failure}；未继续处理其余项目` : result.failure
+        : multiple
+          ? desktop ? `已将 ${nodes.length} 项移到废纸篓` : `浏览器 Demo 已模拟删除 ${nodes.length} 项；未移动磁盘文件`
+          : desktop ? `已将 ${node.name} 移到废纸篓` : `浏览器 Demo 已模拟删除 ${node.name}；未移动磁盘文件`);
+    });
+    try {
       const selectedPath = selectedRef.current?.path;
       if (selectedPath && nodes.some((node) => containsPath(node.path, selectedPath))) {
-        await runWithSaveGuard('deleting', '移到废纸篓', performTrashBatch);
+        await runWithSaveGuard('deleting', '移到废纸篓', prepareAndTrash);
       } else {
-        if (documentActionGateRef.current !== 'idle') return void showNotice('正在完成当前操作，请稍候');
         if (!flushActiveEditorSurface()) return void showNotice('表格单元格状态已经变化，无法删除其他文件');
         documentActionGateRef.current = 'deleting';
         setDocumentActionGate('deleting');
-        try { await performTrashBatch(); } finally {
+        try { await prepareAndTrash(); } finally {
           documentActionGateRef.current = 'idle';
           if (!unmountedRef.current) setDocumentActionGate('idle');
         }
       }
     } catch (error) {
-      showNotice(`批量废纸篓操作已停止：${trashError(error)}`);
+      showNotice(multiple ? `批量废纸篓操作已停止：${trashError(error)}` : trashError(error));
     } finally {
       trashBatchPendingRef.current = false;
       if (!completedCount) window.setTimeout(() => {
@@ -3446,7 +3352,7 @@ export default function App() {
         else sidebarFocusFallbackRef.current?.focus();
       }, 0);
     }
-  }, [clearCurrentDocument, desktop, flushActiveEditorSurface, operationRoots, replaceTreeSelection, requestDecision, requestTrash, runWithSaveGuard, runWorkspaceMutation, showNotice]);
+  }, [cancelRename, clearCurrentDocument, desktop, flushActiveEditorSurface, operationRoots, replaceTreeSelection, requestDecision, runWithSaveGuard, runWorkspaceMutation, showNotice]);
 
   useEffect(() => {
     if (!treeActionMenu) return;

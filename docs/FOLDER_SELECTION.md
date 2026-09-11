@@ -28,3 +28,10 @@
 批量操作**不是全有或全无事务**。遇到失败或不确定结果立即停止，不再处理其余项目；明确报告已确认完成数量，保留失败及未尝试项目的选择，不自动撤销已完成操作。外部磁盘变化仍可能让部分项目已不存在；结果不确定时需要检查刷新后的源和目标目录。
 
 浏览器 Demo 使用相同选择交互，内部拖动和废纸篓只修改内存；没有原生目录选择器，也不会操作真实磁盘。macOS 原生拖放和系统废纸篓仍需在独立的合成测试文件夹中验收。
+
+
+## 0.2.0-beta.2 candidate review
+
+Trash now flushes an included editor before capturing target identities and holds its operation gate through confirmation. Single and batch Trash share this path. Batch moves retain all preflighted native candidates, so a later same-name replacement is rejected rather than re-authorized. Added four identity/save-order regression tests.
+
+This is a candidate build, not a public release. The existing public Beta 1 download links remain unchanged until desktop acceptance and staging promotion. Candidate installers carry their source SHA and SHA256 checksums. Automated checks do not replace real macOS UI acceptance.
