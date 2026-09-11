@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: write
+      actions: write
     outputs:
       source: ${{ steps.commit.outputs.source }}
     steps:
@@ -47,18 +48,11 @@ jobs:
           p=pathlib.Path('src-tauri/tauri.conf.json'); data=json.loads(p.read_text())
           assert data['version']=='0.2.0-beta.3'
           data['version']='0.2.0-beta.4'; p.write_text(json.dumps(data,indent=2)+'\n')
-          for filename in ['.github/workflows/check.yml','.github/workflows/build-macos.yml']:
-              p=pathlib.Path(filename); text=p.read_text()
-              text=text.replace('11d5960a326750d5838078e36cf38b85af677262 # v4','d23441a48e516b6c34aea4fa41551a30e30af803 # v6')
-              text=text.replace('49933ea5288caeca8642d1e84afbd3f7d6820020 # v4','249970729cb0ef3589644e2896645e5dc5ba9c38 # v6')
-              text=text.replace('ea165f8d65b6e75b540449e92b4886f43607fa02 # v4','b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6')
-              p.write_text(text)
-          p=pathlib.Path('.github/workflows/check.yml'); text=p.read_text()
-          anchor='      - name: Build frontend\n'
-          assert text.count(anchor)==1
-          text=text.replace(anchor,'      - name: Audit locked frontend dependencies\n        run: npm audit --audit-level=low\n\n'+anchor)
-          text += '\n      - name: Exercise real macOS Trash with disposable fixtures\n        run: cargo test --locked --manifest-path src-tauri/Cargo.toml macos_moves_unique_ -- --ignored --test-threads=1\n'
-          p.write_text(text)
+          # Workflow changes were committed separately through the authorized connector.
+          # The CI token must not create or update a workflow.
+          check=pathlib.Path('.github/workflows/check.yml').read_text()
+          assert 'npm audit --audit-level=low' in check
+          assert 'macos_moves_unique_' in check
           p=pathlib.Path('CHANGELOG.md'); text=p.read_text()
           heading='## 0.2.0-beta.4 (candidate)\n\n- Retain confirmed batch progress and remaining selections on rejected operations; empty errors never report success.\n- Update vulnerable development/test dependencies within existing compatible ranges and enforce npm audit in CI.\n- Add production Chromium/WebKit multi-selection regression checks and explicitly run isolated native Trash smoke tests in macOS CI.\n- Refresh locked-dependency notices and Node 24 GitHub Actions. Candidate only; no public release or Apple notarization is implied.\n\n'
           first=text.find('\n')+1; p.write_text(text[:first]+'\n'+heading+text[first:].lstrip('\n'))
@@ -104,7 +98,6 @@ jobs:
       - name: Regenerate and verify distributable notices
         run: |
           set -euo pipefail
-          # Offline Cargo metadata also reads non-target manifests in the lock graph.
           cargo fetch --locked --manifest-path src-tauri/Cargo.toml
           node scripts/generate-third-party-notices.mjs
           git diff > /tmp/clean-evidence/reviewed.patch
@@ -118,10 +111,11 @@ jobs:
           test "$GITHUB_REF_NAME" = fix/folder-multiselect
           git fetch origin fix/folder-multiselect
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code -- .github/workflows/
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm .github/workflows/clean-multiselect.yml
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CHANGELOG.md docs/FOLDER_SELECTION.md THIRD_PARTY_NOTICES.md .github/workflows/check.yml .github/workflows/build-macos.yml
+          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CHANGELOG.md docs/FOLDER_SELECTION.md THIRD_PARTY_NOTICES.md
           git commit -m 'fix: close dependency audit gaps and validate beta 4 candidate'
           git push origin HEAD:fix/folder-multiselect
           sha=$(git rev-parse HEAD)
@@ -129,6 +123,10 @@ jobs:
           echo "$sha" > /tmp/clean-evidence/SOURCE_SHA.txt
           git archive --format=tar.gz HEAD > /tmp/clean-evidence/source.tar.gz
           test -z "$(git status --porcelain)"
+      - name: Run standard checks on the committed candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/check.yml/dispatches" -f ref=fix/folder-multiselect
       - name: Retain clean-validation evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
