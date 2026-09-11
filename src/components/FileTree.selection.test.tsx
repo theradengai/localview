@@ -1,4 +1,5 @@
-import { fireEvent, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import FileTree from './FileTree';
@@ -96,5 +97,61 @@ describe('FileTree multi-selection', () => {
     expect(input.onBeginRename).not.toHaveBeenCalled();
     view.rerender(<FileTree {...input} rootPath="/other" tree={[{ name: 'other', path: '/other/other', kind: 'folder' }]} />);
     expect(selected()).toEqual([]);
+  });
+
+  it('does not double-toggle a real modifier click when pointer focus precedes click', async () => {
+    const input = props();
+    const user = userEvent.setup();
+    render(<FileTree {...input} />);
+    await user.keyboard('{Meta>}');
+    await user.click(row('/root/a'));
+    await user.click(row('/root/b'));
+    expect(selected()).toEqual(['/root/a', '/root/b']);
+    await user.click(row('/root/a'));
+    await user.keyboard('{/Meta}');
+    expect(selected()).toEqual(['/root/b']);
+    expect(input.onNodeClick).not.toHaveBeenCalled();
+  });
+
+  it('preserves the range anchor across real Shift-click focus changes', async () => {
+    const input = props();
+    const user = userEvent.setup();
+    render(<FileTree {...input} />);
+    await user.click(row('/root/a'));
+    await user.keyboard('{Shift>}');
+    await user.click(row('/root/b'));
+    await user.keyboard('{/Shift}');
+    expect(selected()).toEqual(['/root/a', '/root/a/child.md', '/root/b']);
+    expect(input.onNodeClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects a keyboard-focused row but leaves an explicitly cleared focused row unselected', () => {
+    const input = props();
+    render(<FileTree {...input} />);
+    act(() => row('/root/b').focus());
+    expect(selected()).toEqual(['/root/b']);
+    fireEvent.keyDown(row('/root/b'), { key: 'Escape' });
+    fireEvent.keyDown(row('/root/b'), { key: 'Backspace', metaKey: true });
+    expect(selected()).toEqual([]);
+    expect(document.activeElement).toBe(row('/root/b'));
+  });
+
+  it('selects a newly committed document while creation still holds the interaction lock', () => {
+    const input = props();
+    const view = render(<FileTree {...input} />);
+    fireEvent.click(row('/root/b'), { metaKey: true });
+    fireEvent.click(row('/root/c'), { metaKey: true });
+    view.rerender(<FileTree {...input} locked createBusy />);
+    view.rerender(<FileTree {...input} locked selectedPath="/root/a/child.md" />);
+    expect(selected()).toEqual(['/root/a/child.md']);
+  });
+
+  it('preserves a locked operation group when its current preview path changes', () => {
+    const input = props();
+    const view = render(<FileTree {...input} />);
+    fireEvent.click(row('/root/a'), { metaKey: true });
+    fireEvent.click(row('/root/b'), { metaKey: true });
+    view.rerender(<FileTree {...input} locked selectedPath="/root/a/child.md" />);
+    expect(selected()).toEqual(['/root/a', '/root/b']);
   });
 });
