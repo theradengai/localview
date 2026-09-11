@@ -138,7 +138,8 @@ function FileTree({
   const selectionCallbackRef = useRef(onSelectionChange);
   selectionCallbackRef.current = onSelectionChange;
   const anchorRef = useRef<string | null>(null);
-  const previousContextRef = useRef({ root: '', document: null as string | null });
+  const pointerFocusRef = useRef(false);
+  const previousContextRef = useRef({ root: '', document: null as string | null, creating: false });
   const visibleNodes = useMemo(() => {
     const result: FileTreeNode[] = [];
     const visit = (nodes: FileTreeNode[]) => nodes.forEach((node) => {
@@ -161,17 +162,37 @@ function FileTree({
   useLayoutEffect(() => {
     const root = normalizePath(rootPath);
     const document = selectedPath ? normalizePath(selectedPath) : null;
+    const creating = createBusy || createDraft !== null;
     const previous = previousContextRef.current;
-    previousContextRef.current = { root, document };
+    previousContextRef.current = { root, document, creating };
     let next = retainVisibleSelection(selectionRef.current, visiblePaths);
-    if (previous.root !== root || (previous.document !== document && !locked)) {
+    // Creation commits the selected document before releasing its interaction lock.
+    // A locked group is otherwise owned by the immutable batch-operation snapshot.
+    const followDocument = !locked || selectionRef.current.length <= 1 || creating || previous.creating;
+    if (previous.root !== root || (previous.document !== document && followDocument)) {
       next = document && visiblePaths.includes(document) ? [document] : [];
       anchorRef.current = next[0] ?? null;
     } else if (anchorRef.current && !visiblePaths.includes(anchorRef.current)) {
       anchorRef.current = null;
     }
     replaceSelection(next);
-  }, [rootPath, selectedPath, visiblePaths, selection, locked, replaceSelection]);
+  }, [rootPath, selectedPath, visiblePaths, selection, locked, createBusy, createDraft, replaceSelection]);
+
+  useEffect(() => {
+    const releasePointer = () => { pointerFocusRef.current = false; };
+    window.addEventListener('pointerup', releasePointer, true);
+    window.addEventListener('pointercancel', releasePointer, true);
+    window.addEventListener('mouseup', releasePointer, true);
+    window.addEventListener('dragend', releasePointer, true);
+    window.addEventListener('blur', releasePointer);
+    return () => {
+      window.removeEventListener('pointerup', releasePointer, true);
+      window.removeEventListener('pointercancel', releasePointer, true);
+      window.removeEventListener('mouseup', releasePointer, true);
+      window.removeEventListener('dragend', releasePointer, true);
+      window.removeEventListener('blur', releasePointer);
+    };
+  }, []);
 
   const selectRow = (path: string, modifiers: { toggle?: boolean; range?: boolean } = {}) => {
     const next = selectTreePaths(visiblePaths, selectionRef.current, anchorRef.current, path, modifiers);
@@ -317,11 +338,19 @@ function FileTree({
           aria-current={currentDocument ? 'page' : undefined}
           aria-pressed={active}
           draggable={!locked && createDraft === null && renameDraft === null}
+          onFocus={(event) => {
+            // Pointer focus precedes click; selecting here would double-toggle Cmd-click
+            // and collapse a group before dragstart. Keyboard/programmatic focus selects.
+            if (event.target !== event.currentTarget || pointerFocusRef.current || locked
+              || renameBusy || createDraft !== null || renameDraft !== null) return;
+            selectForAction(path);
+          }}
           onClick={(event) => {
-            if (event.detail > 1 || locked || renaming || renameBusy) return;
+            if (event.detail > 1 || locked || renaming) return;
             const modified = event.metaKey || event.ctrlKey || event.shiftKey;
-            if (modified && (createDraft !== null || renameDraft !== null)) return;
+            if (modified && (renameBusy || createDraft !== null || renameDraft !== null)) return;
             selectRow(path, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+            // App queues ordinary navigation behind an in-flight blur rename.
             if (!modified) onNodeClick(node);
           }}
           onDoubleClick={(event) => {
@@ -334,6 +363,7 @@ function FileTree({
             onBeginRename(node);
           }}
           onKeyDown={(event) => {
+            pointerFocusRef.current = false;
             if (locked || renameBusy || event.nativeEvent.isComposing) return;
             const target = event.target;
             if (target instanceof HTMLInputElement
@@ -412,6 +442,7 @@ function FileTree({
             event.dataTransfer.setData('text/plain', dragSelection.map((item) => item.path).join('\n'));
           }}
           onDragEnd={() => {
+            pointerFocusRef.current = false;
             activeDragSourceRef.current = null;
             clearHoverExpand();
             onMoveEnd();
@@ -464,6 +495,8 @@ function FileTree({
   });
 
   return <div className="file-tree" role="group" aria-label="文件与文件夹（支持多选）"
+    onPointerDownCapture={() => { pointerFocusRef.current = true; }}
+    onMouseDownCapture={() => { pointerFocusRef.current = true; }}
     onClick={(event) => {
       if (event.target === event.currentTarget && !locked && !createDraft && !renameDraft) {
         anchorRef.current = null;
