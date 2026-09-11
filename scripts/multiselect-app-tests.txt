@@ -1,0 +1,218 @@
+
+describe('folder multi-selection and batch operations', () => {
+  const base = '/workspace/docs';
+  const path = (name: string) => `${base}/${name}`;
+  const row = (name: string) => document.querySelector<HTMLElement>(`.tree-row-main[data-tree-path="${path(name)}"]`)!;
+  const pressed = () => [...document.querySelectorAll<HTMLElement>('.tree-row-main[aria-pressed="true"]')]
+    .map((element) => element.dataset.treePath);
+
+  async function readyFolders() {
+    mocks.desktop = true;
+    mocks.setWorkspaceRoot.mockImplementation(async (value: string) => ({
+      path: value, generation: 1, watching: true, assetScope: 'synthetic-test-scope',
+    }));
+    mocks.readTextFile.mockResolvedValue({ content: '# synthetic document', version: 'v1' });
+    let entries: import('./lib/desktop').DesktopEntry[] = [
+      { name: 'docs', path: '/workspace/docs', kind: 'folder' },
+      ...['alpha', 'beta', 'gamma', 'target'].map((name) => ({ name, path: path(name), kind: 'folder' as const })),
+      { name: 'plan.md', path: path('plan.md'), kind: 'md' },
+      { name: 'child.md', path: path('alpha/child.md'), kind: 'md' },
+    ];
+    mocks.listDirectory.mockImplementation(async (directory: string) => entries.filter((entry) =>
+      entry.path.slice(0, entry.path.lastIndexOf('/')) === directory));
+    mocks.moveToTrash.mockImplementation(async (candidate: { originalPath: string }) => {
+      entries = entries.filter((entry) => entry.path !== candidate.originalPath && !entry.path.startsWith(`${candidate.originalPath}/`));
+      return { originalPath: candidate.originalPath, trashedPath: `/synthetic-trash/${candidate.originalPath.split('/').pop()}` };
+    });
+    mocks.prepareWorkspaceMove.mockImplementation(async (sourcePath: string, destinationDirectory: string) => ({
+      sourcePath, destinationDirectory, destinationPath: `${destinationDirectory}/${sourcePath.split('/').pop()}`,
+      workspaceGeneration: 1, sourceParentIdentity: '1:10', sourceIdentity: '1:11', destinationIdentity: '1:12',
+      sourceIsDirectory: entries.find((entry) => entry.path === sourcePath)?.kind === 'folder', sourceIsBundle: false,
+    }));
+    mocks.moveWorkspaceEntry.mockImplementation(async (candidate: { sourcePath: string; destinationPath: string }) => {
+      const source = entries.find((entry) => entry.path === candidate.sourcePath)!;
+      entries = entries.map((entry) => entry.path === candidate.sourcePath || entry.path.startsWith(`${candidate.sourcePath}/`)
+        ? { ...entry, path: candidate.destinationPath + entry.path.slice(candidate.sourcePath.length) } : entry);
+      return { originalPath: candidate.sourcePath, movedPath: candidate.destinationPath, entry: { ...source, path: candidate.destinationPath } };
+    });
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect(screen.getByRole('button', { name: '编辑' }).hasAttribute('disabled')).toBe(false));
+    expect(row('alpha')).toBeTruthy();
+  }
+
+  function select(...names: string[]) {
+    fireEvent.keyDown(row('plan.md'), { key: 'Escape' });
+    names.forEach((name) => fireEvent.click(row(name), { metaKey: true }));
+  }
+  function menu(name: string) {
+    fireEvent.contextMenu(row(name), { clientX: 30, clientY: 60 });
+  }
+  async function trash(name: string) {
+    menu(name);
+    fireEvent.click(screen.getByRole('menuitem', { name: '移到废纸篓' }));
+    await screen.findByRole('alertdialog');
+  }
+  async function move(name: string) {
+    mocks.chooseMoveDestination.mockResolvedValue(path('target'));
+    menu(name);
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到文件夹…' }));
+  }
+
+  it('selects nested directories without opening them or replacing the current document', async () => {
+    await readyFolders();
+    const reads = mocks.readTextFile.mock.calls.length;
+    select('alpha', 'beta');
+    expect(pressed()).toEqual([path('alpha'), path('beta')]);
+    expect(row('alpha').getAttribute('aria-expanded')).toBe('false');
+    expect(mocks.listDirectory).not.toHaveBeenCalledWith(path('alpha'));
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+    expect(mocks.readTextFile).toHaveBeenCalledTimes(reads);
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('supports Shift ranges, Ctrl toggling, select-all and Escape within the visible tree', async () => {
+    await readyFolders();
+    select('alpha');
+    fireEvent.click(row('gamma'), { shiftKey: true });
+    expect(pressed()).toEqual([path('alpha'), path('beta'), path('gamma')]);
+    fireEvent.click(row('beta'), { ctrlKey: true });
+    expect(pressed()).toEqual([path('alpha'), path('gamma')]);
+    fireEvent.keyDown(row('gamma'), { key: 'a', metaKey: true });
+    expect(pressed()).toContain(path('target'));
+    expect(pressed()).not.toContain(path('alpha/child.md'));
+    fireEvent.keyDown(row('gamma'), { key: 'Escape' });
+    fireEvent.keyDown(row('gamma'), { key: 'Backspace', metaKey: true });
+    expect(pressed()).toEqual([]);
+    expect(mocks.prepareTrash).not.toHaveBeenCalled();
+  });
+
+  it('preserves a selected group for context actions and replaces it for an unselected row', async () => {
+    await readyFolders();
+    select('alpha', 'beta');
+    menu('alpha');
+    expect(pressed()).toEqual([path('alpha'), path('beta')]);
+    expect(screen.queryByRole('menuitem', { name: '重命名' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '新建文件夹' })).toBeNull();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    menu('gamma');
+    expect(pressed()).toEqual([path('gamma')]);
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
+  });
+
+  it('asks once and cancellation never trashes any selected directory', async () => {
+    await readyFolders();
+    select('alpha', 'beta');
+    await trash('alpha');
+    expect(screen.getByText('将 2 项移到废纸篓？')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+    expect(pressed()).toEqual([path('alpha'), path('beta')]);
+  });
+
+  it('trashes both selected directories after one confirmation without saving an unrelated document', async () => {
+    await readyFolders();
+    select('alpha', 'beta');
+    await trash('alpha');
+    fireEvent.click(screen.getByRole('button', { name: '移到废纸篓' }));
+    await waitFor(() => expect(mocks.moveToTrash).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(row('alpha')).toBeNull());
+    expect(row('beta')).toBeNull();
+    expect(row('gamma')).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+  });
+
+  it('deduplicates a selected folder and its selected descendant before preparing Trash', async () => {
+    await readyFolders();
+    fireEvent.click(row('alpha'));
+    await waitFor(() => expect(row('alpha/child.md')).toBeTruthy());
+    select('alpha', 'alpha/child.md');
+    await trash('alpha');
+    fireEvent.click(screen.getByRole('button', { name: '移到废纸篓' }));
+    await waitFor(() => expect(mocks.moveToTrash).toHaveBeenCalledOnce());
+    expect(mocks.prepareTrash.mock.calls.map(([value]) => value)).toEqual([path('alpha')]);
+  });
+
+  it('stops a partially failed Trash batch and keeps the failed and unattempted rows selected', async () => {
+    await readyFolders();
+    const perform = mocks.moveToTrash.getMockImplementation()!;
+    mocks.moveToTrash.mockImplementation(async (candidate: { originalPath: string }) => {
+      if (candidate.originalPath === path('beta')) throw new Error('PERMISSION_DENIED');
+      return perform(candidate);
+    });
+    select('alpha', 'beta', 'gamma');
+    await trash('alpha');
+    fireEvent.click(screen.getByRole('button', { name: '移到废纸篓' }));
+    await waitFor(() => expect(mocks.moveToTrash).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pressed()).toEqual([path('beta'), path('gamma')]));
+    expect(row('alpha')).toBeNull();
+    expect(mocks.moveToTrash.mock.calls.map(([candidate]) => candidate.originalPath)).toEqual([path('alpha'), path('beta')]);
+    expect(screen.getByText(/1\/3 项/)).toBeTruthy();
+  });
+
+  it('uses one destination picker and moves every selected directory', async () => {
+    await readyFolders();
+    select('alpha', 'beta');
+    await move('alpha');
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pressed()).toEqual([path('target/alpha'), path('target/beta')]));
+    expect(mocks.chooseMoveDestination).toHaveBeenCalledOnce();
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+    expect(row('alpha')).toBeNull();
+    expect(row('beta')).toBeNull();
+    expect(screen.getByText('workspace / plan.md')).toBeTruthy();
+  });
+
+  it('preflights every source before moving any item', async () => {
+    await readyFolders();
+    const prepare = mocks.prepareWorkspaceMove.getMockImplementation()!;
+    mocks.prepareWorkspaceMove.mockImplementation(async (source: string, destination: string) => {
+      if (source === path('beta')) throw new Error('MOVE_DESTINATION_EXISTS');
+      return prepare(source, destination);
+    });
+    select('alpha', 'beta');
+    await move('alpha');
+    await screen.findByText(/批量移动已停止/);
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+    expect(pressed()).toEqual([path('alpha'), path('beta')]);
+  });
+
+  it('stops moving after a late native collision and reports confirmed progress only', async () => {
+    await readyFolders();
+    const perform = mocks.moveWorkspaceEntry.getMockImplementation()!;
+    mocks.moveWorkspaceEntry.mockImplementation(async (candidate: { sourcePath: string }) => {
+      if (candidate.sourcePath === path('beta')) throw new Error('MOVE_DESTINATION_EXISTS');
+      return perform(candidate);
+    });
+    select('alpha', 'beta', 'gamma');
+    await move('alpha');
+    await waitFor(() => expect(mocks.moveWorkspaceEntry).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pressed()).toEqual([path('beta'), path('gamma')]));
+    expect(mocks.moveWorkspaceEntry.mock.calls.map(([candidate]) => candidate.sourcePath)).toEqual([path('alpha'), path('beta')]);
+    expect(screen.getByText(/已确认移动 1\/3 项/)).toBeTruthy();
+  });
+
+  it('does not move any item if the included current document cannot be saved safely', async () => {
+    await readyFolders();
+    mocks.writeTextFile.mockRejectedValue(new Error('IO_ERROR: synthetic save failure'));
+    await editCurrentDocument('# unsaved synthetic draft');
+    select('alpha', 'beta', 'plan.md');
+    await move('alpha');
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalled());
+    await screen.findByText(/无法移动当前项目/);
+    expect(mocks.moveWorkspaceEntry).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'editor' }) as HTMLTextAreaElement).value).toBe('# unsaved synthetic draft');
+  });
+
+  it('keeps delete shortcuts inside the editor away from the tree selection', async () => {
+    await readyFolders();
+    const editor = await editCurrentDocument('# editable text');
+    select('alpha', 'beta');
+    fireEvent.keyDown(editor, { key: 'Backspace', metaKey: true });
+    expect(mocks.prepareTrash).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
