@@ -104,12 +104,13 @@ jobs:
       - name: Regenerate and verify distributable notices
         run: |
           set -euo pipefail
-          cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --target x86_64-apple-darwin
+          # Offline Cargo metadata also reads non-target manifests in the lock graph.
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
           node scripts/generate-third-party-notices.mjs
+          git diff > /tmp/clean-evidence/reviewed.patch
           node scripts/generate-third-party-notices.mjs --check
           git diff --check
           git diff --stat > /tmp/clean-evidence/change-stat.txt
-          git diff > /tmp/clean-evidence/reviewed.patch
       - name: Commit validated source and remove one-shot workflow
         id: commit
         run: |
@@ -174,6 +175,7 @@ jobs:
           cargo check --locked --manifest-path src-tauri/Cargo.toml
           cargo test --locked --manifest-path src-tauri/Cargo.toml 2>&1 | tee /tmp/native-evidence/rust-tests.log
           cargo test --locked --manifest-path src-tauri/Cargo.toml macos_moves_unique_ -- --ignored --test-threads=1 2>&1 | tee /tmp/native-evidence/trash-smoke.log
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
           node scripts/generate-third-party-notices.mjs --check
       - name: Build exact candidate
         run: npm run tauri:build -- --target "${{ matrix.target }}" -- --locked
