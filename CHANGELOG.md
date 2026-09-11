@@ -1,17 +1,30 @@
 # Changelog
 
-## 0.2.0-beta.4 (candidate)
+## 0.2.0-beta.4 — 2026-09-11 (prerelease)
 
-- Retain confirmed batch progress and remaining selections on rejected operations; empty errors never report success.
-- Update vulnerable development/test dependencies within existing compatible ranges and enforce npm audit in CI.
-- Add production Chromium/WebKit multi-selection regression checks and explicitly run isolated native Trash smoke tests in macOS CI.
-- Refresh locked-dependency notices and Node 24 GitHub Actions. Candidate only; no public release or Apple notarization is implied.
+### Added and fixed
+
+- Select directories, files, or mixed groups using Command/Ctrl-click, Shift-click, visible-item select-all, keyboard ranges, and Escape.
+- Drag a selected group, move it to a chosen folder, or move it to macOS Trash with one confirmation. Parent/child targets are deduplicated; failures stop the batch and retain unfinished selections.
+- Save before preparing Trash identities and retain original move candidates so a later same-name replacement is not silently accepted.
+- Retain confirmed batch progress on rejected operations; empty errors never report success.
+- Preserve the Markdown/task-list improvements documented under Beta 2 and all changes from the internal Beta 3 candidate.
+- Update vulnerable development/test dependencies within compatible ranges and enforce npm audit in CI; production dependency records are unchanged.
+- Add production Chromium/WebKit multi-selection regressions, explicitly execute isolated native Trash smoke tests in macOS CI, refresh dependency notices, and update GitHub Actions.
+
+### Validation and compatibility
+
+- Verified installer source: `d50eedc17f40f8032cb698476ccf01d5cfb47c36`. Release publication adds documentation/download-link updates only; the release provenance records the exact tag commit and source comparison.
+- 433 frontend tests, 90 standard Rust tests, 2 separately invoked real macOS Trash tests, and 16 Chromium/WebKit interaction cases passed. Both npm audits reported zero vulnerabilities at validation time.
+- Both DMGs passed architecture, version, signature, license, disk-image and read-only mounted-content checks. An isolated Apple Silicon startup check passed with synthetic files.
+- Public prerelease, not a stable release. Both installers require macOS 12 or later, use ad-hoc signing, and are not Apple-notarized. Full native UI physical-device, Intel hardware, and older macOS acceptance remain separate checks.
 
 ## 0.2.0-beta.3 — candidate (not released)
 
 - Directory/file multi-selection and batch move/Trash.
 - Save-before-preflight Trash ordering and retained move identities.
-- Candidate installers only; pending desktop acceptance and staging promotion.
+- Internal candidate superseded by the Beta 4 prerelease.
+
 ## 0.2.0-beta.2 — 2026-09-10
 
 ### Fixed
