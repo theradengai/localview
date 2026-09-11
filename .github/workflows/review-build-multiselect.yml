@@ -1,0 +1,152 @@
+name: Review and build multi-selection candidate
+
+on:
+  push:
+    branches: [fix/folder-multiselect]
+    paths:
+      - .github/workflows/review-build-multiselect.yml
+      - scripts/review-multiselect-candidate.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-multiselect-candidate
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'theradengai/localview' && github.ref == 'refs/heads/fix/folder-multiselect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.commit.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Add reviewed regression cases
+        run: python3 scripts/review-multiselect-candidate.py tests
+      - name: Reproduce the three identity-order failures before fixing
+        shell: bash
+        run: |
+          set +e
+          npm test -- --testNamePattern='captures Trash identities|saves before single-item Trash|never refreshes a Trash identity|retains every preflighted move identity' --reporter=json --outputFile=review-before.json > review-before.log 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          python3 - <<'PY'
+          import json
+          d = json.load(open('review-before.json'))
+          failed = [a['fullName'] for s in d['testResults'] for a in s['assertionResults'] if a['status'] == 'failed']
+          expected = ['captures Trash identities', 'saves before single-item Trash', 'retains every preflighted move identity']
+          assert len(failed) == 3 and all(any(e in f for f in failed) for e in expected), failed
+          print('Reproduced expected failures:', *failed, sep='\n')
+          PY
+      - name: Apply fixes and consistent candidate version
+        run: python3 scripts/review-multiselect-candidate.py fix
+      - name: Build frontend
+        run: npm run build
+      - name: Test complete frontend suite
+        shell: bash
+        run: |
+          npm test -- --reporter=json --outputFile=review-after.json > review-after.log 2>&1 || { tail -160 review-after.log; exit 1; }
+          python3 - <<'PY'
+          import json
+          d = json.load(open('review-after.json'))
+          print('Frontend:', d['numPassedTests'], 'passed;', d['numFailedTests'], 'failed;', d['numPendingTests'], 'pending')
+          assert d['success'] and d['numFailedTests'] == 0
+          PY
+      - name: Commit validated source and remove one-shot scaffolding
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git rm scripts/review-multiselect-candidate.py .github/workflows/review-build-multiselect.yml
+          git add src/App.tsx src/App.test.tsx package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json docs/FOLDER_SELECTION.md CHANGELOG.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: preserve batch operation identities and prepare beta 2 candidate'
+          git push origin HEAD:refs/heads/fix/folder-multiselect
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Retain review evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: multiselect-review-evidence
+          path: |
+            review-before.json
+            review-after.json
+            review-before.log
+            review-after.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            architecture: arm64
+          - target: x86_64-apple-darwin
+            architecture: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.91.1
+          targets: ${{ matrix.target }}
+          components: rustfmt
+      - name: Validate native crate and full frontend on macOS
+        if: matrix.architecture == 'arm64'
+        run: |
+          npm test
+          cargo fmt --check --manifest-path src-tauri/Cargo.toml
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build candidate installer
+        run: npm run tauri:build -- --target "${{ matrix.target }}" -- --locked
+      - name: Verify bundle and DMG, record source and checksums
+        env:
+          BUNDLE_ROOT: src-tauri/target/${{ matrix.target }}/release/bundle
+          EXPECTED_ARCH: ${{ matrix.architecture }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-macos-bundle.mjs "$BUNDLE_ROOT/macos/LocalView.app" "$EXPECTED_ARCH"
+          for image in "$BUNDLE_ROOT"/dmg/*.dmg; do hdiutil verify "$image"; done
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['BUNDLE_ROOT']) / 'dmg'
+          info = {'version': '0.2.0-beta.2', 'source_commit': os.environ['SOURCE_SHA'], 'architecture': os.environ['EXPECTED_ARCH'], 'status': 'candidate-not-public-release', 'native_ui_acceptance': 'not-performed', 'notarized': False}
+          (root / 'BUILD-INFO.json').write_text(json.dumps(info, indent=2) + '\n')
+          (root / 'CANDIDATE-NOTES.txt').write_text('LocalView 0.2.0-beta.2 candidate\n\nIncludes directory multi-selection, batch move/Trash, save-before-Trash preflight and retained move identities.\n\nThis is a test installer, not a public release. macOS 12 or later. Ad-hoc signed, not Apple notarized. Quit the previous LocalView before replacing the app. Validate with disposable sample folders first. Native UI acceptance has not been performed.\n\nSource commit: ' + os.environ['SOURCE_SHA'] + '\n')
+          PY
+          cd "$BUNDLE_ROOT/dmg"
+          shasum -a 256 ./*.dmg > SHA256SUMS.txt
+      - name: Upload verified candidate installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: LocalView-0.2.0-beta.2-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/
+          if-no-files-found: error
+          retention-days: 14
