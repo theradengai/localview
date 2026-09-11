@@ -1,0 +1,46 @@
+name: Apply folder multi-selection patch
+
+on:
+  push:
+    branches: [fix/folder-multiselect]
+    paths:
+      - scripts/apply-tree-multiselect.py
+      - scripts/multiselect-app-tests.txt
+      - .github/workflows/apply-folder-multiselect.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-folder-multiselect
+  cancel-in-progress: false
+
+jobs:
+  apply-and-test:
+    if: github.repository == 'theradengai/localview' && github.ref == 'refs/heads/fix/folder-multiselect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/folder-multiselect
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply exact-base source edits and remove one-shot scaffolding
+        run: |
+          test "${GITHUB_REF}" = refs/heads/fix/folder-multiselect
+          python3 scripts/apply-tree-multiselect.py
+          git diff --check
+          git rm scripts/apply-tree-multiselect.py scripts/multiselect-app-tests.txt .github/workflows/apply-folder-multiselect.yml
+          git add src/App.tsx src/App.test.tsx src/components/FileTree.tsx
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'feat: support directory multi-selection and safe batch move/trash'
+          git push origin HEAD:refs/heads/fix/folder-multiselect
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Test frontend
+        if: success() || failure()
+        run: npm test
