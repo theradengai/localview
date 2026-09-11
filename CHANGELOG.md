@@ -1,10 +1,24 @@
 # Changelog
 
-## 0.2.0-beta.2 — candidate (not released)
+## 0.2.0-beta.3 — candidate (not released)
 
 - Directory/file multi-selection and batch move/Trash.
 - Save-before-preflight Trash ordering and retained move identities.
 - Candidate installers only; pending desktop acceptance and staging promotion.
+## 0.2.0-beta.2 — 2026-09-10
+
+### Fixed
+
+- Task checkboxes can be toggled directly in Markdown Preview and Split. Changes use the existing auto-save coordinator and preserve conflict protection.
+- Each preview toggle has its own undo step; undo/redo also works after switching modes. WebKit checkbox focus is restored after a click.
+- Recognize pasted task continuations with deep spaces, tabs, non-breaking spaces, or full-width spaces, and compact task markers in both reading and live editing. Explicit code blocks, inline code, HTML, and links retain their original meaning.
+- Update only the selected task marker; preserve original indentation, CRLF and mixed line endings, including through task undo/redo.
+- Add synthetic regression fixtures and tests for task rendering, editing, auto-save, external conflicts, file navigation, and line-ending offsets.
+
+### Validation and compatibility
+
+- 389 frontend tests passed; Chromium and native macOS WKWebView task interactions passed. See [the validation report](docs/MARKDOWN_FORMAT_VALIDATION.md).
+- Apple Silicon and Intel DMGs target macOS 12 or later. Installers remain ad-hoc-signed and not Apple-notarized; Intel hardware interaction testing remains a separate compatibility check.
 
 ## 0.2.0-beta.1 — 2026-09-04
 

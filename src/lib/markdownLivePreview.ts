@@ -22,6 +22,7 @@ import {
   type GfmTableModel,
 } from './markdownEditing';
 import { findTopLevelGfmTableRange } from './markdownLanguage';
+import { indentationWidth, markdownTaskLine } from './markdownTasks';
 import { renderMarkdownTable } from './markdownTableRendering';
 import {
   scanLocalInlineStylePairs,
@@ -1012,6 +1013,7 @@ function buildDecorations(
   const tree = syntaxTree(view.state);
   const processedInlineStyleContainers = new Set<string>();
   const orderedLists = new Map<number, Map<number, number>>();
+  const continuationTaskMarkers = new Set<number>();
 
   const add = (key: string, range: Range<Decoration>) => {
     if (seen.has(key)) return;
@@ -1108,10 +1110,56 @@ function buildDecorations(
     });
   };
 
+  const decorateTaskContinuations = (node: SyntaxNode) => {
+    const item = node.parent;
+    const mark = item?.firstChild;
+    if (item?.name !== 'ListItem' || mark?.name !== 'ListMark' || composing) return;
+    const firstLine = view.state.doc.lineAt(node.from);
+    const lastLine = view.state.doc.lineAt(node.to);
+    const compactRoot = node.name === 'Paragraph' && /^\[[ xX]\][^ \t(\[]/.test(view.state.sliceDoc(node.from, firstLine.to));
+    if (firstLine.number === lastLine.number && !compactRoot) return;
+    const prefix = view.state.sliceDoc(firstLine.from, mark.from);
+    if (!/^[ \t\u00a0\u3000]*$/.test(prefix)
+      || consume(node.from, node.to, options.maxBuildCharacters) === null) return;
+    let depth = -1;
+    for (let parent = item.parent; parent; parent = parent.parent) {
+      if (parent.name === 'BulletList' || parent.name === 'OrderedList') depth++;
+    }
+    const stack = [{ indent: indentationWidth(prefix), depth: Math.max(0, depth) }];
+    for (let number = firstLine.number; number <= lastLine.number; number++) {
+      const isRoot = number === firstLine.number;
+      if (isRoot && !compactRoot) continue;
+      const line = view.state.doc.line(number);
+      const task = markdownTaskLine(line.text);
+      if (!task) continue;
+      const from = line.from + task.markerFrom;
+      let protectedSource = false;
+      for (let parent: SyntaxNode | null = tree.resolveInner(from, 1); parent && parent.from >= node.from; parent = parent.parent) {
+        // Lezer also calls a bare [x] an unresolved shortcut Link.
+        const bareMarker = parent.name === 'Link' && parent.from === from && parent.to === from + 3;
+        if (['InlineCode', 'Link', 'Image', 'HTMLTag'].includes(parent.name) && !bareMarker) { protectedSource = true; break; }
+      }
+      if (protectedSource) continue;
+      if (!isRoot) while (stack.length && stack[stack.length - 1].indent >= task.indent) stack.pop();
+      if (!stack.length) continue;
+      const taskDepth = stack[stack.length - 1].depth + (isRoot ? 0 : 1);
+      if (!isRoot) stack.push({ indent: task.indent, depth: taskDepth });
+      continuationTaskMarkers.add(from);
+      if (lineIsActive(view, line.from, line.to)) continue;
+      addReplace(isRoot ? mark.to : line.from, from);
+      addReplace(from, from + 3, new TaskWidget(from, from + 3, line.text.slice(task.markerFrom, task.markerFrom + 3)));
+      add(`list-indent:${line.from}`, Decoration.line({
+        attributes: { style: `padding-left:${8 + taskDepth * 24}px` },
+      }).range(line.from));
+    }
+  };
+
   const processNode = (node: SyntaxNode, fullyInsideRange: boolean) => {
     if (!fullyInsideRange && node.name !== 'Document') return false;
 
     if (node.name === 'Paragraph') decorateLocalInlineStyles(node);
+    if (node.name === 'Task' || node.name === 'Paragraph') decorateTaskContinuations(node);
+    if (node.name === 'Link' && continuationTaskMarkers.has(node.from) && node.to === node.from + 3) return false;
 
     const inlineClass = INLINE_STYLES[node.name];
     if (inlineClass) {
@@ -1199,7 +1247,9 @@ function buildDecorations(
           attributes: { style: `padding-left:${8 + Math.max(0, depth) * 24}px` },
         }).range(line.from));
       }
-      if (node.nextSibling?.name === 'Task') {
+      const compactTask = node.nextSibling?.name === 'Paragraph'
+        && /^[ \t]+\[[ xX]\][^ \t(\[]/.test(view.state.sliceDoc(node.to, line.to));
+      if (node.nextSibling?.name === 'Task' || compactTask) {
         addReplace(node.from, node.to);
       } else if (item?.name === 'ListItem') {
         const list = item.parent;

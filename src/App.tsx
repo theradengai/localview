@@ -3786,6 +3786,17 @@ export default function App() {
     saveCoordinatorRef.current?.update(nextContent);
   }
 
+  const taskDocumentKey = selected ? `${selected.path}:${editorEpoch}` : '';
+  const taskWorkspaceEpoch = workspaceEpochRef.current;
+  const taskToggleEnabled = !loading && !workspaceTransition && documentActionGate === 'idle';
+  const taskActionsAllowed = () => selected?.kind === 'md'
+    && selectedRef.current?.path === selected.path
+    && workspaceEpochRef.current === taskWorkspaceEpoch
+    && loadingOperationRef.current === null
+    && !workspaceTransitionRef.current
+    && documentActionGateRef.current === 'idle'
+    && modeRef.current !== 'edit';
+
   const editor = selected ? <Suspense fallback={<div className="editor-pane editor-loading">正在载入编辑器…</div>}>
     <TextEditor
       ref={textEditorRef}
@@ -3793,6 +3804,7 @@ export default function App() {
       kind={selected.kind}
       value={content}
       editable={mode !== 'preview' && !workspaceTransition && documentActionGate === 'idle'}
+      taskToggleEnabled={taskToggleEnabled}
       markdownPresentation={selected.kind === 'md' && mode === 'edit' ? 'live' : 'source'}
       resolveMarkdownImageSource={resolveMarkdownImageSource}
       hint={mode === 'edit'
@@ -3811,7 +3823,17 @@ export default function App() {
     preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button disabled={Boolean(workspaceTransition)} onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
   } else if (selectedRenderer === 'markdown') {
     preview = <Suspense fallback={<div className="empty-state"><strong>正在载入 Markdown 预览…</strong></div>}>
-      <MarkdownPreview content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path} assetScope={workspaceBindingRef.current?.assetScope ?? ''} demoImages={demoImages} />
+      <MarkdownPreview
+        content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path}
+        assetScope={workspaceBindingRef.current?.assetScope ?? ''} demoImages={demoImages}
+        onTaskToggle={taskToggleEnabled ? change => {
+          if (!taskActionsAllowed() || change.source !== contentRef.current) return false;
+          return textEditorRef.current?.toggleMarkdownTask(taskDocumentKey, change) ?? false;
+        } : undefined}
+        onTaskHistory={taskToggleEnabled ? direction => (
+          taskActionsAllowed() && (textEditorRef.current?.taskHistory(taskDocumentKey, direction) ?? false)
+        ) : undefined}
+      />
     </Suspense>;
   } else if (selectedRenderer === 'html') {
     const useDisk = desktop && mode === 'preview' && !dirty;

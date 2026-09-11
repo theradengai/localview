@@ -30,8 +30,10 @@
 浏览器 Demo 使用相同选择交互，内部拖动和废纸篓只修改内存；没有原生目录选择器，也不会操作真实磁盘。macOS 原生拖放和系统废纸篓仍需在独立的合成测试文件夹中验收。
 
 
-## 0.2.0-beta.2 candidate review
+## 0.2.0-beta.3 candidate review
 
 Trash now flushes an included editor before capturing target identities and holds its operation gate through confirmation. Single and batch Trash share this path. Batch moves retain all preflighted native candidates, so a later same-name replacement is rejected rather than re-authorized. Added four identity/save-order regression tests.
 
 This is a candidate build, not a public release. The existing public Beta 1 download links remain unchanged until desktop acceptance and staging promotion. Candidate installers carry their source SHA and SHA256 checksums. Automated checks do not replace real macOS UI acceptance.
+
+The Beta 3 candidate also includes staging commit 1f480c505b35e5ce2fda04771270cd42900c8a18, preserving its Markdown task/preview fixes. It does not replace or publish the separate Beta 2 release.

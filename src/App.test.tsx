@@ -125,7 +125,7 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
             sliceDoc: (from: number, to: number) => document.slice(from, to),
           },
           dispatch: vi.fn((transaction: { userEvent?: string; changes?: { from: number; to: number; insert: string } }) => {
-            if (transaction.userEvent !== 'input.paste' || !transaction.changes) return;
+            if (!['input.paste', 'input.task'].includes(transaction.userEvent ?? '') || !transaction.changes) return;
             const { from, to, insert } = transaction.changes;
             const next = document.slice(0, from) + insert + document.slice(to);
             setDocument(next);
@@ -712,6 +712,70 @@ describe('external disk changes', () => {
 
     await user.click(screen.getByRole('button', { name: 'report.pages' }));
     expect(await screen.findByRole('button', { name: '放弃修改并打开其他文件' })).toBeTruthy();
+  });
+});
+
+describe('preview task editing', () => {
+  it('auto-saves a nested preview toggle and keeps Split and Preview in sync', async () => {
+    mocks.desktop = true;
+    const source = '# tasks\n\n- [ ] parent\n      - [ ] child\n\n```md\n- [ ] code\n```';
+    mocks.readTextFile.mockResolvedValue({ content: source, version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'tasks' });
+    await waitFor(() => expect(document.querySelector('textarea[aria-label="editor"]')).toBeTruthy());
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes).toHaveLength(2);
+    await user.click(boxes[1]);
+    const changed = source.replace('      - [ ] child', '      - [x] child');
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/docs/plan.md', changed, 'v1'));
+    await user.click(screen.getByRole('button', { name: '分栏' }));
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', changed);
+    expect(screen.getAllByRole('checkbox')[1]).toHaveProperty('checked', true);
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    const second = changed.replace('- [ ] parent', '- [x] parent');
+    expect(screen.getByRole('textbox', { name: 'editor' })).toHaveProperty('value', second);
+    await user.click(screen.getByRole('button', { name: '预览' }));
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    await waitFor(() => expect(mocks.writeTextFile).toHaveBeenLastCalledWith('/workspace/docs/plan.md', second, 'saved-version'));
+    expect(screen.getAllByRole('checkbox').every(box => (box as HTMLInputElement).checked)).toBe(true);
+  });
+
+  it('protects external changes after a preview toggle and can reload the disk version', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValueOnce({ content: '- [ ] local', version: 'v1' })
+      .mockResolvedValue({ content: '- [ ] external', version: 'v2' });
+    mocks.writeTextFile.mockRejectedValue(new Error('EXTERNAL_CHANGE: changed outside'));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect(document.querySelector('textarea[aria-label="editor"]')).toBeTruthy());
+    await user.click(screen.getByRole('checkbox'));
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    await user.click(await screen.findByRole('button', { name: '保留本地修改' }));
+    expect(mocks.writeTextFile).toHaveBeenCalledExactlyOnceWith('/workspace/docs/plan.md', '- [x] local', 'v1');
+    expect(screen.getByRole('checkbox')).toHaveProperty('checked', true);
+    expect(screen.getByText('磁盘已变更')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    await user.click(await screen.findByRole('button', { name: '重新载入磁盘版本' }));
+    await waitFor(() => expect(screen.getByRole('checkbox')).toHaveProperty('checked', false));
+    expect(screen.getByText('external')).toBeTruthy();
+    expect(mocks.writeTextFile).toHaveBeenCalledOnce();
+  });
+
+  it('saves the task to its original file before navigation and cannot write through an old checkbox', async () => {
+    mocks.desktop = true;
+    mocks.readTextFile.mockResolvedValue({ content: '- [ ] current', version: 'v1' });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('workspace / plan.md');
+    await waitFor(() => expect(document.querySelector('textarea[aria-label="editor"]')).toBeTruthy());
+    const oldBox = screen.getByRole('checkbox');
+    await user.click(oldBox);
+    await user.click(screen.getByRole('button', { name: 'report.pages' }));
+    await screen.findByText('workspace / report.pages');
+    fireEvent.click(oldBox);
+    expect(mocks.writeTextFile).toHaveBeenCalledExactlyOnceWith('/workspace/docs/plan.md', '- [x] current', 'v1');
   });
 });
 

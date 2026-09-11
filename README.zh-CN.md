@@ -6,7 +6,7 @@
 
 无需导入、无需 Vault、无需强制索引。文件仍然是你磁盘上的普通文件。
 
-[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.1) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
+[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.2) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
 
 ![LocalView 预览、分栏、编辑、任务列表与 HTML 演示](docs/images/localview-demo.gif)
 
@@ -16,6 +16,7 @@
 
 - **从文件出发：** 在 Finder 里打开支持的文件，自动展示所在文件夹上下文，按需展开目录。
 - **直接编辑 Markdown：** 默认预览；编辑时使用保留原始 Markdown 的实时预览，也可切换左预览、右源码的分栏。选中文字即可格式化，支持的表格可在单元格内编辑。
+- **直接勾选任务：** 预览、分栏和编辑模式均可勾选，支持自动保存和撤销；兼容粘贴内容中的深缩进，保留原文空格和换行。
 - **多格式预览：** HTML 本地交互预览、图片、PDF、CSV、Excel、ODS，以及 macOS Quick Look 提供的 Office/iWork 预览。
 - **整理文件：** 新建 Markdown 和文件夹、双击重命名、在目录树拖动文件/文件夹、移到废纸篓。
 - **自动保存：** 停止输入 600 ms 后写回原文件，`⌘S` 立即保存；检测外部修改，避免静默覆盖。
@@ -24,12 +25,12 @@
 
 ## 下载与安装
 
-**0.2.0-beta.1 · macOS Monterey 12 及以上。** 当前界面主要为简体中文；本次 Beta 不提供 Windows/Linux 支持。
+**0.2.0-beta.2 · macOS Monterey 12 及以上。** 当前界面主要为简体中文；本次 Beta 不提供 Windows/Linux 支持。
 
 | 电脑 | 安装包 |
 | --- | --- |
-| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.1/LocalView_0.2.0-beta.1_aarch64.dmg) |
-| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.1/LocalView_0.2.0-beta.1_x64.dmg) |
+| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.2/LocalView_0.2.0-beta.2_aarch64.dmg) |
+| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.2/LocalView_0.2.0-beta.2_x64.dmg) |
 
 退出旧版 LocalView，打开 DMG，将应用拖入“应用程序”，弹出安装磁盘后，从“应用程序”打开。
 
@@ -39,7 +40,7 @@
 
 | 格式 | 当前支持 |
 | --- | --- |
-| Markdown | 编辑、实时预览、分栏、只读预览、渲染后打印 |
+| Markdown | 编辑、实时预览、分栏、可勾选任务的预览、渲染后打印 |
 | HTML | 源码、分栏、隔离的本地交互预览 |
 | 文本与常见代码文件 | 文本编辑、自动保存 |
 | 图片、PDF | 预览 |
