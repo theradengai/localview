@@ -16,7 +16,9 @@ import CodeMirror, {
   type ViewUpdate,
 } from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
-import { isolateHistory, undo, redo } from '@codemirror/commands';
+import { isolateHistory, invertedEffects, undo, redo } from '@codemirror/commands';
+import { StateEffect } from '@codemirror/state';
+import { applySourceChanges, parseKanban, type KanbanChange } from '../lib/kanban';
 import { markdownTaskEdit, type MarkdownTaskChange, type MarkdownTaskHistory } from '../lib/markdownTasks';
 import { applyEditorChanges, editorOffset, normalizeEditorSource } from '../lib/editorSource';
 import type { FileKind } from '../lib/desktop';
@@ -50,6 +52,9 @@ import MarkdownSelectionToolbar, {
   type MarkdownToolbarAnchor,
 } from './MarkdownSelectionToolbar';
 
+// Source-only metadata restores exact moved line endings in the same CodeMirror history.
+const rawKanbanSource = StateEffect.define<string>();
+
 type Props = {
   documentKey: string;
   kind: FileKind;
@@ -70,6 +75,7 @@ export type MarkdownTableToolsAnchor = { x: number; y: number };
 export type TextEditorHandle = {
   openMarkdownTableTools: (anchor: MarkdownTableToolsAnchor) => boolean;
   flushMarkdownCellEdit: () => boolean;
+  applyKanbanChange: (documentKey: string, change: KanbanChange) => boolean;
   toggleMarkdownTask: (documentKey: string, change: MarkdownTaskChange) => boolean;
   taskHistory: (documentKey: string, direction: MarkdownTaskHistory) => boolean;
 };
@@ -119,8 +125,11 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   }
   const handleSourceChange = useCallback((next: string, update?: ViewUpdate) => {
     const previous = sourceRef.current.source;
-    const source = update && normalizeEditorSource(previous) === update.startState.doc.toString()
-      ? applyEditorChanges(previous, update.changes) : next;
+    const exact = update?.transactions?.flatMap(tr => tr.effects)
+      .filter(effect => effect.is(rawKanbanSource)).map(effect => effect.value as string)
+      .reverse().find(source => normalizeEditorSource(source) === next);
+    const source = exact ?? (update && normalizeEditorSource(previous) === update.startState.doc.toString()
+      ? applyEditorChanges(previous, update.changes) : next);
     sourceRef.current.source = source;
     onChange(source);
   }, [onChange]);
@@ -427,6 +436,26 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   useImperativeHandle(forwardedRef, () => ({
     openMarkdownTableTools,
     flushMarkdownCellEdit,
+    applyKanbanChange(key, change) {
+      const view = editorRef.current?.view;
+      const current = latestRef.current;
+      if (!view || current.kind !== 'md' || !current.taskToggleEnabled
+        || current.documentKey !== key || view.composing || view.compositionStarted || composingRef.current
+        || sourceRef.current.source !== change.source
+        || view.state.doc.toString() !== normalizeEditorSource(change.source)) return false;
+      const next = applySourceChanges(change.source, change.changes);
+      if (next === null || next === change.source || parseKanban(change.source).kind !== 'board'
+        || parseKanban(next).kind !== 'board' || !flushActiveMarkdownTableCell(view)
+        || sourceRef.current.source !== change.source) return false;
+      closeToolbar(false); closeTableMenu(false);
+      view.dispatch({
+        changes: change.changes.map(edit => ({ from: editorOffset(change.source, edit.from),
+          to: editorOffset(change.source, edit.to), insert: normalizeEditorSource(edit.insert) })),
+        effects: rawKanbanSource.of(next), userEvent: 'input.kanban',
+        annotations: isolateHistory.of('full'),
+      });
+      return true;
+    },
     toggleMarkdownTask(key, change) {
       const view = editorRef.current?.view;
       const current = latestRef.current;
@@ -527,10 +556,16 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
     [kind, markdownPresentation, resolveMarkdownImageSource],
   );
 
+  const kanbanHistoryExtension = useMemo(() => invertedEffects.of(tr => (
+    tr.effects.some(effect => effect.is(rawKanbanSource))
+      ? [rawKanbanSource.of(sourceRef.current.source)] : []
+  )), []);
+
   const extensions = useMemo(
     () => kind === 'md'
       ? [
         MARKDOWN_GFM_EXTENSION,
+        kanbanHistoryExtension,
         EditorView.lineWrapping,
         livePreviewExtension,
         markdownInteractionExtension,
@@ -538,7 +573,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       : kind === 'html'
         ? [html()]
         : [],
-    [kind, livePreviewExtension, markdownInteractionExtension],
+    [kind, livePreviewExtension, markdownInteractionExtension, kanbanHistoryExtension],
   );
 
   const handleTableMenuUpdate = useCallback((update: ViewUpdate) => {

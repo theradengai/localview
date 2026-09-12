@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { EditorView } from '@uiw/react-codemirror';
 import { createRef } from 'react';
+import { applySourceChanges, kanbanChange, parseKanban } from '../lib/kanban';
+import { normalizeEditorSource } from '../lib/editorSource';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import '../style.css';
 import { getActiveMarkdownTableCell } from '../lib/markdownLivePreview';
@@ -87,6 +89,53 @@ function renderEditor({
 }
 
 describe('TextEditor Markdown interactions', () => {
+  it.each(['\n', '\r\n', '\r', '\r\n\n'])('Kanban move and undo preserve exact %j source using real CodeMirror history', ending => {
+    const ref = createRef<TextEditorHandle>();
+    const original = `---${ending}localview: kanban${ending}---${ending}# 😀${ending}## A${ending}- [ ] Same${ending}  description\r\n  - [X] child${ending}## B${ending}- [ ] Same`;
+    const onChange = vi.fn();
+    const editor = renderEditor({ ref, value: original, editable: false, taskToggleEnabled: true, onChange });
+    const b = parseKanban(original); if (b.kind !== 'board') throw new Error('invalid fixture');
+    const plan = kanbanChange(original, { type: 'move-card', card: b.columns[0].cards[0].from, column: b.columns[1].from, before: null })!;
+    const moved = applySourceChanges(original, plan.changes)!;
+    act(() => expect(ref.current!.applyKanbanChange('doc', plan)).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(moved);
+    const { view } = editorView(editor.container);
+    expect(view.state.doc.toString()).toBe(normalizeEditorSource(moved));
+    editor.rerender(<TextEditor ref={ref} documentKey="doc" kind="md" value={moved} editable={false}
+      taskToggleEnabled markdownPresentation="source" resolveMarkdownImageSource={value => value} hint={null} onChange={onChange} />);
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(original);
+    act(() => expect(ref.current!.taskHistory('doc', 'redo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(moved);
+    const nextBoard = parseKanban(moved); if (nextBoard.kind !== 'board') throw new Error('invalid fixture');
+    const secondPlan = kanbanChange(moved, { type: 'edit-card', card: nextBoard.columns[1].cards[1].from, title: 'Different' })!;
+    act(() => expect(ref.current!.applyKanbanChange('doc', secondPlan)).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(applySourceChanges(moved, secondPlan.changes));
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(moved);
+    act(() => expect(ref.current!.taskHistory('doc', 'undo')).toBe(true));
+    expect(onChange).toHaveBeenLastCalledWith(original);
+  });
+
+  it('rejects stale, wrong-document, composing, invalid and disabled Kanban operations', () => {
+    const ref=createRef<TextEditorHandle>(), source='---\nlocalview: kanban\n---\n## A\n- [ ] Card\n';
+    const onChange=vi.fn();
+    const editor=renderEditor({ref,value:source,editable:false,taskToggleEnabled:true,onChange});
+    const change=kanbanChange(source,{type:'add-column',title:'B'})!;
+    expect(ref.current!.applyKanbanChange('other',change)).toBe(false);
+    expect(ref.current!.applyKanbanChange('doc',{...change,source:source+' stale'})).toBe(false);
+    expect(ref.current!.applyKanbanChange('doc',{source,changes:[{from:0,to:100000,insert:''}]})).toBe(false);
+    const {view}=editorView(editor.container);
+    Object.defineProperty(view,'composing',{value:true,configurable:true});
+    expect(ref.current!.applyKanbanChange('doc',change)).toBe(false);
+    Object.defineProperty(view,'composing',{value:false,configurable:true});
+    editor.rerender(<TextEditor ref={ref} documentKey="doc" kind="md" value={source} editable={false}
+      taskToggleEnabled={false} markdownPresentation="source" resolveMarkdownImageSource={value=>value} hint={null} onChange={onChange} />);
+    expect(ref.current!.applyKanbanChange('doc',change)).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toBe(source);
+  });
+
   it.each(['\r\n', '\r', '\r\n\n'])('preserves original %j line endings when toggling and undoing a task', (ending) => {
     const ref = createRef<TextEditorHandle>();
     const source = `# 😀${ending}- [ ] parent${ending}      - [X] child\ntail\r\n`;
