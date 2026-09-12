@@ -205,6 +205,10 @@ export default function KanbanBoard({ board, documentKey, onChange, onHistory }:
     <input ref={field} aria-label={adding === 'column' ? '新列名称' : '新卡片标题'} placeholder={adding === 'column' ? '列名称' : '写一张卡片…'} value={title} maxLength={1000} disabled={!enabled}
       onChange={e => setTitle(e.target.value)} onKeyDown={e => {
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        // This draft is not in Markdown yet. Preserve the input's native undo/redo.
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+          e.stopPropagation(); return;
+        }
         if (e.key === 'Enter') { e.preventDefault(); add(); }
         if (e.key === 'Escape') { e.stopPropagation(); setAdding(null); setTitle(''); }
       }} />
