@@ -1,0 +1,146 @@
+name: Validate and package LocalView Beta 5
+on:
+  push:
+    branches: [ci/beta5-release-tools]
+    paths: [.github/workflows/beta5-candidate.yml]
+permissions:
+  contents: read
+concurrency:
+  group: localview-beta5-candidate
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 8af683faa0e1fd4f3dd4e0d424e446c78c5c3c24
+          path: tools
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: e0b131e72e0e51b7598f43e5cb9de144718f752e
+          path: source
+          persist-credentials: true
+      - id: prepare
+        name: Prepare version-only release candidate
+        working-directory: source
+        run: python3 ../tools/scripts/prepare-beta5-release.py
+      - name: Preserve exact source
+        working-directory: source
+        run: git archive --format=tar.gz HEAD > "$RUNNER_TEMP/beta5-source.tar.gz"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: beta5-source
+          path: ${{ runner.temp }}/beta5-source.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+  build:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 8af683faa0e1fd4f3dd4e0d424e446c78c5c3c24
+          path: tools
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: source/.nvmrc
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Install locked frontend and audit
+        run: |
+          set -euo pipefail
+          mkdir -p release-out
+          npm ci
+          npm audit --json > release-out/npm-audit.json
+          npm audit --omit=dev --json > release-out/npm-audit-production.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.91.1
+          components: rustfmt
+          targets: ${{ matrix.target }}
+      - name: Full macOS regressions on the pinned candidate
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          npm run build
+          npm test -- --reporter=json --outputFile=release-out/frontend-tests.json
+          python3 -c "import json; r=json.load(open('release-out/frontend-tests.json')); assert r['success'] and r['numPassedTests']==495 and r['numFailedTests']==0 and r['numPendingTests']==0, r; print('495 / 495 frontend tests passed')"
+          cargo fmt --check --manifest-path src-tauri/Cargo.toml
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml 2>&1 | tee release-out/rust-tests.log
+          cargo test --locked --manifest-path src-tauri/Cargo.toml macos_moves_unique_ -- --ignored --test-threads=1 2>&1 | tee release-out/trash-tests.log
+          grep -q '90 passed; 0 failed' release-out/rust-tests.log
+          grep -q '2 passed; 0 failed; 0 ignored' release-out/trash-tests.log
+      - name: Build exact candidate
+        run: npm run tauri:build -- --target "${{ matrix.target }}" -- --locked
+      - name: Verify actual installer and isolated installed copy
+        run: python3 ../tools/scripts/verify-beta5-installer.py "${{ matrix.target }}" "${{ matrix.arch }}" "${{ needs.prepare.outputs.source_sha }}"
+      - name: Retain verified package and evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: LocalView-0.2.0-beta.5-${{ matrix.target }}
+          path: source/release-out/
+          retention-days: 14
+          if-no-files-found: error
+  browser:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Build production frontend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm audit --audit-level=low
+          npm run build
+      - name: Install isolated browser tools
+        run: |
+          npm install --prefix /tmp/localview-browser --ignore-scripts --save-exact playwright@1.58.2
+          /tmp/localview-browser/node_modules/.bin/playwright install --with-deps chromium webkit
+      - name: Verify production interactions
+        run: node scripts/verify-kanban-browser.mjs /tmp/localview-browser/package.json /tmp/beta5-browser
+      - name: Retain source and browser evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/beta5-browser
+          git rev-parse HEAD > /tmp/beta5-browser/SOURCE_SHA.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: beta5-browser
+          path: /tmp/beta5-browser/
+          retention-days: 14
+          if-no-files-found: error
