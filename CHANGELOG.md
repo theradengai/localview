@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0-beta.5 — 2026-09-12
+
+### Added
+
+- Interactive Markdown Kanban with explicit `localview: kanban` frontmatter. One ordinary `.md` file remains the only document model; ordinary task lists keep their normal preview.
+- New board entry in every folder’s create menu, card and column sorting, cross-column moves, right-side card details, subtasks, and confirmed deletion with a move-before-delete option for nonempty columns.
+- Preview board, raw-source Edit and left-board/right-source Split share CodeMirror undo/redo, 600 ms auto-save and external-file conflict protection. Keyboard alternatives are available for moving cards and columns.
+
+### Fixed
+
+- Unsubmitted new-card and new-column title fields retain their own native undo instead of undoing previously committed board changes.
+- Browser demo saves update the existing in-memory file tree so new boards and edited notes survive switching between demo files.
+
+### Safety and validation
+
+- Source-range edits retain untouched Markdown and moved card blocks; ambiguous syntax and stale operations fail closed. No database, hidden sidecar, new runtime dependency or Rust permission change.
+- 495 frontend regressions, 17 interaction cases in each of Chromium and WebKit, the standard macOS Rust checks and isolated real Trash checks form the release validation gate.
+- macOS 12+; ad-hoc signing, not Apple notarization. Installer startup checks do not establish full native UI, physical Intel or older macOS acceptance. Card multiselection and automatic completion columns are not included.
+- [Kanban format and examples](docs/KANBAN.md).
+
 ## 0.2.0-beta.4 — 2026-09-11 (prerelease)
 
 ### Added and fixed

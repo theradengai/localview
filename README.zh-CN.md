@@ -6,13 +6,15 @@
 
 无需导入、无需 Vault、无需强制索引。文件仍然是你磁盘上的普通文件。
 
-[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.4) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
+[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.5) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
 
 ![LocalView 预览、分栏、编辑、任务列表与 HTML 演示](docs/images/localview-demo.gif)
 
 *动图使用虚构文档，演示预览、分栏、编辑、任务勾选和 HTML。真实文件读写由 macOS 应用提供。[查看静态截图](docs/images/localview-demo.png)。*
 
 ## 能做什么
+
+- **Markdown 可操作看板：** 在文件夹 `+` 菜单选择“新建看板”，拖动卡片和列，单击卡片在右侧编辑详情；分栏查看同一份 `.md` 源码，共享撤销和自动保存。[格式与边界](docs/KANBAN.md)。
 
 - **从文件出发：** 在 Finder 里打开支持的文件，自动展示所在文件夹上下文，按需展开目录。
 - **直接编辑 Markdown：** 默认预览；编辑时使用保留原始 Markdown 的实时预览，也可切换左预览、右源码的分栏。选中文字即可格式化，支持的表格可在单元格内编辑。
@@ -25,12 +27,12 @@
 
 ## 下载与安装
 
-**0.2.0-beta.4 · macOS Monterey 12 及以上。** 本次为预发布测试版，不是稳定版。当前界面主要为简体中文；本次 Beta 不提供 Windows/Linux 支持。
+**0.2.0-beta.5 · macOS Monterey 12 及以上。** 本次为预发布测试版，不是稳定版。当前界面主要为简体中文；本次 Beta 不提供 Windows/Linux 支持。
 
 | 电脑 | 安装包 |
 | --- | --- |
-| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.4/LocalView_0.2.0-beta.4_aarch64.dmg) |
-| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.4/LocalView_0.2.0-beta.4_x64.dmg) |
+| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_aarch64.dmg) |
+| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_x64.dmg) |
 
 退出旧版 LocalView，打开 DMG，将应用拖入“应用程序”，弹出安装磁盘后，从“应用程序”打开。
 

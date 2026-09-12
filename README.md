@@ -6,13 +6,15 @@ A lightweight, macOS-first workspace for local documents. Browse real folders, e
 
 No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
-[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.4) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
+[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.5) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
 
 ![LocalView: preview, edit, split view, tasks and HTML](docs/images/localview-demo.gif)
 
 *Browser demo with synthetic documents: switch between Preview, Split and Edit, update a task, and open HTML. Real filesystem operations are available in the macOS app. [Static screenshot](docs/images/localview-demo.png).*
 
 ## What you can do
+
+- **Use Markdown as an interactive Kanban board.** Create a board from a folder’s `+` menu. Drag cards and columns, edit in the right-hand details panel, and switch to Split to see the same `.md` source. Board and source share undo and auto-save. [Format and limits](docs/KANBAN.md).
 
 - **Start with a file or folder.** Open a supported file from Finder and see its folder context. Expand directories on demand.
 - **Work directly in Markdown.** Preview by default, source-preserving Live Preview when editing, or a left-preview/right-source split. Format selected text and edit supported tables cell by cell.
@@ -25,12 +27,12 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
 ## Download
 
-**0.2.0-beta.4 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The app interface is currently primarily Simplified Chinese. Windows and Linux builds are not supported in this Beta.
+**0.2.0-beta.5 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The app interface is currently primarily Simplified Chinese. Windows and Linux builds are not supported in this Beta.
 
 | Your Mac | Installer |
 | --- | --- |
-| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.4/LocalView_0.2.0-beta.4_aarch64.dmg) |
-| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.4/LocalView_0.2.0-beta.4_x64.dmg) |
+| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_aarch64.dmg) |
+| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_x64.dmg) |
 
 Quit an older LocalView, open the DMG, drag **LocalView** into **Applications**, then eject the disk image. Launch the installed copy.
 
