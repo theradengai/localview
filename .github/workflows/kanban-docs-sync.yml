@@ -1,0 +1,153 @@
+name: Synchronize Kanban documentation
+
+on:
+  push:
+    branches: [docs/kanban-beta5-sync]
+    paths: [.github/workflows/kanban-docs-sync.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kanban-docs-sync
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      package_sha: ${{ steps.package.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify documentation helper scope
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          base = '3ebf48f9f917bc1296ea65cd9e5bb78cd8990255'
+          actual = set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'], text=True).splitlines())
+          expected = {'.github/workflows/kanban-docs-sync.yml','scripts/_sync-kanban-docs.py','scripts/_capture-kanban-docs.mjs'}
+          assert actual == expected, actual
+          PY
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Test and build unchanged production application
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kanban-docs-evidence
+          npm ci
+          npm audit --json > /tmp/kanban-docs-evidence/npm-audit.json
+          npm test -- --reporter=json --outputFile=/tmp/kanban-docs-evidence/frontend.json
+          npm run build 2>&1 | tee /tmp/kanban-docs-evidence/build.log
+      - name: Update exact documentation passages
+        run: python3 scripts/_sync-kanban-docs.py
+      - name: Install isolated screenshot browser
+        run: |
+          npm install --prefix /tmp/localview-docs-browser --ignore-scripts --save-exact playwright@1.58.2
+          /tmp/localview-docs-browser/node_modules/.bin/playwright install --with-deps webkit
+      - name: Capture actual board, details and source views
+        run: node scripts/_capture-kanban-docs.mjs
+      - name: Validate links, image files and documentation-only delta
+        id: package
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, struct, subprocess, tarfile
+          root = pathlib.Path.cwd()
+          files = ['README.md','README.zh-CN.md','docs/FEATURES.md','docs/INSTALL.md','docs/KANBAN.md','docs/images/KANBAN_CAPTURES.md','docs/images/localview-kanban-board.png','docs/images/localview-kanban-details.png','docs/images/localview-kanban-split.png']
+          links = 0
+          for name in files:
+              p = root / name
+              assert p.is_file() and not p.is_symlink(), name
+              if p.suffix == '.md':
+                  text = p.read_text()
+                  for target in re.findall(r'\]\(([^\s)]+)(?:\s+"[^"]*")?\)', text):
+                      if re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', target) or target.startswith('#'):
+                          continue
+                      local = target.split('#',1)[0]
+                      assert (p.parent/local).resolve().is_relative_to(root), (name, target)
+                      assert (p.parent/local).exists(), (name, target)
+                      links += 1
+              else:
+                  data = p.read_bytes()
+                  assert data.startswith(b'\x89PNG\r\n\x1a\n'), name
+                  assert struct.unpack('>II',data[16:24]) == (1440,920), name
+                  assert 1000 < len(data) < 2000000, name
+          tracked = set(subprocess.check_output(['git','diff','--name-only'], text=True).splitlines())
+          untracked = set(subprocess.check_output(['git','ls-files','--others','--exclude-standard'], text=True).splitlines())
+          assert tracked | untracked == set(files), (tracked,untracked)
+          test = json.loads(pathlib.Path('/tmp/kanban-docs-evidence/frontend.json').read_text())
+          assert test['numPassedTests'] == 495 and test['numFailedTests'] == 0 and test['numPendingTests'] == 0
+          assert json.loads(pathlib.Path('/tmp/kanban-docs-evidence/npm-audit.json').read_text())['metadata']['vulnerabilities']['total'] == 0
+          target = pathlib.Path('/tmp/kanban-docs-evidence/docs-update.tar.gz')
+          with tarfile.open(target, 'w:gz') as t:
+              for name in files:
+                  t.add(name, arcname=name, recursive=False)
+          digest = hashlib.sha256(target.read_bytes()).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as o:
+              o.write('sha='+digest+'\n')
+          pathlib.Path('/tmp/kanban-docs-evidence/documentation-check.json').write_text(json.dumps({'files':files,'relative_links_checked':links,'tests_passed':test['numPassedTests'],'package_sha256':digest},indent=2)+'\n')
+          print(f'Validated {len(files)} documentation/image files, {links} relative links, 495 tests, zero audit vulnerabilities')
+          PY
+          git diff --check
+      - name: Retain review evidence and verified documentation payload
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: kanban-docs-update
+          path: /tmp/kanban-docs-evidence/
+          if-no-files-found: error
+          retention-days: 14
+  commit:
+    needs: capture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+      - name: Download and verify this run's documentation payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PACKAGE_SHA: ${{ needs.capture.outputs.package_sha }}
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name kanban-docs-update --dir /tmp/kanban-docs-review
+          python3 - <<'PY'
+          import hashlib, os, pathlib, tarfile
+          data = pathlib.Path('/tmp/kanban-docs-review/docs-update.tar.gz')
+          assert hashlib.sha256(data.read_bytes()).hexdigest() == os.environ['EXPECTED_PACKAGE_SHA']
+          expected = {'README.md','README.zh-CN.md','docs/FEATURES.md','docs/INSTALL.md','docs/KANBAN.md','docs/images/KANBAN_CAPTURES.md','docs/images/localview-kanban-board.png','docs/images/localview-kanban-details.png','docs/images/localview-kanban-split.png'}
+          with tarfile.open(data) as t:
+              entries = t.getmembers()
+              assert len(entries) == len(expected) and {e.name for e in entries} == expected
+              for e in entries:
+                  assert e.isfile() and 0 < e.size < 2000000
+                  p = pathlib.Path(e.name)
+                  p.parent.mkdir(parents=True,exist_ok=True)
+                  assert not p.is_symlink()
+                  p.write_bytes(t.extractfile(e).read())
+          PY
+      - name: Commit only reviewed scope and remove one-shot helpers
+        run: |
+          set -euo pipefail
+          BRANCH=docs/kanban-beta5-sync
+          REMOTE_SHA=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          test "$REMOTE_SHA" = "$GITHUB_SHA"
+          git rm -- .github/workflows/kanban-docs-sync.yml scripts/_sync-kanban-docs.py scripts/_capture-kanban-docs.mjs
+          git add -- README.md README.zh-CN.md docs/FEATURES.md docs/INSTALL.md docs/KANBAN.md docs/images/KANBAN_CAPTURES.md docs/images/localview-kanban-board.png docs/images/localview-kanban-details.png docs/images/localview-kanban-split.png
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: synchronize Kanban guides, feature tables and real demo screenshots'
+          git push origin "HEAD:refs/heads/$BRANCH"
