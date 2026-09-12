@@ -76,6 +76,20 @@ try {
       await add.press('Escape');
       await expectCards('待办', ['First #产品', 'Second']);
       report.cases.push('Enter adds consecutive cards and Escape cancels the field');
+      // A new-card/new-column draft must not undo an already committed card.
+      for (const kind of ['card', 'column']) {
+        if (kind === 'card') await col('待办').getByRole('button', { name: '＋ 添加卡片', exact: true }).click();
+        else await button('＋ 添加列').first().click();
+        const draft = page.getByLabel(kind === 'card' ? '新卡片标题' : '新列名称', { exact: true });
+        await draft.pressSequentially('Unsubmitted draft');
+        for (const shortcut of ['Control+z', 'Control+Shift+z', 'Meta+z', 'Meta+Shift+z']) {
+          await draft.press(shortcut);
+          await expectCards('待办', ['First #产品', 'Second']);
+          assert.equal(await draft.count(), 1);
+        }
+        await draft.press('Escape');
+      }
+      report.cases.push('draft input undo and redo never mutate committed cards or columns');
       await button('First #产品').click();
       await page.getByLabel('卡片说明与子任务').fill('说明文字\n- [ ] 子任务');
       await page.getByRole('checkbox', { name: '子任务', exact: true }).check();
