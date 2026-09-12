@@ -821,7 +821,17 @@ export default function App() {
         const target = documentSaveTargetRef.current;
         if (!target || target.key !== candidate.documentKey) throw new Error('DOCUMENT_CHANGED: save target changed');
         return runWorkspaceMutation(async () => {
-          if (!desktop) return `browser-demo-${candidate.revision}`;
+          if (!desktop) {
+            if (target.workspaceEpoch !== workspaceEpochRef.current || !findNode(treeRef.current, target.path)) {
+              throw new Error('DOCUMENT_CHANGED: demo save target changed');
+            }
+            const next = updateNode(treeRef.current, target.path, node => ({ ...node, demoContent: candidate.content }));
+            treeRef.current = next;
+            setTree(next);
+            const committed = committedWorkspaceSnapshotRef.current;
+            if (committed) committed.tree = next;
+            return `browser-demo-${candidate.revision}`;
+          }
           return writeTextFile(target.path, candidate.content, candidate.expectedVersion);
         });
       },
@@ -1115,7 +1125,7 @@ export default function App() {
     try {
       const snapshot = isTextKind(node.kind) && desktop ? await readTextFile(node.path) : null;
       if (!isCurrent()) return;
-      const nextContent = isTextKind(node.kind) ? snapshot?.content ?? node.demoContent ?? '' : '';
+      const nextContent = isTextKind(node.kind) ? snapshot?.content ?? findNode(treeRef.current, targetPath)?.demoContent ?? node.demoContent ?? '' : '';
       selectedRef.current = node;
       setSelected(node);
       const renderer = rendererFor(node);

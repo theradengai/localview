@@ -502,6 +502,36 @@ describe('autosave transition protection', () => {
     expect(screen.getByLabelText('Markdown 看板')).toBeTruthy();
   });
 
+  it('keeps a newly created demo board after save-guarded file switching', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: '在 PROJECT 根目录新建' }));
+    await user.click(screen.getByRole('menuitem', { name: '新建看板' }));
+    await user.type(screen.getByRole('textbox', { name: '在 project 中新建看板文件' }), 'Demo Board{Enter}');
+    await screen.findByLabelText('Markdown 看板');
+    await user.click(screen.getAllByRole('button', { name: '＋ 添加卡片' })[0]);
+    await user.type(screen.getByLabelText('新卡片标题'), 'Retained card{Enter}{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Retained card' }));
+    fireEvent.change(screen.getByLabelText('卡片说明与子任务'), { target: { value: 'Keep this description\n- [ ] child' } });
+    await user.click(screen.getByRole('button', { name: 'README.md' }));
+    await screen.findByRole('heading', { name: 'Local Folder Viewer' });
+    await user.click(screen.getByRole('button', { name: 'Demo Board.md' }));
+    await user.click(await screen.findByRole('button', { name: 'Retained card' }));
+    expect(screen.getByLabelText('卡片说明与子任务')).toHaveProperty('value', 'Keep this description\n- [ ] child');
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary demo Markdown in the same in-memory file tree after switching', async () => {
+    const user = userEvent.setup(); render(<App />);
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'editor' }), { target: { value: '# Preserved demo Markdown' } });
+    await user.click(screen.getByRole('button', { name: 'roadmap.md' }));
+    await screen.findByRole('heading', { name: 'Roadmap' });
+    await user.click(screen.getByRole('button', { name: 'README.md' }));
+    await screen.findByRole('heading', { name: 'Preserved demo Markdown' });
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
   it('creates a board exclusively and autosaves its template against the empty file version', async () => {
     mocks.desktop=true;mocks.readTextFile.mockResolvedValue({content:'# plan',version:'plan-v1'});
     const user=userEvent.setup();render(<App/>);await screen.findByText('workspace / plan.md');
