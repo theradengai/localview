@@ -11,6 +11,14 @@
 - 删除卡片或列前确认。非空列可先将所有卡片迁到另一列，再删除列。所有这些内容修改可用同一份 CodeMirror 撤销/重做。
 - 使用原有 600 ms 自动保存和 `⌘S`，不绕过文件版本校验；外部修改冲突时保留本地内容，不覆盖磁盘新版本。
 
+## 预览、详情与源码 / Views
+
+![看板预览 / Board preview](images/localview-kanban-board.png)
+
+[右侧卡片详情 / Card details](images/localview-kanban-details.png) · [看板与源码分栏 / Split view](images/localview-kanban-split.png) · [截图来源 / Capture provenance](images/KANBAN_CAPTURES.md)
+
+截图使用仓库内的[虚构示例](fixtures/kanban.md)，来自 Beta 5 实际生产前端的隔离 WebKit 浏览器；不是原生 macOS 安装包验收。Screenshots show the production browser frontend with synthetic in-memory documents, not a mockup or native filesystem/UI acceptance.
+
 ## 文件约定
 
 ```markdown
@@ -43,7 +51,7 @@ The existing GFM syntax tree distinguishes real headings/tasks from code, quotes
 
 Every board change is an isolated CodeMirror transaction; raw-source history metadata preserves mixed CRLF/CR/LF when moving and undoing. The original file content remains the only document model. Preview operations are rejected when their source or document key is stale, the workspace changes, the native operation gate is locked, or an input composition is active. Source edits invalidate open selection, drag and deletion snapshots. Pointer cancellation, Esc, window blur or an outside drop do not mutate content.
 
-Parsing limits: 1 MiB in UTF-16 code units, 100 columns, 2000 cards, 1000 code units per newly entered title. Larger or unsupported boards remain source-editable. Card preview displays literal short text and tag chips; it does not run HTML or scripts. Printing continues to use the existing Markdown print renderer, not a board screenshot. No card multiselection, automatic completion lanes, cross-file boards, due-date automation or real-time collaboration in this version.
+Parsing limits: 1,048,576 UTF-16 code units (JavaScript string length, not file bytes), 100 columns, 2000 cards, 1000 code units per newly entered title. Larger or unsupported boards remain source-editable. Card preview displays literal short text and tag chips; it does not run HTML or scripts. Printing continues to use the existing Markdown print renderer, not a board screenshot. No card multiselection, automatic completion lanes, cross-file boards, due-date automation or real-time collaboration in this version.
 
 ## Verification
 
