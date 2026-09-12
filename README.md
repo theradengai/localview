@@ -15,7 +15,6 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 ## What you can do
 
 - **Use Markdown as an interactive Kanban board.** Create a board from a folder’s `+` menu. Drag cards and columns, edit in the right-hand details panel, and switch to Split to see the same `.md` source. Board and source share undo and auto-save. [Format and limits](docs/KANBAN.md).
-
 - **Start with a file or folder.** Open a supported file from Finder and see its folder context. Expand directories on demand.
 - **Work directly in Markdown.** Preview by default, source-preserving Live Preview when editing, or a left-preview/right-source split. Format selected text and edit supported tables cell by cell.
 - **Check off tasks in Preview.** Toggle tasks in Preview, Split or Edit with auto-save and undo. Pasted task lists with deep indentation also render while the original spacing and line endings are preserved.
@@ -24,6 +23,18 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 - **Keep changes safe.** 600 ms idle auto-save, `⌘S` to save immediately, and conflict detection when another application edits the same file.
 - **Paste screenshots.** In Markdown Edit or Split, `⌘V` saves clipboard images beside the document in `assets/` and inserts relative image references (PNG/JPEG/GIF/WebP, up to 8 images and 10 MB per paste).
 - **Compare side by side.** `⌘N` opens an independent workspace window. `⌘P` opens native print settings for rendered Markdown.
+
+## Markdown Kanban
+
+In a folder's `+` menu, choose **新建看板** (New board), or open the [sample Markdown file](docs/fixtures/kanban.md). A `localview: kanban` opening header enables the board: `##` headings are columns, top-level task items are cards, and indented descriptions/subtasks move with each card. Ordinary task lists keep their normal preview.
+
+![LocalView Kanban preview with four columns, cards, tags and subtask progress](docs/images/localview-kanban-board.png)
+
+*Actual Beta 5 production frontend in an isolated WebKit browser, using the repository's synthetic sample. This is not a native macOS acceptance screenshot; browser edits stay in memory.*
+
+[Right-side card details](docs/images/localview-kanban-details.png) · [Board and Markdown in Split](docs/images/localview-kanban-split.png) · [Capture provenance](docs/images/KANBAN_CAPTURES.md) · [Full guide and limits](docs/KANBAN.md)
+
+Drag a card by its handle, or move it with the details panel's column selector. **Preview** is the board; **Edit** is Markdown source; **Split** shows board and source side by side. Moving to a column does not automatically mark a card complete. File-tree multiselection does not imply card multiselection, which is not included. Printing uses the Markdown reading view, not a board image.
 
 ## Download
 
@@ -43,6 +54,7 @@ These are **ad-hoc-signed, non-notarized Beta builds**. macOS may block the firs
 | Format | Experience |
 | --- | --- |
 | Markdown | Edit, Live Preview, Split, Preview with task checkboxes, rendered printing |
+| Markdown Kanban (`localview: kanban`) | Interactive board, card details and subtasks, card/column sorting; shared source, undo and auto-save |
 | HTML | Source, Split, sandboxed interactive Preview with local resources |
 | Plain text / common code files | Text editing and auto-save |
 | Images / PDF | Preview |

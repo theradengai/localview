@@ -41,10 +41,17 @@ Files are edited in place with auto-save. Try a sample folder first. If another 
 
 For the new directory/file selection controls, use `⌘`-click to add or remove items and `Shift`-click for a visible range. Drag a selected row to move the group, or use the context menu to move the group to Trash. Batch operations stop on failure and retain remaining selections; they are not all-or-nothing transactions. Start with disposable copies. See [selection controls and validation](FOLDER_SELECTION.md).
 
+## Try the Markdown Kanban
+
+Choose **新建看板** (New board) in the workspace-root or folder-row `+` menu, or open [the synthetic example](fixtures/kanban.md). The file remains `.md`; only the explicit `localview: kanban` header enables a board. Click a card to edit its right-side details, drag its handle to move it, and choose **分栏** (Split) to inspect the same Markdown source.
+
+Start with a disposable copy: edits auto-save to the original file. Moving a card does not change its completion checkbox. See [the Kanban guide](KANBAN.md) for source syntax, undo, deletion and limits. The README screenshots show the in-memory browser frontend, not completion of native macOS UI acceptance.
+
 ## 中文安装摘要
 
 1. 在“关于本机”查看芯片：M 系列下载 `aarch64`，Intel 下载 `x64`。需要 macOS 12 或以上。
 2. 正常退出旧版，打开 DMG，把 LocalView 拖入“应用程序”，再弹出安装磁盘。
 3. 本次为未经 Apple 公证的 Beta。若首次打开被拦截，请按上面的 Apple 官方说明处理，不要全局关闭系统安全检查。
 4. 从“应用程序”打开 LocalView，先用示例文件夹测试。文件会自动保存回原位置。
-5. 问题反馈请注明版本、macOS、芯片类型和复现步骤；上传内容前移除私人资料。
+5. 体验看板：文件夹 `+` → **新建看板**，或打开[虚构示例](fixtures/kanban.md)。单击卡片编辑右侧详情，拖动把手移动，切到“分栏”查看同一份 Markdown。操作会自动保存，首次请使用可丢弃副本。[完整说明](KANBAN.md)。
+6. 问题反馈请注明版本、macOS、芯片类型和复现步骤；上传内容前移除私人资料。
