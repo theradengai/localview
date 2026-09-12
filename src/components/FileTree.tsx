@@ -28,7 +28,7 @@ export type FileTreeNode = DesktopEntry & {
   demoContent?: string;
 };
 
-export type TreeCreateKind = 'markdown' | 'folder';
+export type TreeCreateKind = 'markdown' | 'folder' | 'kanban';
 
 export const LOCALVIEW_TREE_DRAG_TYPE = 'application/x-localview-tree-entry';
 export const MOVE_HOVER_OPEN_DELAY_MS = 650;
@@ -264,11 +264,11 @@ function FileTree({
       <TreeCreateInput
         key={createDraft.id}
         ref={createInputRef}
-        ariaLabel={`在 ${basename(createDraft.parentPath)} 中${folder ? '新建文件夹' : '新建 Markdown 文件'}`}
+        ariaLabel={`在 ${basename(createDraft.parentPath)} 中${folder ? '新建文件夹' : createDraft.kind === 'kanban' ? '新建看板文件' : '新建 Markdown 文件'}`}
         disabled={createBusy || locked}
         invalid={createInvalid}
         maxLength={folder ? MAX_DIRECTORY_NAME_UTF16_UNITS : MAX_MARKDOWN_FILENAME_UTF16_UNITS}
-        placeholder={folder ? '新建文件夹' : 'untitled.md'}
+        placeholder={folder ? '新建文件夹' : createDraft.kind === 'kanban' ? '看板.md' : 'untitled.md'}
         onSubmit={onSubmitCreate}
         onCancel={onCancelCreate}
       />

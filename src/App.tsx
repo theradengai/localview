@@ -114,6 +114,7 @@ import {
 } from './lib/workspaceSession';
 import { rendererFor } from './renderers/registry';
 import { runTreeBatch, topLevelSelectedPaths, type TreeOperationResult } from './lib/treeSelection';
+import { isKanbanSource, kanbanTemplate } from './lib/kanban';
 import './style.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
@@ -820,7 +821,17 @@ export default function App() {
         const target = documentSaveTargetRef.current;
         if (!target || target.key !== candidate.documentKey) throw new Error('DOCUMENT_CHANGED: save target changed');
         return runWorkspaceMutation(async () => {
-          if (!desktop) return `browser-demo-${candidate.revision}`;
+          if (!desktop) {
+            if (target.workspaceEpoch !== workspaceEpochRef.current || !findNode(treeRef.current, target.path)) {
+              throw new Error('DOCUMENT_CHANGED: demo save target changed');
+            }
+            const next = updateNode(treeRef.current, target.path, node => ({ ...node, demoContent: candidate.content }));
+            treeRef.current = next;
+            setTree(next);
+            const committed = committedWorkspaceSnapshotRef.current;
+            if (committed) committed.tree = next;
+            return `browser-demo-${candidate.revision}`;
+          }
           return writeTextFile(target.path, candidate.content, candidate.expectedVersion);
         });
       },
@@ -1114,7 +1125,7 @@ export default function App() {
     try {
       const snapshot = isTextKind(node.kind) && desktop ? await readTextFile(node.path) : null;
       if (!isCurrent()) return;
-      const nextContent = isTextKind(node.kind) ? snapshot?.content ?? node.demoContent ?? '' : '';
+      const nextContent = isTextKind(node.kind) ? snapshot?.content ?? findNode(treeRef.current, targetPath)?.demoContent ?? node.demoContent ?? '' : '';
       selectedRef.current = node;
       setSelected(node);
       const renderer = rendererFor(node);
@@ -2130,15 +2141,20 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleExplicitSave, handleNewWindow, requestReload]);
 
-  const openCreatedMarkdown = useCallback((created: CreatedTextFile) => {
+  const openCreatedMarkdown = useCallback((created: CreatedTextFile, initialContent?: string) => {
     const node = toNode(created.entry);
     selectedRef.current = node;
     setSelected(node);
     rendererStatusRef.current = 'Local-first';
     setRendererStatus('Local-first');
     applyAuthoritativeSnapshot(created.snapshot);
-    modeRef.current = 'edit';
-    setMode('edit');
+    if (initialContent !== undefined) {
+      contentRef.current = initialContent; setContent(initialContent);
+      dirtyRef.current = initialContent !== created.snapshot.content;
+      saveCoordinatorRef.current?.update(initialContent);
+    }
+    modeRef.current = initialContent === undefined ? 'edit' : 'preview';
+    setMode(modeRef.current);
   }, [applyAuthoritativeSnapshot]);
 
   const prepareFolder = useCallback((parentPath: string, workspaceEpoch: number): Promise<FileNode[]> => {
@@ -2368,7 +2384,7 @@ export default function App() {
   }, []);
 
   const submitMarkdownCreate = useCallback(async (draft: CreateEntryDraft, rawName: string) => {
-    if (draft.kind !== 'markdown') return;
+    if (draft.kind !== 'markdown' && draft.kind !== 'kanban') return;
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     if (createDraftRef.current?.id !== draft.id || createBusyRef.current !== null) return;
 
@@ -2423,7 +2439,8 @@ export default function App() {
               return next;
             });
           }
-          openCreatedMarkdown(created);
+          const initialContent = draft.kind === 'kanban' ? kanbanTemplate(created.entry.name.replace(/\.md$/i, '')) : undefined;
+          openCreatedMarkdown(created, initialContent);
           replaceCreateDraft(null);
           if (desktop) directoryRefreshCoordinatorRef.current?.request([draft.parentPath]);
 
@@ -2431,11 +2448,11 @@ export default function App() {
           if (committed && normalizePath(committed.rootPath) === workspace) {
             committed.tree = insertCreatedNode(committed.tree, workspace, draft.parentPath, toNode(created.entry));
             committed.selected = toNode(created.entry);
-            committed.content = created.snapshot.content;
+            committed.content = initialContent ?? created.snapshot.content;
             committed.savedContent = created.snapshot.content;
             committed.savedVersion = created.snapshot.version;
             committed.externalChange = false;
-            committed.mode = 'edit';
+            committed.mode = initialContent === undefined ? 'edit' : 'preview';
             committed.createDraft = null;
           }
           showNotice(desktop
@@ -3596,7 +3613,7 @@ export default function App() {
     const multiple = mode === 'node' && nodes.length > 1;
     const menuWidth = 176;
     const createItems = !multiple && (mode === 'create' || node?.kind === 'folder');
-    const menuHeight = multiple ? 112 : createItems ? (mode === 'node' ? 154 : 78) : 112;
+    const menuHeight = multiple ? 112 : createItems ? (mode === 'node' ? 186 : 110) : 112;
     const bounds = event.currentTarget.getBoundingClientRect();
     const proposedX = pointerPosition ? event.clientX : bounds.right - menuWidth;
     const proposedY = pointerPosition ? event.clientY : bounds.bottom + 4;
@@ -3786,6 +3803,7 @@ export default function App() {
     saveCoordinatorRef.current?.update(nextContent);
   }
 
+  const kanbanMarked = selected?.kind === 'md' && isKanbanSource(content);
   const taskDocumentKey = selected ? `${selected.path}:${editorEpoch}` : '';
   const taskWorkspaceEpoch = workspaceEpochRef.current;
   const taskToggleEnabled = !loading && !workspaceTransition && documentActionGate === 'idle';
@@ -3805,7 +3823,7 @@ export default function App() {
       value={content}
       editable={mode !== 'preview' && !workspaceTransition && documentActionGate === 'idle'}
       taskToggleEnabled={taskToggleEnabled}
-      markdownPresentation={selected.kind === 'md' && mode === 'edit' ? 'live' : 'source'}
+      markdownPresentation={selected.kind === 'md' && mode === 'edit' && !kanbanMarked ? 'live' : 'source'}
       resolveMarkdownImageSource={resolveMarkdownImageSource}
       hint={mode === 'edit'
         ? workspaceTransition ? '切换中…' : documentActionGate !== 'idle' ? '完成当前操作…' : '自动保存 · ⌘S 立即保存'
@@ -3824,7 +3842,12 @@ export default function App() {
   } else if (selectedRenderer === 'markdown') {
     preview = <Suspense fallback={<div className="empty-state"><strong>正在载入 Markdown 预览…</strong></div>}>
       <MarkdownPreview
-        content={deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path}
+        content={kanbanMarked ? content : deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path}
+        documentKey={taskDocumentKey}
+        onKanbanChange={taskToggleEnabled ? change => {
+          if (!taskActionsAllowed() || change.source !== contentRef.current) return false;
+          return textEditorRef.current?.applyKanbanChange(taskDocumentKey, change) ?? false;
+        } : undefined}
         assetScope={workspaceBindingRef.current?.assetScope ?? ''} demoImages={demoImages}
         onTaskToggle={taskToggleEnabled ? change => {
           if (!taskActionsAllowed() || change.source !== contentRef.current) return false;
@@ -3987,7 +4010,7 @@ export default function App() {
             event.preventDefault();
             beginRename(selected, 'toolbar');
           }}
-        ><strong>{selected.name}</strong></button> : <strong>LocalView</strong>}<span>{selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}{selected.kind === 'md' ? <button type="button" className="markdown-print-trigger" disabled={interactionLocked} onClick={requestMarkdownPrint}>打印</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
+        ><strong>{selected.name}</strong></button> : <strong>LocalView</strong>}<span>{kanbanMarked ? 'Markdown · 看板' : selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}{selected.kind === 'md' ? <button type="button" className="markdown-print-trigger" disabled={interactionLocked} onClick={requestMarkdownPrint}>打印</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
         <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? '切换工作区…' : '读取中…'}</div> : null}</div>
       </main>
     </div>
@@ -3995,6 +4018,7 @@ export default function App() {
     {treeActionMenu ? <div className="context-menu tree-action-menu" role="menu" style={{ left: treeActionMenu.x, top: treeActionMenu.y }}>
       {treeActionMenu.nodes.length <= 1 && (treeActionMenu.mode === 'create' || treeActionMenu.node?.kind === 'folder') ? <>
         <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('markdown')}>新建 Markdown</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('kanban')}>新建看板</button>
         <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('folder')}>新建文件夹</button>
       </> : null}
       {treeActionMenu.mode === 'node' && treeActionMenu.nodes.length > 1 ? <>

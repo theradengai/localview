@@ -1,0 +1,62 @@
+name: Check Markdown Kanban interactions
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/verify-kanban-browser.mjs'
+      - 'package*.json'
+      - 'vite.config.*'
+      - '.github/workflows/kanban.yml'
+  push:
+    branches: [main, staging]
+    paths:
+      - 'src/**'
+      - 'scripts/verify-kanban-browser.mjs'
+      - 'package*.json'
+      - 'vite.config.*'
+      - '.github/workflows/kanban.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kanban-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install exact application dependencies
+        run: npm ci
+      - name: Audit and build production frontend
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kanban-evidence
+          git rev-parse HEAD > /tmp/kanban-evidence/SOURCE_SHA.txt
+          npm audit --json > /tmp/kanban-evidence/npm-audit.json
+          npm run build 2>&1 | tee /tmp/kanban-evidence/build.log
+      - name: Install isolated browser tools
+        run: |
+          npm install --prefix /tmp/localview-browser --ignore-scripts --save-exact playwright@1.58.2
+          /tmp/localview-browser/node_modules/.bin/playwright install --with-deps chromium webkit
+      - name: Test production Kanban interactions
+        run: node scripts/verify-kanban-browser.mjs /tmp/localview-browser/package.json /tmp/kanban-evidence/browser
+      - name: Preserve browser results and synthetic screenshots
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: kanban-browser-evidence
+          path: /tmp/kanban-evidence/
+          retention-days: 14
+          if-no-files-found: error

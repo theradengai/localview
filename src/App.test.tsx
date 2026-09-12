@@ -124,10 +124,11 @@ vi.mock('@uiw/react-codemirror', async (importOriginal) => {
             selection,
             sliceDoc: (from: number, to: number) => document.slice(from, to),
           },
-          dispatch: vi.fn((transaction: { userEvent?: string; changes?: { from: number; to: number; insert: string } }) => {
-            if (!['input.paste', 'input.task'].includes(transaction.userEvent ?? '') || !transaction.changes) return;
-            const { from, to, insert } = transaction.changes;
-            const next = document.slice(0, from) + insert + document.slice(to);
+          dispatch: vi.fn((transaction: { userEvent?: string; changes?: { from: number; to: number; insert: string } | { from: number; to: number; insert: string }[] }) => {
+            if (!['input.paste', 'input.task', 'input.kanban'].includes(transaction.userEvent ?? '') || !transaction.changes) return;
+            const edits = Array.isArray(transaction.changes) ? transaction.changes : [transaction.changes];
+            let next = document;
+            for (const { from, to, insert } of [...edits].reverse()) next = next.slice(0, from) + insert + next.slice(to);
             setDocument(next);
             onChange?.(next);
           }),
@@ -484,6 +485,88 @@ afterEach(() => {
 });
 
 describe('autosave transition protection', () => {
+  it('opens marked Markdown as an interactive board and saves card edits through the existing versioned bridge', async () => {
+    mocks.desktop=true;
+    const source='---\nlocalview: kanban\n---\n# Board\n## Todo\n- [ ] First\n## Done\n';
+    mocks.readTextFile.mockResolvedValue({content:source,version:'v1'});
+    render(<App/>);
+    await screen.findByLabelText('Markdown 看板');
+    await screen.findByLabelText('editor');
+    await waitFor(()=>expect((screen.getByRole('button',{name:'拖动卡片 First'}) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button',{name:'First'}));
+    fireEvent.change(screen.getByLabelText('卡片标题'),{target:{value:'Updated'}});
+    fireEvent.keyDown(window,{key:'s',metaKey:true});
+    await waitFor(()=>expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/docs/plan.md',source.replace('First','Updated'),'v1'));
+    fireEvent.click(screen.getByRole('button',{name:'分栏'}));
+    expect(screen.getByRole('textbox',{name:'editor'})).toHaveProperty('value',source.replace('First','Updated'));
+    expect(screen.getByLabelText('Markdown 看板')).toBeTruthy();
+  });
+
+  it('keeps a newly created demo board after save-guarded file switching', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: '在 PROJECT 根目录新建' }));
+    await user.click(screen.getByRole('menuitem', { name: '新建看板' }));
+    await user.type(screen.getByRole('textbox', { name: '在 project 中新建看板文件' }), 'Demo Board{Enter}');
+    await screen.findByLabelText('Markdown 看板');
+    await user.click(screen.getAllByRole('button', { name: '＋ 添加卡片' })[0]);
+    await user.type(screen.getByLabelText('新卡片标题'), 'Retained card{Enter}{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Retained card' }));
+    fireEvent.change(screen.getByLabelText('卡片说明与子任务'), { target: { value: 'Keep this description\n- [ ] child' } });
+    await user.click(screen.getByRole('button', { name: 'README.md' }));
+    await screen.findByRole('heading', { name: 'Local Folder Viewer' });
+    await user.click(screen.getByRole('button', { name: 'Demo Board.md' }));
+    await user.click(await screen.findByRole('button', { name: 'Retained card' }));
+    expect(screen.getByLabelText('卡片说明与子任务')).toHaveProperty('value', 'Keep this description\n- [ ] child');
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary demo Markdown in the same in-memory file tree after switching', async () => {
+    const user = userEvent.setup(); render(<App />);
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'editor' }), { target: { value: '# Preserved demo Markdown' } });
+    await user.click(screen.getByRole('button', { name: 'roadmap.md' }));
+    await screen.findByRole('heading', { name: 'Roadmap' });
+    await user.click(screen.getByRole('button', { name: 'README.md' }));
+    await screen.findByRole('heading', { name: 'Preserved demo Markdown' });
+    expect(mocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('creates a board exclusively and autosaves its template against the empty file version', async () => {
+    mocks.desktop=true;mocks.readTextFile.mockResolvedValue({content:'# plan',version:'plan-v1'});
+    const user=userEvent.setup();render(<App/>);await screen.findByText('workspace / plan.md');
+    await user.click(screen.getByRole('button',{name:'在 WORKSPACE 根目录新建'}));
+    await user.click(screen.getByRole('menuitem',{name:'新建看板'}));
+    const input=await screen.findByRole('textbox',{name:'在 workspace 中新建看板文件'});
+    mocks.listDirectory.mockImplementation(async (path:string)=>path==='/workspace'
+      ? [{name:'Board.md',path:'/workspace/Board.md',kind:'md'}, {name:'docs',path:'/workspace/docs',kind:'folder'}] : []);
+    await user.type(input,'Board{Enter}');
+    await screen.findByLabelText('Markdown 看板');
+    expect(mocks.createMarkdownFile).toHaveBeenCalledWith('/workspace','Board');
+    expect(screen.getByRole('button',{name:'预览'}).className).toContain('active');
+    await waitFor(()=>expect(mocks.writeTextFile).toHaveBeenCalledWith('/workspace/Board.md',expect.stringContaining('localview: kanban'),'empty-v1'),{timeout:2000});
+  });
+
+  it('preserves dirty Kanban content after an external conflict and does not overwrite it on further edits', async () => {
+    mocks.desktop=true;
+    const source='---\nlocalview: kanban\n---\n# Board\n## Todo\n- [ ] First\n';
+    mocks.readTextFile.mockResolvedValue({content:source,version:'v1'});
+    mocks.writeTextFile.mockRejectedValue(new Error('EXTERNAL_CHANGE'));
+    render(<App/>);await screen.findByLabelText('Markdown 看板');
+    fireEvent.click(screen.getByRole('button',{name:'First'}));
+    fireEvent.change(screen.getByLabelText('卡片标题'),{target:{value:'My edit'}});
+    fireEvent.keyDown(window,{key:'s',metaKey:true});
+    await waitFor(()=>expect(mocks.writeTextFile).toHaveBeenCalledTimes(1));
+    await screen.findByRole('heading',{name:'磁盘文件已变化'});
+    fireEvent.click(screen.getByRole('button',{name:'保留本地修改'}));
+    await waitFor(()=>expect((screen.getByLabelText('卡片标题') as HTMLInputElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('卡片标题'),{target:{value:'Preserved edit'}});
+    fireEvent.keyDown(window,{key:'s',metaKey:true});
+    await act(async()=>{await Promise.resolve();await Promise.resolve();});
+    expect(mocks.writeTextFile).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('卡片标题')).toHaveProperty('value','Preserved edit');
+  });
+
   async function readyScreenshotEditor() {
     await screen.findByText('workspace / plan.md');
     await waitFor(() => expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled).toBe(false));
