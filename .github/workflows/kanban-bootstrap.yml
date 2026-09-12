@@ -1,0 +1,29 @@
+name: Prepare isolated Kanban validation
+on:
+  push:
+    branches: [feat/markdown-kanban]
+    paths: [.github/workflows/kanban-bootstrap.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=low
+      - name: Retain isolated test dependencies
+        run: tar -czf /tmp/kanban-dependencies.tar.gz node_modules package-lock.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: kanban-dependencies
+          path: /tmp/kanban-dependencies.tar.gz
+          retention-days: 1
+          if-no-files-found: error
