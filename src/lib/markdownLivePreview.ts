@@ -1,3 +1,4 @@
+import { subscribeLanguage, t } from './i18n';
 import { syntaxTree } from '@codemirror/language';
 import { redo, undo } from '@codemirror/commands';
 import {
@@ -278,6 +279,21 @@ function revealEditableTableSource(
   return true;
 }
 
+// Update only explicitly registered application-owned labels, not document text.
+// Label-only changes keep the editor and active table/IME inputs intact.
+const liveLabels = new WeakMap<HTMLElement, () => void>();
+function liveLabel(element: HTMLElement, update: () => void) {
+  element.dataset.localviewUiLabel = 'true';
+  liveLabels.set(element, update);
+  update();
+}
+function refreshLiveLabels(view: EditorView) {
+  view.dom.querySelectorAll<HTMLElement>('[data-localview-ui-label]').forEach(element => {
+    liveLabels.get(element)?.();
+  });
+  view.requestMeasure();
+}
+
 abstract class LiveWidget extends WidgetType {
   protected readonly alive = new WeakSet<HTMLElement>();
 
@@ -326,7 +342,7 @@ class ImageWidget extends LiveWidget {
 
     const fallback = document.createElement('span');
     fallback.className = 'cm-live-image-fallback';
-    fallback.textContent = this.alt || this.source || '图片无法显示';
+    liveLabel(fallback, () => { fallback.textContent = this.alt || this.source || t("图片无法显示"); });
 
     if (this.resolvedSource) {
       const image = document.createElement('img');
@@ -357,8 +373,10 @@ class ImageWidget extends LiveWidget {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'cm-live-source-button';
-    button.textContent = '编辑图片源码';
-    button.setAttribute('aria-label', '编辑图片 Markdown 源码');
+    liveLabel(button, () => {
+      button.textContent = t("编辑图片源码");
+      button.setAttribute('aria-label', t("编辑图片 Markdown 源码"));
+    });
     button.disabled = !view.state.facet(EditorView.editable);
     button.addEventListener('click', () => {
       const editable = view.state.facet(EditorView.editable);
@@ -578,7 +596,7 @@ function configureTableCell(
     renderTableCell(widget, cell, value, row, column);
     if (!editable) return;
     cell.tabIndex = 0;
-    cell.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列：${displayTableCell(value)}`);
+    liveLabel(cell, () => { cell.setAttribute('aria-label', t("{0}第 {1} 列：{2}", row === 'header' ? t("表头") : t("第 {0} 行", row + 1), column + 1, displayTableCell(value))); });
     const activate = (selectAll = false) => {
       if (!tableControllerIsLive(controller) || !controller.editable) return;
       const coordinate = tableCellCoordinate(cell);
@@ -610,12 +628,13 @@ function configureTableCell(
 
   cell.removeAttribute('tabindex');
   cell.removeAttribute('aria-label');
+  liveLabels.delete(cell);
   const input = document.createElement('textarea');
   input.className = 'cm-live-table-input';
   input.value = value;
   input.rows = 1;
   input.dataset.tableFrom = String(widget.from);
-  input.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列编辑`);
+  liveLabel(input, () => { input.setAttribute('aria-label', t("{0}第 {1} 列编辑", row === 'header' ? t("表头") : t("第 {0} 行", row + 1), column + 1)); });
   input.addEventListener('input', () => {
     if (!tableControllerIsLive(controller)) return;
     const accepted = syncTableCellInput(
@@ -764,7 +783,7 @@ function patchTableController(controller: TableDomController) {
     const displayed = displayTableCell(value);
     renderTableCell(widget, cell, value, row, column);
     if (controller.editable) {
-      cell.setAttribute('aria-label', `${row === 'header' ? '表头' : `第 ${row + 1} 行`}第 ${column + 1} 列：${displayed}`);
+      liveLabel(cell, () => { cell.setAttribute('aria-label', t("{0}第 {1} 列：{2}", row === 'header' ? t("表头") : t("第 {0} 行", row + 1), column + 1, displayed)); });
     }
   });
 }
@@ -876,8 +895,10 @@ class TableWidget extends LiveWidget {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'cm-live-source-button';
-      button.textContent = '编辑表格源码';
-      button.setAttribute('aria-label', '编辑表格 Markdown 源码');
+      liveLabel(button, () => {
+        button.textContent = t("编辑表格源码");
+        button.setAttribute('aria-label', t("编辑表格 Markdown 源码"));
+      });
       button.addEventListener('click', () => {
         if (!flushActiveMarkdownTableCell(view) || !tableControllerIsLive(controller)) return;
         dispatchActiveTableCell(view, null);
@@ -929,7 +950,7 @@ class TaskWidget extends LiveWidget {
     input.className = 'cm-live-task-checkbox';
     input.checked = /[xX]/.test(this.marker);
     input.disabled = !view.state.facet(EditorView.editable);
-    input.setAttribute('aria-label', input.checked ? '标记任务为未完成' : '标记任务为已完成');
+    liveLabel(input, () => { input.setAttribute('aria-label', input.checked ? t("标记任务为未完成") : t("标记任务为已完成")); });
     input.addEventListener('change', () => {
       const editable = view.state.facet(EditorView.editable);
       input.disabled = !editable;
@@ -957,6 +978,7 @@ class RevealWidget extends LiveWidget {
     readonly markdown: string,
     readonly className: string,
     readonly label: string,
+    readonly uiLabel = false,
   ) { super(); }
 
   eq(other: RevealWidget) {
@@ -964,15 +986,19 @@ class RevealWidget extends LiveWidget {
       && this.to === other.to
       && this.markdown === other.markdown
       && this.className === other.className
-      && this.label === other.label;
+      && this.label === other.label
+      && this.uiLabel === other.uiLabel;
   }
 
   toDOM(view: EditorView) {
     const button = this.track(document.createElement('button'));
     button.type = 'button';
     button.className = `${this.className} cm-live-reveal-button`;
-    button.textContent = this.label;
-    button.setAttribute('aria-label', `${this.label}，点击编辑 Markdown 源码`);
+    liveLabel(button, () => {
+      const label = this.uiLabel ? t(this.label) : this.label;
+      button.textContent = label;
+      button.setAttribute('aria-label', t("{0}，点击编辑 Markdown 源码", label));
+    });
     button.disabled = !view.state.facet(EditorView.editable);
     button.addEventListener('click', () => {
       const editable = view.state.facet(EditorView.editable);
@@ -1289,13 +1315,14 @@ function buildDecorations(
         const replaceTo = info?.to ?? first.to;
         const markdown = consume(first.from, replaceTo, 256);
         if (markdown !== null) {
-          const label = info ? view.state.sliceDoc(info.from, info.to) : '代码';
+          const label = info ? view.state.sliceDoc(info.from, info.to) : '';
           addReplace(first.from, replaceTo, new RevealWidget(
             node.from,
             node.to,
             view.state.sliceDoc(node.from, node.to),
             'cm-live-code-label',
-            label || '代码',
+            label || "代码",
+            !label,
           ));
         }
       }
@@ -1316,7 +1343,8 @@ function buildDecorations(
           node.to,
           markdown,
           'cm-live-thematic-break',
-          '分隔线',
+          "分隔线",
+          true,
         ));
       }
       return false;
@@ -1706,7 +1734,10 @@ export function createMarkdownLivePreviewExtension(
       scannedCharacters: 0,
     };
 
+    private readonly stopLanguage: () => void;
+
     constructor(readonly view: EditorView) {
+      this.stopLanguage = subscribeLanguage(() => refreshLiveLabels(view));
       this.tree = syntaxTree(view.state);
       view.dom.dataset.markdownLivePreview = 'true';
       this.rebuild(view);
@@ -1850,6 +1881,7 @@ export function createMarkdownLivePreviewExtension(
     }
 
     destroy() {
+      this.stopLanguage();
       this.destroyed = true;
       this.pendingBlockRefresh = null;
       delete this.view.dom.dataset.markdownLivePreview;

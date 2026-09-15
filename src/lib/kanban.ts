@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { parser, GFM } from '@lezer/markdown';
 import type { SyntaxNode } from '@lezer/common';
 
@@ -58,8 +59,8 @@ export function parseKanban(source: string): KanbanResult {
   const meta = lines.slice(1, end < 0 ? 128 : end);
   const markers = meta.filter(line => /^localview:/.test(line.text));
   if (!markers.some(line => stateMarker.test(line.text))) return { kind: 'plain' };
-  if (end < 0 || markers.length !== 1) return invalid('看板文件头未闭合或 localview 标记重复。请在源码中修正。');
-  if (source.length > KANBAN_MAX_SOURCE) return invalid('看板超过 1 MiB 解析上限，请在源码中编辑或拆分文件。');
+  if (end < 0 || markers.length !== 1) return invalid(t("看板文件头未闭合或 localview 标记重复。请在源码中修正。"));
+  if (source.length > KANBAN_MAX_SOURCE) return invalid(t("看板超过 1 MiB 解析上限，请在源码中编辑或拆分文件。"));
   const bodyFrom = lines[end].to;
   // Lezer decides actual top-level headings/lists: code, HTML and quoted examples are not columns.
   const body = source.slice(bodyFrom);
@@ -77,7 +78,7 @@ export function parseKanban(source: string): KanbanResult {
     while (lo < hi) { const mid = (lo + hi) >>> 1; if (lines[mid].from <= offset) lo = mid + 1; else hi = mid; }
     return lines[Math.max(0, lo - 1)];
   };
-  const board: KanbanBoard = { kind: 'board', source, title: '未命名看板', intro: '', columns: [] };
+  const board: KanbanBoard = { kind: 'board', source, title: t("未命名看板"), intro: '', columns: [] };
   let column: KanbanColumn | undefined;
   let count = 0;
   const intro: string[] = [];
@@ -86,10 +87,10 @@ export function parseKanban(source: string): KanbanResult {
     const line = byStart.get(from);
     if (node.name === 'ATXHeading2') {
       const h = line && heading(line, 2);
-      if (!h) return invalid('列名需要使用未缩进的二级标题，例如「## 待办」。');
+      if (!h) return invalid(t("列名需要使用未缩进的二级标题，例如「## 待办」。"));
       column = { ...h, from, to: source.length, cards: [] };
       board.columns.push(column);
-      if (board.columns.length > 100) return invalid('看板最多显示 100 列，请拆分文件。');
+      if (board.columns.length > 100) return invalid(t("看板最多显示 100 列，请拆分文件。"));
       continue;
     }
     if (!column) {
@@ -98,18 +99,18 @@ export function parseKanban(source: string): KanbanResult {
       else intro.push(source.slice(from, toRaw(node.to)));
       continue;
     }
-    if (node.name !== 'BulletList') return invalid('列中存在不能安全归属的内容。卡片使用「- [ ] 标题」，说明和子任务缩进至少两个空格；原文未修改。');
+    if (node.name !== 'BulletList') return invalid(t("列中存在不能安全归属的内容。卡片使用「- [ ] 标题」，说明和子任务缩进至少两个空格；原文未修改。"));
     for (const item of children(node)) {
-      if (item.name !== 'ListItem') return invalid('无法安全识别卡片列表，请在源码中修正。');
+      if (item.name !== 'ListItem') return invalid(t("无法安全识别卡片列表，请在源码中修正。"));
       const start = toRaw(item.from);
       const first = byStart.get(start);
       const m = first && taskMarker.exec(first.text);
-      if (!first || !m) return invalid('每张卡片需要顶层任务标记和非空标题。');
+      if (!first || !m) return invalid(t("每张卡片需要顶层任务标记和非空标题。"));
       const endOffset = toRaw(item.to);
       const owned: Line[] = [];
       for (let i = lineIndex.get(first.from)! + 1; i < lines.length && lines[i].from < endOffset; i++) owned.push(lines[i]);
       if (owned.some(l => l.text.trim() && !/^( {2}|\t)/.test(l.text))) {
-        return invalid('卡片说明或子任务需要缩进至少两个空格，避免移动时带走无关内容。');
+        return invalid(t("卡片说明或子任务需要缩进至少两个空格，避免移动时带走无关内容。"));
       }
       const last = owned[owned.length - 1] ?? first;
       const card: KanbanCard = {
@@ -130,7 +131,7 @@ export function parseKanban(source: string): KanbanResult {
       };
       visit(item);
       column.cards.push(card);
-      if (++count > 2000) return invalid('看板最多显示 2000 张卡片，请拆分文件。');
+      if (++count > 2000) return invalid(t("看板最多显示 2000 张卡片，请拆分文件。"));
     }
   }
   board.intro = intro.join('\n\n');
@@ -247,8 +248,8 @@ export function kanbanChange(source: string, action: KanbanAction): KanbanChange
   return { source, changes };
 }
 
-export function kanbanTemplate(title = '新建看板'): string {
-  return `---\nlocalview: kanban\n---\n\n# ${titleValid(title) ? title.trim() : '新建看板'}\n\n## 待办\n\n## 进行中\n\n## 已完成\n\n`;
+export function kanbanTemplate(title = t("新建看板")): string {
+  return t("---\nlocalview: kanban\n---\n\n# {0}\n\n## 待办\n\n## 进行中\n\n## 已完成\n\n", titleValid(title) ? title.trim() : t("新建看板"));
 }
 
 /** Recognition only; malformed marked files still expose a source-only fallback. */

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add immediate, persistent Simplified Chinese/English interface selection with a system default and multiwindow synchronization.
+- Localize application and native menu labels, Markdown tools, Kanban and preview controls without rewriting document content or resetting editor history.
+- Add locale, editor-preservation and isolated bilingual browser regression coverage. Existing Beta 5 artifacts are unchanged.
+
 ## 0.2.0-beta.5 — 2026-09-12
 
 ### Added

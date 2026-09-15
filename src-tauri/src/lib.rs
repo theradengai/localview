@@ -42,6 +42,7 @@ use std::os::unix::fs::MetadataExt;
 mod image_paste;
 mod quick_look;
 mod spreadsheet;
+mod ui_language;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4219,6 +4220,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            ui_language::set_ui_language,
             set_workspace_root,
             list_directory,
             inspect_path,

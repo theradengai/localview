@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import {
   inspectLocalInlineStyleSelection,
   MARKDOWN_INLINE_COLORS,
@@ -542,7 +543,7 @@ function transformLink(
   if (!destination) return null;
   const { from, to, reversed } = orderedSelection(selection);
   const selected = source.slice(from, to);
-  const label = selected ? escapeLinkLabel(selected) : '链接文字';
+  const label = selected ? escapeLinkLabel(selected) : t("链接文字");
   const insert = `[${label}](${destination})`;
   const labelFrom = from + 1;
   return replaceRange(
@@ -885,7 +886,7 @@ function applyTableCommand(
   } else if (command === 'tableAddColumnLeft' || command === 'tableAddColumnRight') {
     if (headers.length >= TABLE_MAX_COLUMNS) return null;
     const insertAt = model.currentColumn + (command === 'tableAddColumnRight' ? 1 : 0);
-    headers.splice(insertAt, 0, `列 ${insertAt + 1}`);
+    headers.splice(insertAt, 0, t("列 {0}", insertAt + 1));
     alignments.splice(insertAt, 0, 'none');
     rows.forEach((row) => row.splice(insertAt, 0, ''));
     targetColumn = insertAt;
@@ -933,7 +934,7 @@ function insertTable(
   if (!Number.isFinite(argument.columns) || !Number.isFinite(argument.rows)) return null;
   const columns = Math.max(1, Math.min(8, Math.trunc(argument.columns)));
   const rows = Math.max(1, Math.min(8, Math.trunc(argument.rows)));
-  const headers = Array.from({ length: columns }, (_, index) => `列 ${index + 1}`);
+  const headers = Array.from({ length: columns }, (_, index) => t("列 {0}", index + 1));
   const serialized = serializeTableParts(
     '',
     headers,

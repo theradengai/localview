@@ -1,3 +1,7 @@
+import { useNativeLanguageSync } from './lib/useNativeLanguageSync';
+import LanguagePicker from './components/LanguagePicker';
+import { useI18n } from './lib/useI18n';
+import { t } from './lib/i18n';
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import DecisionDialog, { type DecisionDialogConfig } from './components/DecisionDialog';
@@ -367,13 +371,13 @@ function insertCreatedNode(
 
 function markdownCreateError(error: unknown): string {
   const message = errorMessage(error);
-  if (message.startsWith('INVALID_MARKDOWN_NAME')) return '请输入有效的 Markdown 文件名';
-  if (message.startsWith('MARKDOWN_NAME_TOO_LONG')) return '文件名过长，请缩短后重试';
-  if (message.startsWith('MARKDOWN_FILE_EXISTS')) return '同名 Markdown 文件已存在';
-  if (message.startsWith('MARKDOWN_PARENT_NOT_DIRECTORY')) return '目标不是可写文件夹';
-  if (message.startsWith('MARKDOWN_PARENT_CHANGED')) return '目标文件夹已发生变化，请重试';
-  if (message.startsWith('WORKSPACE_ROOT_CHANGED')) return '工作区目录已发生变化，请重新打开';
-  if (message.startsWith('CREATE_MARKDOWN_UNSUPPORTED')) return '当前系统暂不支持安全新建 Markdown';
+  if (message.startsWith('INVALID_MARKDOWN_NAME')) return t("请输入有效的 Markdown 文件名");
+  if (message.startsWith('MARKDOWN_NAME_TOO_LONG')) return t("文件名过长，请缩短后重试");
+  if (message.startsWith('MARKDOWN_FILE_EXISTS')) return t("同名 Markdown 文件已存在");
+  if (message.startsWith('MARKDOWN_PARENT_NOT_DIRECTORY')) return t("目标不是可写文件夹");
+  if (message.startsWith('MARKDOWN_PARENT_CHANGED')) return t("目标文件夹已发生变化，请重试");
+  if (message.startsWith('WORKSPACE_ROOT_CHANGED')) return t("工作区目录已发生变化，请重新打开");
+  if (message.startsWith('CREATE_MARKDOWN_UNSUPPORTED')) return t("当前系统暂不支持安全新建 Markdown");
   return message;
 }
 
@@ -394,17 +398,17 @@ function classifyMarkdownCreateFailure(error: unknown): 'definitive' | 'ambiguou
 
 function directoryCreateError(error: unknown): string {
   const message = errorMessage(error);
-  if (message.startsWith('INVALID_DIRECTORY_NAME')) return '请输入有效的文件夹名称';
-  if (message.startsWith('DIRECTORY_NAME_TOO_LONG')) return '文件夹名称过长，请缩短后重试';
-  if (message.startsWith('DIRECTORY_NAME_RESERVED')) return '该名称由 LocalView 或系统保留';
-  if (message.startsWith('DIRECTORY_BUNDLE_NAME_UNSUPPORTED')) return '请不要使用 .numbers、.pages 或 .key 结尾的文件夹名';
-  if (message.startsWith('DIRECTORY_ENTRY_EXISTS')) return '同名文件或文件夹已存在';
-  if (message.startsWith('DIRECTORY_PARENT_NOT_DIRECTORY')) return '目标不是可写文件夹';
-  if (message.startsWith('DIRECTORY_PARENT_CHANGED')) return '目标文件夹已发生变化，请重试';
-  if (message.startsWith('WORKSPACE_ROOT_CHANGED')) return '工作区目录已发生变化，请重新打开';
-  if (message.startsWith('CREATE_DIRECTORY_UNSUPPORTED')) return '当前系统暂不支持安全新建文件夹';
-  if (message.startsWith('CREATE_DIRECTORY_RESULT_UNCERTAIN')) return '文件夹创建结果不确定';
-  return message.replace(/^CREATE_DIRECTORY_FAILED:\s*/, '新建文件夹失败：');
+  if (message.startsWith('INVALID_DIRECTORY_NAME')) return t("请输入有效的文件夹名称");
+  if (message.startsWith('DIRECTORY_NAME_TOO_LONG')) return t("文件夹名称过长，请缩短后重试");
+  if (message.startsWith('DIRECTORY_NAME_RESERVED')) return t("该名称由 LocalView 或系统保留");
+  if (message.startsWith('DIRECTORY_BUNDLE_NAME_UNSUPPORTED')) return t("请不要使用 .numbers、.pages 或 .key 结尾的文件夹名");
+  if (message.startsWith('DIRECTORY_ENTRY_EXISTS')) return t("同名文件或文件夹已存在");
+  if (message.startsWith('DIRECTORY_PARENT_NOT_DIRECTORY')) return t("目标不是可写文件夹");
+  if (message.startsWith('DIRECTORY_PARENT_CHANGED')) return t("目标文件夹已发生变化，请重试");
+  if (message.startsWith('WORKSPACE_ROOT_CHANGED')) return t("工作区目录已发生变化，请重新打开");
+  if (message.startsWith('CREATE_DIRECTORY_UNSUPPORTED')) return t("当前系统暂不支持安全新建文件夹");
+  if (message.startsWith('CREATE_DIRECTORY_RESULT_UNCERTAIN')) return t("文件夹创建结果不确定");
+  return message.replace(/^CREATE_DIRECTORY_FAILED:\s*/, t("新建文件夹失败："));
 }
 
 function classifyDirectoryCreateFailure(error: unknown): 'definitive' | 'ambiguous' {
@@ -426,27 +430,27 @@ function classifyDirectoryCreateFailure(error: unknown): 'definitive' | 'ambiguo
 
 function trashError(error: unknown): string {
   const message = errorMessage(error);
-  if (message.startsWith('TRASH_ROOT_FORBIDDEN')) return '不能把当前工作区根目录移到废纸篓';
-  if (message.startsWith('TRASH_SYMLINK_UNSUPPORTED')) return '为避免越界，本版本不支持删除符号链接';
-  if (message.startsWith('TRASH_TARGET_CHANGED')) return '文件在操作期间发生变化，请刷新后重试';
-  if (message.startsWith('TRASH_UNSUPPORTED')) return '当前系统不支持安全移到废纸篓';
-  return message.replace(/^TRASH_FAILED:\s*/, '移到废纸篓失败：');
+  if (message.startsWith('TRASH_ROOT_FORBIDDEN')) return t("不能把当前工作区根目录移到废纸篓");
+  if (message.startsWith('TRASH_SYMLINK_UNSUPPORTED')) return t("为避免越界，本版本不支持删除符号链接");
+  if (message.startsWith('TRASH_TARGET_CHANGED')) return t("文件在操作期间发生变化，请刷新后重试");
+  if (message.startsWith('TRASH_UNSUPPORTED')) return t("当前系统不支持安全移到废纸篓");
+  return message.replace(/^TRASH_FAILED:\s*/, t("移到废纸篓失败："));
 }
 
 function moveError(error: unknown): string {
   const failure = normalizeCommandError(error);
-  if (failure.code === 'MOVE_SOURCE_CHANGED') return '源项目在移动期间发生变化，请刷新后重试';
-  if (failure.code === 'MOVE_DESTINATION_CHANGED') return '目标文件夹在移动期间发生变化，请重试';
-  if (failure.code === 'MOVE_SOURCE_UNSUPPORTED') return '当前项目不支持移动';
-  if (failure.code === 'MOVE_SAME_PARENT') return '项目已经位于该文件夹中';
-  if (failure.code === 'MOVE_DESTINATION_INSIDE_SOURCE') return '不能把文件夹移到它自己或子文件夹中';
-  if (failure.code === 'MOVE_DESTINATION_EXISTS') return '目标文件夹中已存在同名项目';
-  if (failure.code === 'MOVE_CROSS_DEVICE_UNSUPPORTED') return '暂不支持跨磁盘移动项目';
-  if (failure.code === 'MOVE_SECURE_RENAME_UNAVAILABLE') return '当前系统或磁盘不支持安全移动';
-  if (failure.code === 'MOVE_BUNDLE_BOUNDARY') return 'Numbers、Pages 或 Keynote 文稿包只能整体移动';
-  if (failure.code === 'MOVE_OUTCOME_UNCERTAIN') return '移动结果不确定；已刷新源目录和目标目录';
-  if (failure.code === 'WORKSPACE_CHANGED') return '工作区已经变化，请重新操作';
-  return `移动失败：${failure.message}`;
+  if (failure.code === 'MOVE_SOURCE_CHANGED') return t("源项目在移动期间发生变化，请刷新后重试");
+  if (failure.code === 'MOVE_DESTINATION_CHANGED') return t("目标文件夹在移动期间发生变化，请重试");
+  if (failure.code === 'MOVE_SOURCE_UNSUPPORTED') return t("当前项目不支持移动");
+  if (failure.code === 'MOVE_SAME_PARENT') return t("项目已经位于该文件夹中");
+  if (failure.code === 'MOVE_DESTINATION_INSIDE_SOURCE') return t("不能把文件夹移到它自己或子文件夹中");
+  if (failure.code === 'MOVE_DESTINATION_EXISTS') return t("目标文件夹中已存在同名项目");
+  if (failure.code === 'MOVE_CROSS_DEVICE_UNSUPPORTED') return t("暂不支持跨磁盘移动项目");
+  if (failure.code === 'MOVE_SECURE_RENAME_UNAVAILABLE') return t("当前系统或磁盘不支持安全移动");
+  if (failure.code === 'MOVE_BUNDLE_BOUNDARY') return t("Numbers、Pages 或 Keynote 文稿包只能整体移动");
+  if (failure.code === 'MOVE_OUTCOME_UNCERTAIN') return t("移动结果不确定；已刷新源目录和目标目录");
+  if (failure.code === 'WORKSPACE_CHANGED') return t("工作区已经变化，请重新操作");
+  return t("移动失败：{0}", failure.message);
 }
 
 function renameErrorMessage(error: unknown): string {
@@ -454,26 +458,26 @@ function renameErrorMessage(error: unknown): string {
   const code = failure.code === 'IO_ERROR' && failure.message.startsWith('RENAME_')
     ? failure.message
     : failure.code;
-  if (code === 'RENAME_INVALID_NAME') return '请输入有效名称';
-  if (code === 'RENAME_NAME_TOO_LONG') return '名称过长，请缩短后重试';
-  if (code === 'RENAME_RESERVED_NAME') return '该名称由 LocalView 或系统保留';
-  if (code === 'RENAME_EXTENSION_CHANGE_UNSUPPORTED') return '暂不支持更改文件扩展名';
-  if (code === 'RENAME_CASE_ONLY_UNSUPPORTED') return '暂不支持只修改名称大小写';
-  if (code === 'RENAME_UNCHANGED') return '名称没有变化';
-  if (code === 'RENAME_ROOT_FORBIDDEN') return '不能重命名当前工作区根目录';
-  if (code === 'RENAME_SOURCE_UNSUPPORTED') return '当前项目不支持重命名';
-  if (code === 'RENAME_SOURCE_CHANGED') return '项目在重命名期间发生变化，请刷新后重试';
-  if (code === 'RENAME_DESTINATION_EXISTS') return '当前文件夹中已存在同名项目';
-  if (code === 'RENAME_PARENT_CHANGED') return '所在文件夹在重命名期间发生变化，请重试';
-  if (code === 'RENAME_BUNDLE_BOUNDARY') return 'Numbers、Pages 或 Keynote 文稿包只能整体重命名';
-  if (code === 'RENAME_SECURE_UNAVAILABLE') return '当前系统或磁盘不支持安全重命名';
-  if (code === 'RENAME_OUTCOME_UNCERTAIN') return '重命名结果不确定；已刷新所在文件夹';
-  if (code === 'WORKSPACE_CHANGED') return '工作区已经变化，请重新操作';
-  return `重命名失败：${failure.message}`;
+  if (code === 'RENAME_INVALID_NAME') return t("请输入有效名称");
+  if (code === 'RENAME_NAME_TOO_LONG') return t("名称过长，请缩短后重试");
+  if (code === 'RENAME_RESERVED_NAME') return t("该名称由 LocalView 或系统保留");
+  if (code === 'RENAME_EXTENSION_CHANGE_UNSUPPORTED') return t("暂不支持更改文件扩展名");
+  if (code === 'RENAME_CASE_ONLY_UNSUPPORTED') return t("暂不支持只修改名称大小写");
+  if (code === 'RENAME_UNCHANGED') return t("名称没有变化");
+  if (code === 'RENAME_ROOT_FORBIDDEN') return t("不能重命名当前工作区根目录");
+  if (code === 'RENAME_SOURCE_UNSUPPORTED') return t("当前项目不支持重命名");
+  if (code === 'RENAME_SOURCE_CHANGED') return t("项目在重命名期间发生变化，请刷新后重试");
+  if (code === 'RENAME_DESTINATION_EXISTS') return t("当前文件夹中已存在同名项目");
+  if (code === 'RENAME_PARENT_CHANGED') return t("所在文件夹在重命名期间发生变化，请重试");
+  if (code === 'RENAME_BUNDLE_BOUNDARY') return t("Numbers、Pages 或 Keynote 文稿包只能整体重命名");
+  if (code === 'RENAME_SECURE_UNAVAILABLE') return t("当前系统或磁盘不支持安全重命名");
+  if (code === 'RENAME_OUTCOME_UNCERTAIN') return t("重命名结果不确定；已刷新所在文件夹");
+  if (code === 'WORKSPACE_CHANGED') return t("工作区已经变化，请重新操作");
+  return t("重命名失败：{0}", failure.message);
 }
 
 function fileTypeLabel(kind: FileKind): string {
-  return ({ folder: 'Folder', md: 'Markdown', html: 'HTML', text: 'Text', image: 'Image', pdf: 'PDF', spreadsheet: 'Spreadsheet', presentation: 'Presentation', document: 'Document', other: 'File' })[kind];
+  return t(({ folder: '文件夹', md: 'Markdown', html: 'HTML', text: '文本', image: '图片', pdf: 'PDF', spreadsheet: '电子表格', presentation: '演示文稿', document: '文档', other: '文件' })[kind]);
 }
 
 function defaultMode(): ViewMode {
@@ -527,6 +531,9 @@ function injectHtmlPreviewPolicy(source: string): string {
 }
 
 export default function App() {
+  useNativeLanguageSync();
+  useI18n();
+
   const desktop = isTauriRuntime();
   const startupHandled = useRef(false);
   const [tree, setTree] = useState<FileNode[]>(desktop ? [] : demoTree);
@@ -772,7 +779,7 @@ export default function App() {
     const now = Date.now();
     if (now - transitionNoticeAtRef.current < 1200) return;
     transitionNoticeAtRef.current = now;
-    showNotice('工作区切换中，请稍候');
+    showNotice(t("工作区切换中，请稍候"));
   }, [showNotice]);
 
   const handleRendererNotice = useCallback((message: string) => {
@@ -785,7 +792,7 @@ export default function App() {
 
   const requestDecision = useCallback((config: DecisionDialogConfig): Promise<DecisionResult> => {
     if (decisionResolverRef.current) {
-      showNotice('请先处理当前确认');
+      showNotice(t("请先处理当前确认"));
       return Promise.resolve('cancel');
     }
     return new Promise((resolve) => {
@@ -993,22 +1000,22 @@ export default function App() {
       setExternalChange(false);
     } else if (result.kind === 'reload') {
       applyAuthoritativeSnapshot(result.snapshot, target);
-      showNotice('已重新载入磁盘修改');
+      showNotice(t("已重新载入磁盘修改"));
     } else if (result.kind === 'conflict') {
       externalChangeRef.current = true;
       setExternalChange(true);
       saveCoordinatorRef.current?.fail('conflict', 'EXTERNAL_CHANGE: disk version changed');
-      showNotice('磁盘文件已变化；本地修改仍保留');
+      showNotice(t("磁盘文件已变化；本地修改仍保留"));
     } else if (result.kind === 'missing') {
       if (dirtyRef.current || saveCoordinatorRef.current?.hasPendingChanges()) {
         saveCoordinatorRef.current?.fail('missing', result.message);
-        showNotice('原文件已被移走，本地内容仍保留');
+        showNotice(t("原文件已被移走，本地内容仍保留"));
       } else {
         clearCurrentDocument();
-        showNotice('原文件已被移走');
+        showNotice(t("原文件已被移走"));
       }
     } else {
-      showNotice(`暂时无法读取磁盘文件：${result.message}`);
+      showNotice(t("暂时无法读取磁盘文件：{0}", result.message));
     }
   }, [applyAuthoritativeSnapshot, clearCurrentDocument, desktop, showNotice]);
   selectedRecheckRunnerRef.current = recheckSelectedSnapshot;
@@ -1023,10 +1030,10 @@ export default function App() {
     const coordinator = saveCoordinatorRef.current;
     if (coordinator?.hasPendingChanges() || dirtyRef.current) {
       coordinator?.fail('missing', 'FILE_MISSING: selected path no longer exists in the workspace tree');
-      showNotice('当前文件已被外部移走，本地编辑内容仍保留');
+      showNotice(t("当前文件已被外部移走，本地编辑内容仍保留"));
     } else {
       clearCurrentDocument();
-      showNotice('当前文件已被外部移走');
+      showNotice(t("当前文件已被外部移走"));
     }
   }, [clearCurrentDocument, showNotice]);
 
@@ -1035,7 +1042,7 @@ export default function App() {
       list: listDirectory,
       onCommit: commitDirectoryResults,
       onError: (_path, error) => {
-        const message = `目录刷新失败：${errorMessage(error)}`;
+        const message = t("目录刷新失败：{0}", errorMessage(error));
         if (!unmountedRef.current && watchFailureNoticeRef.current !== message) {
           watchFailureNoticeRef.current = message;
           showNotice(message);
@@ -1063,11 +1070,11 @@ export default function App() {
     action: () => Promise<void>,
   ): Promise<boolean> => {
     if (documentActionGateRef.current !== 'idle') {
-      showNotice('正在完成当前操作，请稍候');
+      showNotice(t("正在完成当前操作，请稍候"));
       return false;
     }
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格状态已经变化，无法离开当前编辑状态');
+      showNotice(t("表格单元格状态已经变化，无法离开当前编辑状态"));
       return false;
     }
     documentActionGateRef.current = gate;
@@ -1086,15 +1093,15 @@ export default function App() {
       }
 
       const terminal = outcome.kind === 'conflict'
-        ? '磁盘文件已经变化，自动保存已停止。'
+        ? t("磁盘文件已经变化，自动保存已停止。")
         : outcome.kind === 'missing'
-          ? '原文件已被移走，本地编辑内容仍保留。'
-          : `自动保存失败：${outcome.error ?? '未知错误'}`;
+          ? t("原文件已被移走，本地编辑内容仍保留。")
+          : t("自动保存失败：{0}", outcome.error ?? t("未知错误"));
       const result = await requestDecision({
-        title: `${actionLabel}前无法保存`,
-        message: `${terminal} 你可以继续编辑，或明确放弃本地修改后继续。`,
-        confirmLabel: `放弃修改并${actionLabel}`,
-        cancelLabel: '继续编辑',
+        title: t("{0}前无法保存", actionLabel),
+        message: t("{0} 你可以继续编辑，或明确放弃本地修改后继续。", terminal),
+        confirmLabel: t("放弃修改并{0}", actionLabel),
+        cancelLabel: t("继续编辑"),
         destructive: true,
       });
       if (result !== 'confirm') return false;
@@ -1129,7 +1136,7 @@ export default function App() {
       selectedRef.current = node;
       setSelected(node);
       const renderer = rendererFor(node);
-      const nextRendererStatus = renderer === 'spreadsheet-grid' ? '只读 · Spreadsheet' : renderer === 'system-preview' ? '只读 · Quick Look' : 'Local-first';
+      const nextRendererStatus = renderer === 'spreadsheet-grid' ? t("只读 · Spreadsheet") : renderer === 'system-preview' ? t("只读 · Quick Look") : 'Local-first';
       rendererStatusRef.current = nextRendererStatus;
       setRendererStatus(nextRendererStatus);
       if (snapshot) {
@@ -1177,7 +1184,7 @@ export default function App() {
       while (pendingFileSelectionRef.current && !unmountedRef.current) {
         const requested = pendingFileSelectionRef.current;
         pendingFileSelectionRef.current = null;
-        const completed = await runWithSaveGuard('navigating', '打开其他文件', async () => {
+        const completed = await runWithSaveGuard('navigating', t("打开其他文件"), async () => {
           const latest = pendingFileSelectionRef.current ?? requested;
           pendingFileSelectionRef.current = null;
           if (latest) await loadFile(latest);
@@ -1373,7 +1380,7 @@ export default function App() {
             const key = `${preparedBinding.generation}:unavailable`;
             if (watchFailureNoticeRef.current !== key) {
               watchFailureNoticeRef.current = key;
-              showNotice('目录实时监听不可用；可使用“重新载入目录”');
+              showNotice(t("目录实时监听不可用；可使用“重新载入目录”"));
             }
           }
           createOperationRef.current += 1;
@@ -1437,7 +1444,7 @@ export default function App() {
             showNotice(errorMessage(prepareError));
           } catch (rollbackError) {
             clearUntrustedWorkspace();
-            showNotice(`工作区切换失败：${errorMessage(prepareError)}；回滚也失败：${errorMessage(rollbackError)}`);
+            showNotice(t("工作区切换失败：{0}；回滚也失败：{1}", errorMessage(prepareError), errorMessage(rollbackError)));
           }
         } else {
           pendingWorkspaceBatchesRef.current.clear();
@@ -1481,7 +1488,7 @@ export default function App() {
     workspaceGuardRunningRef.current = true;
     workspaceGuardPendingRef.current = request;
     try {
-      await runWithSaveGuard('navigating', '切换文件夹', async () => {
+      await runWithSaveGuard('navigating', t("切换文件夹"), async () => {
         const guardedRequest = workspaceGuardPendingRef.current;
         workspaceGuardPendingRef.current = null;
         if (!guardedRequest || unmountedRef.current) return;
@@ -1556,7 +1563,7 @@ export default function App() {
           saveCoordinatorRef.current?.fail('conflict', 'EXTERNAL_CHANGE: renamed file differs from the saved content');
           externalChangeRef.current = true;
           setExternalChange(true);
-          showNotice('文件已改名，但新路径内容不同；本地修改仍保留');
+          showNotice(t("文件已改名，但新路径内容不同；本地修改仍保留"));
           return;
         }
         const target: DocumentSaveTarget = {
@@ -1578,9 +1585,9 @@ export default function App() {
       const failure = normalizeCommandError(error);
       if (failure.code === 'FILE_NOT_FOUND') {
         saveCoordinatorRef.current?.fail('missing', failure.message);
-        showNotice('改名后的文件已不存在，本地内容仍保留');
+        showNotice(t("改名后的文件已不存在，本地内容仍保留"));
       } else {
-        showNotice(`改名后的文件暂时无法读取：${failure.message}`);
+        showNotice(t("改名后的文件暂时无法读取：{0}", failure.message));
       }
     }
   }, [applyAuthoritativeSnapshot, desktop, showNotice]);
@@ -1672,7 +1679,7 @@ export default function App() {
       const key = `${failure.generation}:${failure.message}`;
       if (watchFailureNoticeRef.current === key) return;
       watchFailureNoticeRef.current = key;
-      showNotice(`${failure.message}；可使用“重新载入目录”`);
+      showNotice(t("{0}；可使用“重新载入目录”", failure.message));
     }).then((dispose) => {
       if (cancelled) dispose(); else disposeFailures = dispose;
     });
@@ -1688,7 +1695,7 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void listenForWindowOpenFailures((failure) => {
-      showNotice(`新窗口打开失败：${failure.message}`);
+      showNotice(t("新窗口打开失败：{0}", failure.message));
     }).then((dispose) => cancelled ? dispose() : (unlisten = dispose));
     return () => { cancelled = true; unlisten?.(); };
   }, [desktop, showNotice]);
@@ -1709,7 +1716,7 @@ export default function App() {
       }
       setHtmlPreviewCapability(capability);
     }).catch((error) => {
-      if (!cancelled) showNotice(`安全 HTML 预览准备失败：${errorMessage(error)}`);
+      if (!cancelled) showNotice(t("安全 HTML 预览准备失败：{0}", errorMessage(error)));
     });
     return () => {
       cancelled = true;
@@ -1728,14 +1735,14 @@ export default function App() {
     const target = selectedRef.current;
     if (!target || !isTextKind(target.kind)) return;
     const result = await requestDecision({
-      title: '磁盘文件已变化',
-      message: 'LocalView 已阻止覆盖磁盘上的新版本。重新载入会放弃当前本地修改。',
-      confirmLabel: '重新载入磁盘版本',
-      cancelLabel: '保留本地修改',
+      title: t("磁盘文件已变化"),
+      message: t("LocalView 已阻止覆盖磁盘上的新版本。重新载入会放弃当前本地修改。"),
+      confirmLabel: t("重新载入磁盘版本"),
+      cancelLabel: t("保留本地修改"),
       destructive: true,
     });
     if (result === 'cancel') {
-      if (!workspaceTransitionRef.current) showNotice('已保留本地修改，未覆盖磁盘文件');
+      if (!workspaceTransitionRef.current) showNotice(t("已保留本地修改，未覆盖磁盘文件"));
       return;
     }
     if (workspaceTransitionRef.current
@@ -1757,7 +1764,7 @@ export default function App() {
       const snapshot = await readTextFile(target.path);
       if (!isCurrent()) return;
       applyAuthoritativeSnapshot(snapshot);
-      showNotice('已重新载入磁盘版本');
+      showNotice(t("已重新载入磁盘版本"));
     } catch (error) {
       if (isCurrent()) {
         externalChangeRef.current = true;
@@ -1780,7 +1787,7 @@ export default function App() {
     const coordinator = saveCoordinatorRef.current;
     if (!coordinator) return;
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格仍在输入中，暂时无法保存');
+      showNotice(t("表格单元格仍在输入中，暂时无法保存"));
       return;
     }
     const state = coordinator.getState();
@@ -1789,7 +1796,7 @@ export default function App() {
       return;
     }
     if (state.kind === 'missing') {
-      showNotice('原文件已被移走，本地内容仍保留，未重新创建旧路径');
+      showNotice(t("原文件已被移走，本地内容仍保留，未重新创建旧路径"));
       return;
     }
     try {
@@ -1797,14 +1804,14 @@ export default function App() {
       if (outcome.kind === 'conflict') {
         await resolveExternalConflict();
       } else if (outcome.kind === 'missing') {
-        showNotice('原文件已被移走，本地内容仍保留，未重新创建旧路径');
+        showNotice(t("原文件已被移走，本地内容仍保留，未重新创建旧路径"));
       } else if (outcome.kind === 'error') {
-        showNotice(`保存失败：${outcome.error ?? '未知错误'}`);
+        showNotice(t("保存失败：{0}", outcome.error ?? t("未知错误")));
       } else {
-        showNotice('已保存');
+        showNotice(t("已保存"));
       }
     } catch (error) {
-      showNotice(`保存失败：${errorMessage(error)}`);
+      showNotice(t("保存失败：{0}", errorMessage(error)));
     }
   }, [flushActiveEditorSurface, resolveExternalConflict, showNotice, showTransitionNotice, waitForWorkspaceMutations]);
 
@@ -1813,7 +1820,7 @@ export default function App() {
     cancelRename(false);
     await waitForWorkspaceMutations();
     if (workspaceTransitionRef.current) return void showTransitionNotice();
-    await runWithSaveGuard('reloading', '重新载入 LocalView', async () => {
+    await runWithSaveGuard('reloading', t("重新载入 LocalView"), async () => {
       if (windowSessionIdRef.current) flushWorkspaceSession(windowSessionIdRef.current);
       allowUnloadRef.current = true;
       window.location.reload();
@@ -1825,7 +1832,7 @@ export default function App() {
     try {
       await createWorkspaceWindow();
     } catch (error) {
-      showNotice(`新建窗口失败：${errorMessage(error)}`);
+      showNotice(t("新建窗口失败：{0}", errorMessage(error)));
     }
   }, [showNotice]);
 
@@ -1833,11 +1840,11 @@ export default function App() {
     if (printFlowRef.current) return;
     const target = selectedRef.current;
     if (!target || target.kind !== 'md') {
-      showNotice('当前仅支持打印 Markdown 文件');
+      showNotice(t("当前仅支持打印 Markdown 文件"));
       return;
     }
     if (decisionResolverRef.current) {
-      showNotice('请先处理当前确认');
+      showNotice(t("请先处理当前确认"));
       return;
     }
     if (workspaceTransitionRef.current) {
@@ -1845,11 +1852,11 @@ export default function App() {
       return;
     }
     if (documentActionGateRef.current !== 'idle') {
-      showNotice('正在完成当前操作，请稍候');
+      showNotice(t("正在完成当前操作，请稍候"));
       return;
     }
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格状态已经变化，暂时无法打印');
+      showNotice(t("表格单元格状态已经变化，暂时无法打印"));
       return;
     }
 
@@ -1892,17 +1899,17 @@ export default function App() {
         dispatched = true;
         retainedPrintJobIdRef.current = id;
         if (readiness.timedOut) {
-          showNotice('部分打印资源尚未加载，已继续打开打印设置');
+          showNotice(t("部分打印资源尚未加载，已继续打开打印设置"));
         } else if (readiness.failedImages.length) {
-          showNotice(`${readiness.failedImages.length} 张图片无法加载，其他内容仍可打印`);
+          showNotice(t("{0} 张图片无法加载，其他内容仍可打印", readiness.failedImages.length));
         }
       } catch (error) {
         if (!unmountedRef.current) {
           const message = error instanceof Error && error.message === 'PRINT_SURFACE_TIMEOUT'
-            ? '打印预览准备超时，请重试'
+            ? t("打印预览准备超时，请重试")
             : error instanceof Error && error.message === 'PRINT_CONTEXT_CHANGED'
-              ? '文件状态已经变化，已取消打印'
-              : `无法打开打印设置：${errorMessage(error)}`;
+              ? t("文件状态已经变化，已取消打印")
+              : t("无法打开打印设置：{0}", errorMessage(error));
           showNotice(message);
         }
       } finally {
@@ -1985,7 +1992,7 @@ export default function App() {
       if (closeFlowRef.current) return;
       const flow = (async () => {
         await waitForWorkspaceMutations();
-        await runWithSaveGuard('closing', '关闭 LocalView', async () => {
+        await runWithSaveGuard('closing', t("关闭 LocalView"), async () => {
           const sessionId = windowSessionIdRef.current;
           const session = rootPathRef.current ? {
             rootPath: rootPathRef.current,
@@ -2000,7 +2007,7 @@ export default function App() {
           } catch (error) {
             allowUnloadRef.current = false;
             if (sessionId && session) writeWorkspaceSession(sessionId, session);
-            showNotice(`关闭失败：${errorMessage(error)}`);
+            showNotice(t("关闭失败：{0}", errorMessage(error)));
           }
         });
       })().finally(() => {
@@ -2051,7 +2058,7 @@ export default function App() {
         return;
       }
       if (!flushActiveEditorSurface()) {
-        showNotice('表格单元格状态已经变化，已取消退出');
+        showNotice(t("表格单元格状态已经变化，已取消退出"));
         await respondAppQuit(generation, 'cancel');
         return;
       }
@@ -2073,16 +2080,16 @@ export default function App() {
             return;
           }
           const terminal = outcome.kind === 'conflict'
-            ? '磁盘文件已经变化，LocalView 不会覆盖它。'
+            ? t("磁盘文件已经变化，LocalView 不会覆盖它。")
             : outcome.kind === 'missing'
-              ? '原文件已被移走，本地编辑内容仍保留。'
-              : `自动保存失败：${outcome.error ?? '未知错误'}`;
+              ? t("原文件已被移走，本地编辑内容仍保留。")
+              : t("自动保存失败：{0}", outcome.error ?? t("未知错误"));
           quitDecisionGenerationRef.current = generation;
           const result = await requestDecision({
-            title: '退出前无法保存',
-            message: `${terminal} 你可以继续编辑，或只授权本次退出时放弃本地修改。`,
-            confirmLabel: '退出时放弃',
-            cancelLabel: '继续编辑',
+            title: t("退出前无法保存"),
+            message: t("{0} 你可以继续编辑，或只授权本次退出时放弃本地修改。", terminal),
+            confirmLabel: t("退出时放弃"),
+            cancelLabel: t("继续编辑"),
             destructive: true,
           });
           quitDecisionGenerationRef.current = null;
@@ -2093,7 +2100,7 @@ export default function App() {
           if (quitGenerationRef.current !== generation) return;
           try { await respondAppQuit(generation, 'cancel'); } catch { /* transaction already aborted */ }
           releaseQuitGate(generation);
-          showNotice(`退出已取消：${errorMessage(error)}`);
+          showNotice(t("退出已取消：{0}", errorMessage(error)));
         }
       })().finally(() => {
         if (quitFlowRef.current === flow && quitGenerationRef.current === null) {
@@ -2251,12 +2258,12 @@ export default function App() {
         }
       })
       .catch((error) => {
-        if (!cancelled) showNotice(`窗口初始化失败：${errorMessage(error)}`);
+        if (!cancelled) showNotice(t("窗口初始化失败：{0}", errorMessage(error)));
       })
       .finally(() => {
         if (!cancelled) {
           void finishWindowStartup().catch((error) => {
-            if (!cancelled) showNotice(`窗口启动收尾失败：${errorMessage(error)}`);
+            if (!cancelled) showNotice(t("窗口启动收尾失败：{0}", errorMessage(error)));
           });
         }
       });
@@ -2353,12 +2360,12 @@ export default function App() {
   ): Promise<{ found: boolean; node: FileNode | null; detail: string }> => {
     try {
       const entries = await directoryRefreshCoordinatorRef.current!.load(draft.parentPath);
-      if (!entries) return { found: false, node: null, detail: '目录响应已过期，等待下一次刷新' };
+      if (!entries) return { found: false, node: null, detail: t("目录响应已过期，等待下一次刷新") };
       if (unmountedRef.current
         || workspaceEpochRef.current !== draft.workspaceEpoch
         || normalizePath(rootPathRef.current) === ''
         || createDraftRef.current?.id !== draft.id) {
-        return { found: false, node: null, detail: '当前工作区已变化' };
+        return { found: false, node: null, detail: t("当前工作区已变化") };
       }
       const next = replaceDirectoryWithMergedEntries(
         treeRef.current,
@@ -2375,11 +2382,11 @@ export default function App() {
         found: node !== null,
         node,
         detail: node
-          ? (draft.kind === 'folder' ? '已创建并刷新目录' : '目录已刷新，请确认')
-          : '目录已刷新，未发现目标，可重试',
+          ? (draft.kind === 'folder' ? t("已创建并刷新目录") : t("目录已刷新，请确认"))
+          : t("目录已刷新，未发现目标，可重试"),
       };
     } catch (error) {
-      return { found: false, node: null, detail: `目录刷新失败：${errorMessage(error)}` };
+      return { found: false, node: null, detail: t("目录刷新失败：{0}", errorMessage(error)) };
     }
   }, []);
 
@@ -2398,7 +2405,7 @@ export default function App() {
       return;
     }
 
-    await runWithSaveGuard('creating', '新建文件', async () => {
+    await runWithSaveGuard('creating', t("新建文件"), async () => {
       if (workspaceTransitionRef.current || createBusyRef.current !== null) return;
       const operationId = draft.id;
       const workspace = normalizePath(rootPathRef.current);
@@ -2456,8 +2463,8 @@ export default function App() {
             committed.createDraft = null;
           }
           showNotice(desktop
-            ? `已创建 ${created.entry.name}`
-            : `已模拟创建 ${created.entry.name}；浏览器 Demo 未写入磁盘`);
+            ? t("已创建 {0}", created.entry.name)
+            : t("已模拟创建 {0}；浏览器 Demo 未写入磁盘", created.entry.name));
         } catch (error) {
           if (unmountedRef.current
             || createOperationRef.current !== operationId
@@ -2466,7 +2473,7 @@ export default function App() {
           const rawError = errorMessage(error);
           const classification = classifyMarkdownCreateFailure(error);
           let message = classification === 'ambiguous'
-            ? `创建结果不确定：${rawError}`
+            ? t("创建结果不确定：{0}", rawError)
             : markdownCreateError(error);
           if (desktop && (rawError.startsWith('MARKDOWN_FILE_EXISTS') || classification === 'ambiguous')) {
             const reconciliation = await reconcileCreatedEntry(
@@ -2553,8 +2560,8 @@ export default function App() {
           committed.createDraft = null;
         }
         showNotice(desktop
-          ? `已创建文件夹 ${entry.name}`
-          : `已模拟创建文件夹 ${entry.name}；浏览器 Demo 未写入磁盘`);
+          ? t("已创建文件夹 {0}", entry.name)
+          : t("已模拟创建文件夹 {0}；浏览器 Demo 未写入磁盘", entry.name));
       } catch (error) {
         if (unmountedRef.current
           || createOperationRef.current !== operationId
@@ -2563,7 +2570,7 @@ export default function App() {
         const rawError = errorMessage(error);
         const classification = classifyDirectoryCreateFailure(error);
         let message = classification === 'ambiguous'
-          ? `文件夹创建结果不确定：${rawError}`
+          ? t("文件夹创建结果不确定：{0}", rawError)
           : directoryCreateError(error);
         if (desktop && (rawError.startsWith('DIRECTORY_ENTRY_EXISTS') || classification === 'ambiguous')) {
           const reconciliation = await reconcileCreatedEntry(
@@ -2572,7 +2579,7 @@ export default function App() {
           );
           if (rawError.startsWith('DIRECTORY_ENTRY_EXISTS')) {
             message = `${message}；${reconciliation.found
-              ? '目录已刷新，已确认同名项存在'
+              ? t("目录已刷新，已确认同名项存在")
               : reconciliation.detail}`;
           } else if (reconciliation.found && reconciliation.node) {
             replaceCreateDraft(null);
@@ -2621,27 +2628,27 @@ export default function App() {
   }, [handleWorkspaceChangeBatch]);
 
   const workspaceMoveProblem = useCallback((node: FileNode, destinationPath: string): string | null => {
-    if (createDraftRef.current) return '请先完成或取消当前新建操作';
-    if (renameDraftRef.current) return '请先完成或取消当前重命名操作';
+    if (createDraftRef.current) return t("请先完成或取消当前新建操作");
+    if (renameDraftRef.current) return t("请先完成或取消当前重命名操作");
     const root = normalizePath(rootPathRef.current);
     const sourcePath = normalizePath(node.path);
     const destination = normalizePath(destinationPath);
-    if (!root || sourcePath === root) return '不能移动当前工作区根目录';
+    if (!root || sourcePath === root) return t("不能移动当前工作区根目录");
     if (!containsPath(root, sourcePath) || !containsPath(root, destination)) {
-      return '移动源或目标不在当前工作区';
+      return t("移动源或目标不在当前工作区");
     }
-    if (parentPath(sourcePath) === destination) return '项目已经位于该文件夹中';
+    if (parentPath(sourcePath) === destination) return t("项目已经位于该文件夹中");
     if (node.kind === 'folder' && containsPath(sourcePath, destination)) {
-      return '不能把文件夹移到它自己或子文件夹中';
+      return t("不能把文件夹移到它自己或子文件夹中");
     }
     const destinationNode = destination === root ? null : findNode(treeRef.current, destination);
     if (destination !== root && destinationNode?.kind !== 'folder') {
-      return '移动目标不是当前工作区内的文件夹';
+      return t("移动目标不是当前工作区内的文件夹");
     }
     const destinationItems = destination === root ? treeRef.current : destinationNode?.children;
     if (destinationItems?.some((item) => normalizePath(item.path) !== sourcePath
       && item.name.localeCompare(basename(sourcePath), undefined, { sensitivity: 'base' }) === 0)) {
-      return '目标文件夹中已存在同名项目';
+      return t("目标文件夹中已存在同名项目");
     }
     return null;
   }, []);
@@ -2652,7 +2659,7 @@ export default function App() {
       const problem = workspaceMoveProblem(node, destinationPath);
       if (problem) return `${node.name}：${problem}`;
       if (names.some((name) => name.localeCompare(node.name, undefined, { sensitivity: 'base' }) === 0)) {
-        return '所选项目中有同名项，不能一起移到同一个文件夹';
+        return t("所选项目中有同名项，不能一起移到同一个文件夹");
       }
       names.push(node.name);
     }
@@ -2661,7 +2668,7 @@ export default function App() {
 
   const strictSaveCurrentForRelocation = useCallback(async (
     sourcePath: string,
-    actionLabel: '移动' | '重命名',
+    actionLabel: string,
   ): Promise<boolean> => {
     const current = selectedRef.current;
     if (!current
@@ -2670,7 +2677,7 @@ export default function App() {
     const coordinator = saveCoordinatorRef.current;
     if (!coordinator) return false;
     if (!flushActiveEditorSurface()) {
-      showNotice(`无法${actionLabel}当前项目：表格单元格状态已经变化`);
+      showNotice(t("无法{0}当前项目：表格单元格状态已经变化", actionLabel));
       return false;
     }
     const before = coordinator.getState();
@@ -2681,11 +2688,11 @@ export default function App() {
       && outcome.revision === after.revision;
     if (stable && !after.dirty && !outcome.dirty && outcome.kind === 'idle') return true;
     const detail = outcome.kind === 'conflict'
-      ? '磁盘文件已经变化'
+      ? t("磁盘文件已经变化")
       : outcome.kind === 'missing'
-        ? '原文件已经不存在'
-        : `保存失败：${outcome.error ?? '未知错误'}`;
-    showNotice(`无法${actionLabel}当前项目：${detail}；本地内容仍保留`);
+        ? t("原文件已经不存在")
+        : t("保存失败：{0}", outcome.error ?? t("未知错误"));
+    showNotice(t("无法{0}当前项目：{1}；本地内容仍保留", actionLabel, detail));
     return false;
   }, [flushActiveEditorSurface, showNotice]);
 
@@ -2756,8 +2763,8 @@ export default function App() {
     if (!activeInsideMove) setPendingTreeFocusPath(result.movedPath);
     if (desktop) directoryRefreshCoordinatorRef.current?.request([move.sourceParent, destination]);
     showNotice(desktop
-      ? `已将 ${result.entry.name} 移到 ${basename(destination)}`
-      : `浏览器 Demo 已模拟移动 ${result.entry.name}；未改动磁盘`);
+      ? t("已将 {0} 移到 {1}", result.entry.name, basename(destination))
+      : t("浏览器 Demo 已模拟移动 {0}；未改动磁盘", result.entry.name));
     return true;
   }, [desktop, followPairedRename, prepareFolder, showNotice]);
 
@@ -2791,11 +2798,11 @@ export default function App() {
     }
     let ambiguous = false;
     try {
-      if (!await strictSaveCurrentForRelocation(sourcePath, '移动')) return { ok: false, message: '当前文档未能安全保存；本地内容仍保留' };
+      if (!await strictSaveCurrentForRelocation(sourcePath, t("移动"))) return { ok: false, message: t("当前文档未能安全保存；本地内容仍保留") };
       if (activeRelocationRef.current?.id !== operationId
         || workspaceEpochRef.current !== move.workspaceEpoch
         || workspaceBindingRef.current?.generation !== move.workspaceGeneration) {
-        return fail('工作区已经变化，已取消移动');
+        return fail(t("工作区已经变化，已取消移动"));
       }
       if (!desktop) {
         const applied = await applyConfirmedMove(move, {
@@ -2803,7 +2810,7 @@ export default function App() {
           movedPath: move.destinationPath,
           entry: { ...node, path: move.destinationPath, name: basename(move.destinationPath) },
         });
-        return applied ? { ok: true } : fail('工作区已经变化，无法确认移动结果');
+        return applied ? { ok: true } : fail(t("工作区已经变化，无法确认移动结果"));
       }
 
       const candidate: MoveCandidate = preparedCandidate ?? await prepareWorkspaceMove(sourcePath, destination);
@@ -2811,7 +2818,7 @@ export default function App() {
         || workspaceEpochRef.current !== move.workspaceEpoch
         || workspaceBindingRef.current?.generation !== move.workspaceGeneration
         || candidate.workspaceGeneration !== move.workspaceGeneration) {
-        return fail('工作区已经变化，已取消移动');
+        return fail(t("工作区已经变化，已取消移动"));
       }
       let result: MovedWorkspaceEntry | null = null;
       try {
@@ -2841,10 +2848,10 @@ export default function App() {
         }
       }
       if (ambiguous || !result) {
-        return fail('移动结果不确定；已刷新源目录和目标目录，请确认后再操作');
+        return fail(t("移动结果不确定；已刷新源目录和目标目录，请确认后再操作"));
       }
       const applied = await applyConfirmedMove(move, result);
-      return applied ? { ok: true } : fail('工作区已经变化，无法确认移动结果');
+      return applied ? { ok: true } : fail(t("工作区已经变化，无法确认移动结果"));
     } catch (error) {
       return fail(moveError(error));
     } finally {
@@ -2872,23 +2879,23 @@ export default function App() {
         const candidates = new Map<string, MoveCandidate>();
         for (const node of nodes) {
           if (!current() || !findNode(treeRef.current, node.path)) {
-            showNotice('工作区或所选项目已经变化，已取消批量移动');
+            showNotice(t("工作区或所选项目已经变化，已取消批量移动"));
             return;
           }
-          if (!await strictSaveCurrentForRelocation(node.path, '移动')) return;
+          if (!await strictSaveCurrentForRelocation(node.path, t("移动"))) return;
           if (desktop) {
             const candidate = await prepareWorkspaceMove(node.path, destinationPath);
             candidates.set(normalizePath(node.path), candidate);
             if (!current() || candidate.workspaceGeneration !== generation) {
-              showNotice('工作区已经变化，已取消批量移动');
+              showNotice(t("工作区已经变化，已取消批量移动"));
               return;
             }
           }
         }
         const result = await runTreeBatch(nodes, async (node) => {
-          if (!current()) return { ok: false, message: '工作区已经变化' };
+          if (!current()) return { ok: false, message: t("工作区已经变化") };
           const latest = findNode(treeRef.current, node.path);
-          if (!latest) return { ok: false, message: '所选项目已经不存在' };
+          if (!latest) return { ok: false, message: t("所选项目已经不存在") };
           return performWorkspaceMove(latest, destinationPath, candidates.get(normalizePath(node.path)));
         });
         if (!current()) return;
@@ -2898,11 +2905,11 @@ export default function App() {
         replaceTreeSelection(paths);
         if (paths[0]) setPendingTreeFocusPath(paths[0]);
         showNotice(result.failure
-          ? `已确认移动 ${result.completed.length}/${nodes.length} 项；停在“${result.remaining[0].name}”：${result.failure}；未继续处理其余项目`
-          : desktop ? `已将 ${nodes.length} 项移到 ${basename(destinationPath)}`
-            : `浏览器 Demo 已模拟移动 ${nodes.length} 项；未改动磁盘`);
+          ? t("已确认移动 {0}/{1} 项；停在“{2}”：{3}；未继续处理其余项目", result.completed.length, nodes.length, result.remaining[0].name, result.failure)
+          : desktop ? t("已将 {0} 项移到 {1}", nodes.length, basename(destinationPath))
+            : t("浏览器 Demo 已模拟移动 {0} 项；未改动磁盘", nodes.length));
       } catch (error) {
-        showNotice(`批量移动已停止：${moveError(error)}；请检查源目录和目标目录`);
+        showNotice(t("批量移动已停止：{0}；请检查源目录和目标目录", moveError(error)));
       }
     });
   }, [desktop, operationRoots, performWorkspaceMove, replaceTreeSelection, runWorkspaceMutation, showNotice, strictSaveCurrentForRelocation, workspaceMovesProblem]);
@@ -2981,8 +2988,8 @@ export default function App() {
     }
     if (desktop) directoryRefreshCoordinatorRef.current?.request([parent]);
     showNotice(desktop
-      ? `已重命名为 ${result.entry.name}`
-      : `浏览器 Demo 已模拟重命名为 ${result.entry.name}；未改动磁盘`);
+      ? t("已重命名为 {0}", result.entry.name)
+      : t("浏览器 Demo 已模拟重命名为 {0}；未改动磁盘", result.entry.name));
     return true;
   }, [desktop, followPairedRename, replaceRenameDraft, showNotice]);
 
@@ -3044,9 +3051,9 @@ export default function App() {
       && workspaceBindingRef.current?.generation === draft.workspaceGeneration
       && normalizePath(renameDraftRef.current.sourcePath) === sourcePath;
     try {
-      if (!await strictSaveCurrentForRelocation(sourcePath, '重命名')) return;
+      if (!await strictSaveCurrentForRelocation(sourcePath, t("重命名"))) return;
       if (!isCurrent()) {
-        showNotice('工作区已经变化，已取消重命名');
+        showNotice(t("工作区已经变化，已取消重命名"));
         return;
       }
       if (!desktop) {
@@ -3060,7 +3067,7 @@ export default function App() {
 
       const candidate: RenameCandidate = await prepareWorkspaceRename(sourcePath, fullName);
       if (!isCurrent() || candidate.workspaceGeneration !== draft.workspaceGeneration) {
-        showNotice('工作区已经变化，已取消重命名');
+        showNotice(t("工作区已经变化，已取消重命名"));
         return;
       }
       let result: RenamedWorkspaceEntry | null = null;
@@ -3092,7 +3099,7 @@ export default function App() {
       }
       if (ambiguous || !result) {
         replaceRenameDraft(null);
-        showNotice('重命名结果不确定；已刷新所在文件夹，请确认后再操作');
+        showNotice(t("重命名结果不确定；已刷新所在文件夹，请确认后再操作"));
         return;
       }
       applied = await applyConfirmedRename(draft, relocation, result, submitReason);
@@ -3147,7 +3154,7 @@ export default function App() {
       || createBusyRef.current !== null
       || renameDraftRef.current
       || renameBusyRef.current !== null) {
-      showNotice('请先完成当前操作');
+      showNotice(t("请先完成当前操作"));
       return;
     }
     const sourcePath = normalizePath(node.path);
@@ -3194,7 +3201,7 @@ export default function App() {
     moveDragRef.current = null;
     setMoveDrag(null);
     if (documentActionGateRef.current !== 'idle' || workspaceTransitionRef.current) {
-      showNotice('正在完成当前操作，请稍候');
+      showNotice(t("正在完成当前操作，请稍候"));
       return;
     }
     const problem = workspaceMovesProblem(operationRoots(input), destinationPath);
@@ -3203,7 +3210,7 @@ export default function App() {
       return;
     }
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格状态已经变化，无法开始移动');
+      showNotice(t("表格单元格状态已经变化，无法开始移动"));
       return;
     }
     documentActionGateRef.current = 'moving';
@@ -3219,19 +3226,19 @@ export default function App() {
   const chooseWorkspaceMoveDestination = useCallback(async (input: FileNode | FileNode[]) => {
     setTreeActionMenu(null);
     if (!desktop) {
-      showNotice('浏览器 Demo 请把项目拖到左侧文件夹；不会打开系统选择器');
+      showNotice(t("浏览器 Demo 请把项目拖到左侧文件夹；不会打开系统选择器"));
       return;
     }
     if (documentActionGateRef.current !== 'idle' || workspaceTransitionRef.current) {
-      showNotice('正在完成当前操作，请稍候');
+      showNotice(t("正在完成当前操作，请稍候"));
       return;
     }
     if (createDraftRef.current) {
-      showNotice('请先完成或取消当前新建操作');
+      showNotice(t("请先完成或取消当前新建操作"));
       return;
     }
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格状态已经变化，无法开始移动');
+      showNotice(t("表格单元格状态已经变化，无法开始移动"));
       return;
     }
     const workspaceEpoch = workspaceEpochRef.current;
@@ -3245,7 +3252,7 @@ export default function App() {
       if (workspaceEpochRef.current !== workspaceEpoch
         || workspaceBindingRef.current?.generation !== workspaceGeneration
         || normalizePath(rootPathRef.current) !== workspace) {
-        showNotice('工作区已经变化，已取消移动');
+        showNotice(t("工作区已经变化，已取消移动"));
         return;
       }
       await performWorkspaceMoves(input, destination);
@@ -3258,17 +3265,17 @@ export default function App() {
   const requestTrashSelection = useCallback(async (input: FileNode | FileNode[]) => {
     const nodes = operationRoots(input);
     if (!nodes.length) return;
-    if (trashBatchPendingRef.current) return void showNotice('请先处理当前废纸篓操作');
+    if (trashBatchPendingRef.current) return void showNotice(t("请先处理当前废纸篓操作"));
     setTreeActionMenu(null);
     cancelRename(false);
     if (workspaceTransitionRef.current || documentActionGateRef.current !== 'idle'
       || createBusyRef.current !== null || createDraftRef.current || renameDraftRef.current) {
-      showNotice('请先完成当前操作');
+      showNotice(t("请先完成当前操作"));
       return;
     }
     const root = normalizePath(rootPathRef.current);
     if (!root || nodes.some((node) => normalizePath(node.path) === root || !containsPath(root, node.path))) {
-      showNotice('不能操作工作区根目录或工作区之外的项目');
+      showNotice(t("不能操作工作区根目录或工作区之外的项目"));
       return;
     }
     const epoch = workspaceEpochRef.current;
@@ -3285,7 +3292,7 @@ export default function App() {
       const candidates = new Map<string, Awaited<ReturnType<typeof prepareTrash>>>();
       for (const node of nodes) {
         if (!current() || !findNode(treeRef.current, node.path)) {
-          showNotice('工作区或所选项目已经变化，已取消废纸篓操作');
+          showNotice(t("工作区或所选项目已经变化，已取消废纸篓操作"));
           return;
         }
         if (desktop) candidates.set(normalizePath(node.path), await prepareTrash(node.path));
@@ -3294,24 +3301,24 @@ export default function App() {
       const names = nodes.slice(0, 5).map((node) => `“${node.name}”`).join('、');
       const node = nodes[0];
       const decision = await requestDecision({
-        title: multiple ? `将 ${nodes.length} 项移到废纸篓？` : '移到废纸篓？',
+        title: multiple ? t("将 {0} 项移到废纸篓？", nodes.length) : t("移到废纸篓？"),
         message: multiple
-          ? `${names}${nodes.length > 5 ? '等' : ''}将移到 macOS 废纸篓；文件夹及其内容会一起移动，可以从废纸篓恢复。逐项执行，失败时停止，已完成的项目不会自动撤销。`
+          ? t("{0}{1}将移到 macOS 废纸篓；文件夹及其内容会一起移动，可以从废纸篓恢复。逐项执行，失败时停止，已完成的项目不会自动撤销。", names, nodes.length > 5 ? t("等") : '')
           : node.kind === 'folder'
-            ? `“${node.name}”及其中的内容会一起移到 macOS 废纸篓。`
-            : `“${node.name}”会移到 macOS 废纸篓，可以从废纸篓恢复。`,
-        confirmLabel: '移到废纸篓', cancelLabel: '取消', destructive: true,
+            ? t("“{0}”及其中的内容会一起移到 macOS 废纸篓。", node.name)
+            : t("“{0}”会移到 macOS 废纸篓，可以从废纸篓恢复。", node.name),
+        confirmLabel: t("移到废纸篓"), cancelLabel: t("取消"), destructive: true,
       });
       if (decision !== 'confirm') return;
-      if (!current()) return void showNotice('工作区已经变化，已取消废纸篓操作');
+      if (!current()) return void showNotice(t("工作区已经变化，已取消废纸篓操作"));
       const result = await runTreeBatch(nodes, async (entry): Promise<TreeOperationResult> => {
-        if (!current()) return { ok: false, message: '工作区已经变化' };
+        if (!current()) return { ok: false, message: t("工作区已经变化") };
         const path = normalizePath(entry.path);
         const parent = parentPath(path);
         directoryRefreshCoordinatorRef.current?.invalidate(parent);
         try {
           if (desktop) await moveToTrash(candidates.get(path)!);
-          if (!current()) return { ok: false, message: '磁盘操作已提交，但工作区已经变化，请确认实际结果' };
+          if (!current()) return { ok: false, message: t("磁盘操作已提交，但工作区已经变化，请确认实际结果") };
           const next = removeTreePath(treeRef.current, path) as FileNode[];
           const expanded = new Set([...openFoldersRef.current].filter((item) => !containsPath(path, item)));
           treeRef.current = next;
@@ -3341,17 +3348,17 @@ export default function App() {
         else window.setTimeout(() => sidebarFocusFallbackRef.current?.focus(), 0);
       }
       showNotice(result.failure
-        ? multiple ? `已移到废纸篓 ${completedCount}/${nodes.length} 项；停在“${result.remaining[0].name}”：${result.failure}；未继续处理其余项目` : result.failure
+        ? multiple ? t("已移到废纸篓 {0}/{1} 项；停在“{2}”：{3}；未继续处理其余项目", completedCount, nodes.length, result.remaining[0].name, result.failure) : result.failure
         : multiple
-          ? desktop ? `已将 ${nodes.length} 项移到废纸篓` : `浏览器 Demo 已模拟删除 ${nodes.length} 项；未移动磁盘文件`
-          : desktop ? `已将 ${node.name} 移到废纸篓` : `浏览器 Demo 已模拟删除 ${node.name}；未移动磁盘文件`);
+          ? desktop ? t("已将 {0} 项移到废纸篓", nodes.length) : t("浏览器 Demo 已模拟删除 {0} 项；未移动磁盘文件", nodes.length)
+          : desktop ? t("已将 {0} 移到废纸篓", node.name) : t("浏览器 Demo 已模拟删除 {0}；未移动磁盘文件", node.name));
     });
     try {
       const selectedPath = selectedRef.current?.path;
       if (selectedPath && nodes.some((node) => containsPath(node.path, selectedPath))) {
-        await runWithSaveGuard('deleting', '移到废纸篓', prepareAndTrash);
+        await runWithSaveGuard('deleting', t("移到废纸篓"), prepareAndTrash);
       } else {
-        if (!flushActiveEditorSurface()) return void showNotice('表格单元格状态已经变化，无法删除其他文件');
+        if (!flushActiveEditorSurface()) return void showNotice(t("表格单元格状态已经变化，无法删除其他文件"));
         documentActionGateRef.current = 'deleting';
         setDocumentActionGate('deleting');
         try { await prepareAndTrash(); } finally {
@@ -3360,7 +3367,7 @@ export default function App() {
         }
       }
     } catch (error) {
-      showNotice(multiple ? `批量废纸篓操作已停止：${trashError(error)}` : trashError(error));
+      showNotice(multiple ? t("批量废纸篓操作已停止：{0}", trashError(error)) : trashError(error));
     } finally {
       trashBatchPendingRef.current = false;
       if (!completedCount) window.setTimeout(() => {
@@ -3686,13 +3693,13 @@ export default function App() {
         validatePastedImages(files);
         let sources: string[];
         if (desktop) {
-          if (generation === undefined) throw new Error('工作区尚未就绪');
+          if (generation === undefined) throw new Error(t("工作区尚未就绪"));
           const images = await Promise.all(files.map(readPastedImage));
           sources = await savePastedImages(target.path, generation, images);
         } else {
           const folder = joinPath(parentPath(target.path), 'assets');
           const existing = findNode(treeRef.current, folder);
-          if (existing && existing.kind !== 'folder') throw new Error('文档旁的 assets 已存在且不是文件夹');
+          if (existing && existing.kind !== 'folder') throw new Error(t("文档旁的 assets 已存在且不是文件夹"));
           sources = files.map((file) => `assets/screenshot-${Date.now()}-${++demoImageSequenceRef.current}.${file.type === 'image/jpeg' ? 'jpg' : file.type.slice(6)}`);
           const nextImages = { ...demoImagesRef.current };
           let nextTree = existing ? treeRef.current : insertCreatedNode(treeRef.current, rootPathRef.current, parentPath(target.path), {
@@ -3710,13 +3717,13 @@ export default function App() {
         }
         if (unmountedRef.current || workspaceEpochRef.current !== epoch
           || documentSaveTargetRef.current?.key !== key || selectedRef.current?.path !== target.path
-          || workspaceTransitionRef.current) throw new Error('文档已经变化；已保存的图片保留在原文档旁的 assets 目录');
+          || workspaceTransitionRef.current) throw new Error(t("文档已经变化；已保存的图片保留在原文档旁的 assets 目录"));
         // Only this synchronous editor transaction can pass the operation gate.
         documentActionGateRef.current = 'idle';
-        if (!insert(sources)) throw new Error('文档内容已经变化；已保存的图片保留在 assets 目录，请重新粘贴');
-        showNotice(desktop ? `已插入 ${sources.length} 张图片` : `已插入 ${sources.length} 张图片（浏览器演示，仅保存在内存中）`);
+        if (!insert(sources)) throw new Error(t("文档内容已经变化；已保存的图片保留在 assets 目录，请重新粘贴"));
+        showNotice(desktop ? t("已插入 {0} 张图片", sources.length) : t("已插入 {0} 张图片（浏览器演示，仅保存在内存中）", sources.length));
       } catch (error) {
-        if (!unmountedRef.current) showNotice(`图片粘贴失败：${errorMessage(error)}`);
+        if (!unmountedRef.current) showNotice(t("图片粘贴失败：{0}", errorMessage(error)));
       } finally {
         documentActionGateRef.current = 'idle';
         if (!unmountedRef.current) setDocumentActionGate('idle');
@@ -3743,12 +3750,12 @@ export default function App() {
 
   async function handleOpenFolder() {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
-    if (!desktop) return void window.alert('浏览器原型使用模拟文件。Tauri 桌面版会打开系统文件夹选择器。');
+    if (!desktop) return void window.alert(t("浏览器原型使用模拟文件。Tauri 桌面版会打开系统文件夹选择器。"));
     const path = await chooseFolder();
     if (!path) return;
     try {
       const entry = await inspectPath(path);
-      if (entry.kind !== 'folder') throw new Error('选择的路径不是文件夹');
+      if (entry.kind !== 'folder') throw new Error(t("选择的路径不是文件夹"));
       await requestWorkspaceTransition(entry.path);
     } catch (error) {
       if (!workspaceTransitionRef.current) showNotice(errorMessage(error));
@@ -3760,18 +3767,18 @@ export default function App() {
     window.setTimeout(() => sidebarFocusFallbackRef.current?.focus(), 0);
     if (!rootPathRef.current) return;
     if (!desktop) {
-      showNotice('浏览器 Demo 无真实磁盘目录；当前模拟目录保持不变');
+      showNotice(t("浏览器 Demo 无真实磁盘目录；当前模拟目录保持不变"));
       return;
     }
     const paths = loadedDirectoryPaths(treeRef.current, rootPathRef.current);
     directoryRefreshCoordinatorRef.current?.request(paths);
     const result = await directoryRefreshCoordinatorRef.current?.flush();
     if (!result || result.failures.length === 0) {
-      showNotice('目录已重新载入');
+      showNotice(t("目录已重新载入"));
     } else if (result.committedPaths.length) {
-      showNotice(`目录已部分重新载入；${result.failures.length} 个目录读取失败`);
+      showNotice(t("目录已部分重新载入；{0} 个目录读取失败", result.failures.length));
     } else {
-      showNotice(`目录重新载入失败：${errorMessage(result.failures[0]?.error)}`);
+      showNotice(t("目录重新载入失败：{0}", errorMessage(result.failures[0]?.error)));
     }
   }
 
@@ -3779,7 +3786,7 @@ export default function App() {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     const path = selectedRef.current?.path || rootPathRef.current;
     if (!path) return;
-    if (!desktop) return void window.alert(`桌面版将在 Finder 中显示：${path}`);
+    if (!desktop) return void window.alert(t("桌面版将在 Finder 中显示：{0}", path));
     try { await revealPath(path); } catch (error) { showNotice(errorMessage(error)); }
   }
 
@@ -3787,7 +3794,7 @@ export default function App() {
     if (workspaceTransitionRef.current) return void showTransitionNotice();
     if (nextMode === modeRef.current) return;
     if (!flushActiveEditorSurface()) {
-      showNotice('表格单元格状态已经变化，无法切换视图');
+      showNotice(t("表格单元格状态已经变化，无法切换视图"));
       return;
     }
     modeRef.current = nextMode;
@@ -3815,7 +3822,7 @@ export default function App() {
     && documentActionGateRef.current === 'idle'
     && modeRef.current !== 'edit';
 
-  const editor = selected ? <Suspense fallback={<div className="editor-pane editor-loading">正在载入编辑器…</div>}>
+  const editor = selected ? <Suspense fallback={<div className="editor-pane editor-loading">{t("正在载入编辑器…")}</div>}>
     <TextEditor
       ref={textEditorRef}
       documentKey={`${selected.path}:${editorEpoch}`}
@@ -3826,7 +3833,7 @@ export default function App() {
       markdownPresentation={selected.kind === 'md' && mode === 'edit' && !kanbanMarked ? 'live' : 'source'}
       resolveMarkdownImageSource={resolveMarkdownImageSource}
       hint={mode === 'edit'
-        ? workspaceTransition ? '切换中…' : documentActionGate !== 'idle' ? '完成当前操作…' : '自动保存 · ⌘S 立即保存'
+        ? workspaceTransition ? t("切换中…") : documentActionGate !== 'idle' ? t("完成当前操作…") : t("自动保存 · ⌘S 立即保存")
         : null}
       onChange={handleEditorChange}
       onMarkdownOverlayOpen={handleMarkdownOverlayOpen}
@@ -3838,9 +3845,9 @@ export default function App() {
   const selectedRenderer = selected ? rendererFor(selected) : null;
   let preview: React.ReactNode;
   if (!selected) {
-    preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>打开一个本地文件夹</strong><span>文件夹即工作区。无导入、无 Vault、无强制索引。</span><button disabled={Boolean(workspaceTransition)} onClick={() => void handleOpenFolder()}>打开文件夹</button></div>;
+    preview = <div className="empty-state welcome-state"><span className="welcome-mark">L</span><strong>{t("打开一个本地文件夹")}</strong><span>{t("文件夹即工作区。无导入、无 Vault、无强制索引。")}</span><button disabled={Boolean(workspaceTransition)} onClick={() => void handleOpenFolder()}>{t("打开文件夹")}</button></div>;
   } else if (selectedRenderer === 'markdown') {
-    preview = <Suspense fallback={<div className="empty-state"><strong>正在载入 Markdown 预览…</strong></div>}>
+    preview = <Suspense fallback={<div className="empty-state"><strong>{t("正在载入 Markdown 预览…")}</strong></div>}>
       <MarkdownPreview
         content={kanbanMarked ? content : deferredContent} desktop={desktop} rootPath={rootPath} selectedPath={selected.path}
         documentKey={taskDocumentKey}
@@ -3865,7 +3872,7 @@ export default function App() {
         && normalizePath(htmlPreviewCapability.documentPath) === normalizePath(selected.path)
         && htmlPreviewCapability.workspaceGeneration === workspaceBindingRef.current?.generation);
     if (!capabilityReady) {
-      preview = <div className="empty-state"><strong>正在准备安全 HTML 预览…</strong></div>;
+      preview = <div className="empty-state"><strong>{t("正在准备安全 HTML 预览…")}</strong></div>;
     } else {
       const diskUrl = desktop && htmlPreviewCapability
         ? previewAssetUrl(selected.path, rootPath, htmlPreviewCapability.token)
@@ -3883,7 +3890,7 @@ export default function App() {
   } else if (selectedRenderer === 'text') {
     preview = <div className="preview-pane code-preview"><pre>{content}</pre></div>;
   } else if (selectedRenderer === 'spreadsheet-grid') {
-    preview = <Suspense fallback={<div className="empty-state"><strong>正在载入表格 Renderer…</strong></div>}>
+    preview = <Suspense fallback={<div className="empty-state"><strong>{t("正在载入表格 Renderer…")}</strong></div>}>
       <SpreadsheetRenderer
         entry={selected}
         desktop={desktop}
@@ -3893,7 +3900,7 @@ export default function App() {
       />
     </Suspense>;
   } else if (selectedRenderer === 'system-preview') {
-    preview = <Suspense fallback={<div className="empty-state"><strong>正在载入系统预览 Renderer…</strong></div>}>
+    preview = <Suspense fallback={<div className="empty-state"><strong>{t("正在载入系统预览 Renderer…")}</strong></div>}>
       <SystemPreviewRenderer
         entry={selected}
         desktop={desktop}
@@ -3903,7 +3910,7 @@ export default function App() {
       />
     </Suspense>;
   } else {
-    preview = <div className="empty-state"><strong>{selected.name}</strong><span>{fileTypeLabel(selected.kind)} 预览将在后续 Renderer 中支持。</span></div>;
+    preview = <div className="empty-state"><strong>{selected.name}</strong><span>{fileTypeLabel(selected.kind)} {t("预览将在后续 Renderer 中支持。")}</span></div>;
   }
 
   // Keep the same CodeMirror instance across modes so selection and undo history
@@ -3916,16 +3923,16 @@ export default function App() {
     : preview;
 
   const saveStatusLabel = saveState.kind === 'saving'
-    ? '正在保存…'
+    ? t("正在保存…")
     : saveState.kind === 'scheduled'
-      ? '等待自动保存'
+      ? t("等待自动保存")
       : saveState.kind === 'error'
-        ? '自动保存失败'
+        ? t("自动保存失败")
         : saveState.kind === 'missing'
-          ? '文件已被移走'
+          ? t("文件已被移走")
           : saveState.kind === 'conflict' || externalChange
-            ? '磁盘已变更'
-            : '已保存';
+            ? t("磁盘已变更")
+            : t("已保存");
   const saveStatusClass = saveState.kind === 'conflict' || saveState.kind === 'missing' || externalChange
     ? 'conflict'
     : saveState.kind === 'error' || saveState.kind === 'scheduled' || saveState.kind === 'saving' || dirty
@@ -3947,7 +3954,7 @@ export default function App() {
     <header className="titlebar" data-tauri-drag-region="deep">
       <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
       <div className="window-title">{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
-      <div className="title-actions"><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>打开文件夹</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>在 Finder 中显示</button></div>
+      <div className="title-actions"><LanguagePicker /><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>{t("打开文件夹")}</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>{t("在 Finder 中显示")}</button></div>
     </header>
     <div className="workspace">
       <aside className="sidebar" aria-busy={Boolean(workspaceTransition)}><div
@@ -3975,21 +3982,21 @@ export default function App() {
           event.preventDefault();
           handleMoveDrop(rootPath);
         }}
-      ><span>{projectName}</span>{workspaceTransition ? <span className="sidebar-transition-status">切换中…</span> : null}<div className="sidebar-header-actions">{rootPath ? <button
+      ><span>{projectName}</span>{workspaceTransition ? <span className="sidebar-transition-status">{t("切换中…")}</span> : null}<div className="sidebar-header-actions">{rootPath ? <button
         className="sidebar-root-create"
         type="button"
         disabled={createBusy || interactionLocked || renameDraft !== null}
-        aria-label={`在 ${projectName} 根目录新建`}
+        aria-label={t("在 {0} 根目录新建", projectName)}
         onClick={handleRootCreateMenu}
-      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={treeLocked || renameDraft !== null} aria-label="工作区菜单" aria-expanded={projectMenuOpen} onClick={() => {
+      >+</button> : null}<div className="project-menu-anchor"><button ref={sidebarFocusFallbackRef} type="button" disabled={treeLocked || renameDraft !== null} aria-label={t("工作区菜单")} aria-expanded={projectMenuOpen} onClick={() => {
         setTreeActionMenu(null);
         setProjectMenuOpen((current) => !current);
-      }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>新建窗口</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>重新载入目录</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} selectionPaths={treeSelectionPaths} onSelectionChange={replaceTreeSelection} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} renameDraft={renameDraft} renameBusy={renameBusy} renameInvalid={renameInvalid} renameInputRef={renameInputRef} focusPath={pendingTreeFocusPath} moveSourcePath={moveDrag?.source.path ?? null} moveSourcePaths={moveDrag?.sources.map((node) => normalizePath(node.path))} moveTargetPath={moveDrag?.targetPath ?? null} moveTargetAllowed={moveDrag?.targetAllowed ?? false} moveDragId={moveDrag?.id ?? null} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} onBeginRename={(node) => { void beginTreeRename(node); }} onSubmitRename={(value, reason) => { void submitRename(value, reason); }} onCancelRename={(reason) => { cancelRename(reason === 'escape'); }} onMoveStart={handleMoveStart} onMoveTarget={handleMoveTarget} onMoveHoverExpand={handleMoveHoverExpand} onMoveDrop={handleMoveDrop} onMoveEnd={handleMoveEnd} /><div className="sidebar-footer" aria-live="polite" aria-atomic="true">{treeSelectionPaths.length ? `已选择 ${treeSelectionPaths.length} 项 · ⌘ / Shift 多选` : '真实文件夹 · 无索引 · 按需读取'}</div></aside>
+      }}>•••</button>{projectMenuOpen ? <div className="project-menu" role="menu"><button ref={projectMenuItemRef} type="button" role="menuitem" onClick={() => void handleNewWindow()}>{t("新建窗口")}</button><button type="button" role="menuitem" onClick={() => void handleRefreshWorkspace()}>{t("重新载入目录")}</button></div> : null}</div></div></div><FileTree tree={tree} rootPath={rootPath} openFolders={openFolders} selectedPath={selected?.path ?? null} selectionPaths={treeSelectionPaths} onSelectionChange={replaceTreeSelection} locked={treeLocked} createDraft={createDraft} createBusy={createBusy} createInvalid={createInvalid} preparingFolders={preparingFolders} createInputRef={createInputRef} renameDraft={renameDraft} renameBusy={renameBusy} renameInvalid={renameInvalid} renameInputRef={renameInputRef} focusPath={pendingTreeFocusPath} moveSourcePath={moveDrag?.source.path ?? null} moveSourcePaths={moveDrag?.sources.map((node) => normalizePath(node.path))} moveTargetPath={moveDrag?.targetPath ?? null} moveTargetAllowed={moveDrag?.targetAllowed ?? false} moveDragId={moveDrag?.id ?? null} onFocusHandled={handleTreeFocusHandled} onNodeClick={handleNodeClick} onNodeContextMenu={handleNodeContextMenu} onOpenCreateMenu={handleOpenCreateMenu} onOpenNodeMenu={handleOpenNodeMenu} onSubmitCreate={submitCreate} onCancelCreate={cancelCreate} onBeginRename={(node) => { void beginTreeRename(node); }} onSubmitRename={(value, reason) => { void submitRename(value, reason); }} onCancelRename={(reason) => { cancelRename(reason === 'escape'); }} onMoveStart={handleMoveStart} onMoveTarget={handleMoveTarget} onMoveHoverExpand={handleMoveHoverExpand} onMoveDrop={handleMoveDrop} onMoveEnd={handleMoveEnd} /><div className="sidebar-footer" aria-live="polite" aria-atomic="true">{treeSelectionPaths.length ? t("已选择 {0} 项 · ⌘ / Shift 多选", treeSelectionPaths.length) : t("真实文件夹 · 无索引 · 按需读取")}</div></aside>
       <main className="document-area">
         <div className="document-toolbar"><div className="document-toolbar-title">{toolbarRenaming && renameDraft ? <TreeRenameInput
           key={renameDraft.id}
           ref={renameInputRef}
-          ariaLabel={`重命名 ${selected?.name ?? ''}`}
+          ariaLabel={t("重命名 {0}", selected?.name ?? '')}
           disabled={renameBusy}
           invalid={renameInvalid}
           initialValue={renameDraft.editableName}
@@ -4001,8 +4008,8 @@ export default function App() {
           ref={documentTitleRef}
           type="button"
           className="document-title-trigger"
-          aria-label="编辑当前文件名称"
-          title="双击重命名"
+          aria-label={t("编辑当前文件名称")}
+          title={t("双击重命名")}
           disabled={interactionLocked}
           onDoubleClick={() => beginRename(selected, 'toolbar')}
           onKeyDown={(event) => {
@@ -4010,27 +4017,27 @@ export default function App() {
             event.preventDefault();
             beginRename(selected, 'toolbar');
           }}
-        ><strong>{selected.name}</strong></button> : <strong>LocalView</strong>}<span>{kanbanMarked ? 'Markdown · 看板' : selected ? fileTypeLabel(selected.kind) : 'Local workspace'}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>表格</button> : null}{selected.kind === 'md' ? <button type="button" className="markdown-print-trigger" disabled={interactionLocked} onClick={requestMarkdownPrint}>打印</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? '编辑' : item === 'split' ? '分栏' : '预览'}</button>)}</div></div> : null}</div>
-        <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? '切换工作区…' : '读取中…'}</div> : null}</div>
+        ><strong>{selected.name}</strong></button> : <strong>LocalView</strong>}<span>{kanbanMarked ? t("Markdown · 看板") : selected ? fileTypeLabel(selected.kind) : t("本地工作区")}</span></div>{selected && isTextKind(selected.kind) ? <div className="document-toolbar-controls">{selected.kind === 'md' && mode !== 'preview' ? <button type="button" className="markdown-table-tools-trigger" disabled={interactionLocked} onClick={handleOpenMarkdownTableTools}>{t("表格")}</button> : null}{selected.kind === 'md' ? <button type="button" className="markdown-print-trigger" disabled={interactionLocked} onClick={requestMarkdownPrint}>{t("打印")}</button> : null}<div className="mode-switcher">{(['edit', 'split', 'preview'] as ViewMode[]).map((item) => <button key={item} disabled={interactionLocked} className={mode === item ? 'active' : ''} onClick={() => handleModeChange(item)}>{item === 'edit' ? t("编辑") : item === 'split' ? t("分栏") : t("预览")}</button>)}</div></div> : null}</div>
+        <div className={`content-area ${mode === 'split' && canEdit ? 'split' : ''}`}>{documentContent}{showLoadingMask ? <div className="loading-mask" aria-live="polite">{workspaceTransition ? t("切换工作区…") : t("读取中…")}</div> : null}</div>
       </main>
     </div>
-    <footer className="statusbar"><span>{selected?.path || rootPath || 'No folder opened'}</span><span role="status" aria-live="polite">{selected && isTextKind(selected.kind) ? <><b className={saveStatusClass}>{saveStatusLabel}</b> · UTF-8 · {lineCount} 行</> : rendererStatus}</span></footer>
+    <footer className="statusbar"><span>{selected?.path || rootPath || t("未打开文件夹")}</span><span role="status" aria-live="polite">{selected && isTextKind(selected.kind) ? <><b className={saveStatusClass}>{saveStatusLabel}</b> · UTF-8 · {t("{0} 行", lineCount)}</> : rendererStatus}</span></footer>
     {treeActionMenu ? <div className="context-menu tree-action-menu" role="menu" style={{ left: treeActionMenu.x, top: treeActionMenu.y }}>
       {treeActionMenu.nodes.length <= 1 && (treeActionMenu.mode === 'create' || treeActionMenu.node?.kind === 'folder') ? <>
-        <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('markdown')}>新建 Markdown</button>
-        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('kanban')}>新建看板</button>
-        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('folder')}>新建文件夹</button>
+        <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('markdown')}>{t("新建 Markdown")}</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('kanban')}>{t("新建看板")}</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => beginCreateFromMenu('folder')}>{t("新建文件夹")}</button>
       </> : null}
       {treeActionMenu.mode === 'node' && treeActionMenu.nodes.length > 1 ? <>
-        <div className="context-menu-item" aria-live="polite">已选择 {treeActionMenu.nodes.length} 项</div>
-        <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => void chooseWorkspaceMoveDestination(treeActionMenu.nodes)}>移动到文件夹…</button>
-        <button type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrashSelection(treeActionMenu.nodes)}>移到废纸篓</button>
+        <div className="context-menu-item" aria-live="polite">{t("已选择 {0} 项", treeActionMenu.nodes.length)}</div>
+        <button ref={contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={() => void chooseWorkspaceMoveDestination(treeActionMenu.nodes)}>{t("移动到文件夹…")}</button>
+        <button type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrashSelection(treeActionMenu.nodes)}>{t("移到废纸篓")}</button>
       </> : null}
       {treeActionMenu.mode === 'node' && treeActionMenu.nodes.length <= 1 && treeActionMenu.node ? <>
         {treeActionMenu.node.kind === 'folder' ? <div className="context-menu-separator" role="separator" /> : null}
-        <button ref={treeActionMenu.node.kind === 'folder' ? undefined : contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={beginRenameFromMenu}>重命名</button>
-        <button type="button" role="menuitem" className="context-menu-item" onClick={() => void chooseWorkspaceMoveDestination(treeActionMenu.node!)}>移动到文件夹…</button>
-        <button type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrashSelection(treeActionMenu.node!)}>移到废纸篓</button>
+        <button ref={treeActionMenu.node.kind === 'folder' ? undefined : contextMenuItemRef} type="button" role="menuitem" className="context-menu-item" onClick={beginRenameFromMenu}>{t("重命名")}</button>
+        <button type="button" role="menuitem" className="context-menu-item" onClick={() => void chooseWorkspaceMoveDestination(treeActionMenu.node!)}>{t("移动到文件夹…")}</button>
+        <button type="button" role="menuitem" className="context-menu-item destructive" onClick={() => void requestTrashSelection(treeActionMenu.node!)}>{t("移到废纸篓")}</button>
       </> : null}
     </div> : null}
     {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}

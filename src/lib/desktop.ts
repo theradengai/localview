@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -252,7 +253,7 @@ export function isTauriRuntime(): boolean {
 
 export async function chooseFolder(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
-  const result = await open({ directory: true, multiple: false, title: '打开文件夹' });
+  const result = await open({ directory: true, multiple: false, title: t("打开文件夹") });
   return typeof result === 'string' ? result : null;
 }
 
@@ -261,7 +262,7 @@ export async function chooseMoveDestination(defaultPath: string): Promise<string
   const result = await open({
     directory: true,
     multiple: false,
-    title: '移动到文件夹',
+    title: t("移动到文件夹"),
     defaultPath,
   });
   return typeof result === 'string' ? result : null;
