@@ -1,0 +1,33 @@
+name: Prepare isolated localization workspace
+on:
+  push:
+    branches: [work/localization-20260915]
+    paths: [.github/workflows/localization-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Archive tracked public source and exact test dependencies
+        run: |
+          mkdir -p /tmp/localview-workspace
+          git archive HEAD | tar -x -C /tmp/localview-workspace
+          cp -a node_modules /tmp/localview-workspace/
+          git rev-parse HEAD > /tmp/localview-workspace/SOURCE_SHA.txt
+          tar -czf /tmp/localview-localization-workspace.tar.gz -C /tmp/localview-workspace .
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: localview-localization-workspace
+          path: /tmp/localview-localization-workspace.tar.gz
+          retention-days: 1
+          if-no-files-found: error
