@@ -16,10 +16,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: Verify all evidence and publish only complete, hash-checked release assets
+      - name: Reverify and publish the existing uploaded draft by its exact release ID
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/beta6-publication/publish.py
+        run: python3 .github/beta6-publication/resume.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: beta6-published-release
