@@ -171,8 +171,14 @@ mod tests {
 
     #[test]
     fn observed_native_menu_labels_are_translated() {
-        assert_eq!(menu_label("About localview", "zh-CN"), Some("关于 LocalView"));
-        assert_eq!(menu_label("Hide localview", "zh-CN"), Some("隐藏 LocalView"));
+        assert_eq!(
+            menu_label("About localview", "zh-CN"),
+            Some("关于 LocalView")
+        );
+        assert_eq!(
+            menu_label("Hide localview", "zh-CN"),
+            Some("隐藏 LocalView")
+        );
         assert_eq!(menu_label("Toggle Full Screen", "zh-CN"), Some("切换全屏"));
         assert_eq!(menu_label("About localview", "en"), Some("About LocalView"));
     }
