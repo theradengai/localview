@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import {
   forwardRef,
   useEffect,
@@ -79,6 +81,8 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
     onCommand,
     onClose,
   }, forwardedRef) {
+  const { locale } = useI18n();
+
     const toolbarRef = useRef<HTMLDivElement>(null);
     const linkInputRef = useRef<HTMLInputElement>(null);
     const colorPanelRef = useRef<HTMLDivElement>(null);
@@ -122,7 +126,7 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
         placement,
       } satisfies Position;
       setPosition((current) => samePosition(current, next) ? current : next);
-    }, [anchor, panel]);
+    }, [anchor, panel, locale]);
 
     useEffect(() => {
       if (panel === 'link') linkInputRef.current?.focus();
@@ -159,14 +163,14 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
     const submitLink = () => {
       const normalized = normalizeMarkdownLinkUrl(url);
       if (!normalized) {
-        setLinkError('请输入有效链接');
+        setLinkError(t("请输入有效链接"));
         return;
       }
-      if (!execute('link', { url: normalized })) setLinkError('当前选区已变化');
+      if (!execute('link', { url: normalized })) setLinkError(t("当前选区已变化"));
     };
 
     const submitColor = (color: MarkdownInlineColorToken | null) => {
-      if (!execute('fontColor', { color })) setColorError('当前选区已变化');
+      if (!execute('fontColor', { color })) setColorError(t("当前选区已变化"));
     };
 
     const handleCommandPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
@@ -237,23 +241,23 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
       className="markdown-selection-toolbar"
       role={panel === 'main' ? 'toolbar' : 'dialog'}
       aria-label={panel === 'main'
-        ? 'Markdown 快捷样式'
+        ? t("Markdown 快捷样式")
         : panel === 'link'
-          ? '插入链接'
-          : '选择字体颜色'}
+          ? t("插入链接")
+          : t("选择字体颜色")}
       data-placement={position?.placement}
       style={style}
       onKeyDown={handleKeyDown}
     >
       {panel === 'link' ? <div className="markdown-selection-link-panel">
-        <button type="button" onClick={() => returnToMain('link')} aria-label="返回快捷样式">‹</button>
+        <button type="button" onClick={() => returnToMain('link')} aria-label={t("返回快捷样式")}>‹</button>
         <input
           ref={linkInputRef}
           type="text"
           value={url}
-          aria-label="链接地址"
+          aria-label={t("链接地址")}
           aria-invalid={Boolean(linkError)}
-          placeholder="https:// 或相对路径"
+          placeholder={t("https:// 或相对路径")}
           onChange={(event) => {
             setUrl(event.target.value);
             setLinkError('');
@@ -265,24 +269,24 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
             }
           }}
         />
-        <button type="button" className="markdown-selection-apply" onClick={submitLink}>应用</button>
+        <button type="button" className="markdown-selection-apply" onClick={submitLink}>{t("应用")}</button>
         {linkError ? <span className="markdown-selection-error" role="alert">{linkError}</span> : null}
       </div> : panel === 'color' ? <div
         ref={colorPanelRef}
         className="markdown-selection-color-panel"
         role="group"
-        aria-label="字体颜色"
+        aria-label={t("字体颜色")}
       >
-        <button type="button" onClick={() => returnToMain('fontColor')} aria-label="返回快捷样式">‹</button>
+        <button type="button" onClick={() => returnToMain('fontColor')} aria-label={t("返回快捷样式")}>‹</button>
         <button
           type="button"
           data-color-token="default"
-          aria-label="默认字体颜色"
-          title="默认字体颜色"
+          aria-label={t("默认字体颜色")}
+          title={t("默认字体颜色")}
           aria-pressed={activeColor === null}
           onPointerDown={handleCommandPointerDown}
           onClick={() => submitColor(null)}
-        >默认</button>
+        >{t("默认")}</button>
         {(Object.entries(MARKDOWN_INLINE_COLORS) as Array<[
           MarkdownInlineColorToken,
           (typeof MARKDOWN_INLINE_COLORS)[MarkdownInlineColorToken],
@@ -290,8 +294,8 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
           key={token}
           type="button"
           data-color-token={token}
-          aria-label={`${definition.label}字体`}
-          title={`${definition.label}字体`}
+          aria-label={t("{0}字体", t(definition.label))}
+          title={t("{0}字体", t(definition.label))}
           aria-pressed={activeColor === token}
           className={`markdown-selection-color-swatch ${definition.className}`}
           onPointerDown={handleCommandPointerDown}
@@ -305,20 +309,20 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
           data-toolbar-command={entry.command}
           disabled={!availability[entry.command]}
           tabIndex={-1}
-          aria-label={entry.title}
-          title={entry.title}
+          aria-label={t(entry.title)}
+          title={t(entry.title)}
           className={`markdown-selection-tool tool-${entry.command}`}
           onPointerDown={handleCommandPointerDown}
           onClick={() => execute(entry.command)}
-        >{entry.label}</button>)}
+        >{t(entry.label)}</button>)}
         <span className="markdown-selection-divider" aria-hidden="true" />
         <button
           type="button"
           data-toolbar-command="link"
           disabled={!availability.link}
           tabIndex={-1}
-          aria-label="插入链接"
-          title="插入链接"
+          aria-label={t("插入链接")}
+          title={t("插入链接")}
           className="markdown-selection-tool"
           onPointerDown={handleCommandPointerDown}
           onClick={() => {
@@ -326,14 +330,14 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
             setPanel('link');
             setLinkError('');
           }}
-        >链接…</button>
+        >{t("链接…")}</button>
         <button
           type="button"
           data-toolbar-command="fontColor"
           disabled={!availability.fontColor}
           tabIndex={-1}
-          aria-label="字体颜色"
-          title="字体颜色"
+          aria-label={t("字体颜色")}
+          title={t("字体颜色")}
           className="markdown-selection-tool tool-fontColor"
           onPointerDown={handleCommandPointerDown}
           onClick={() => {
@@ -341,7 +345,7 @@ const MarkdownSelectionToolbar = forwardRef<MarkdownSelectionToolbarHandle, Prop
             setPanel('color');
             setColorError('');
           }}
-        >颜色…</button>
+        >{t("颜色…")}</button>
       </div>}
     </div>;
   },

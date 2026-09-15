@@ -1,3 +1,6 @@
+import { CHINESE_EDITOR_PHRASES } from '../lib/editorPhrases';
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import {
   forwardRef,
   memo,
@@ -17,7 +20,7 @@ import CodeMirror, {
 } from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
 import { isolateHistory, invertedEffects, undo, redo } from '@codemirror/commands';
-import { StateEffect } from '@codemirror/state';
+import { EditorState, StateEffect } from '@codemirror/state';
 import { applySourceChanges, parseKanban, type KanbanChange } from '../lib/kanban';
 import { markdownTaskEdit, type MarkdownTaskChange, type MarkdownTaskHistory } from '../lib/markdownTasks';
 import { applyEditorChanges, editorOffset, normalizeEditorSource } from '../lib/editorSource';
@@ -118,6 +121,8 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
   onPasteImages,
   onPasteError,
 }: Props, forwardedRef) {
+  const { locale } = useI18n();
+
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const sourceRef = useRef({ documentKey, value, source: value });
   if (sourceRef.current.documentKey !== documentKey || sourceRef.current.value !== value) {
@@ -561,9 +566,14 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       ? [rawKanbanSource.of(sourceRef.current.source)] : []
   )), []);
 
+  const languageExtension = useMemo(() => EditorState.phrases.of(
+    locale === 'zh-CN' ? CHINESE_EDITOR_PHRASES : {},
+  ), [locale]);
+
   const extensions = useMemo(
     () => kind === 'md'
       ? [
+        languageExtension,
         MARKDOWN_GFM_EXTENSION,
         kanbanHistoryExtension,
         EditorView.lineWrapping,
@@ -571,9 +581,9 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
         markdownInteractionExtension,
       ]
       : kind === 'html'
-        ? [html()]
-        : [],
-    [kind, livePreviewExtension, markdownInteractionExtension, kanbanHistoryExtension],
+        ? [languageExtension, html()]
+        : [languageExtension],
+    [kind, livePreviewExtension, markdownInteractionExtension, kanbanHistoryExtension, languageExtension],
   );
 
   const handleTableMenuUpdate = useCallback((update: ViewUpdate) => {
@@ -820,11 +830,11 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
       const view = editorRef.current?.view;
       if (!view) return;
       if (event.target instanceof HTMLTextAreaElement && event.target.closest('.cm-live-table-wrap')) {
-        onPasteError?.('请在正文或分栏源码中粘贴图片');
+        onPasteError?.(t("请在正文或分栏源码中粘贴图片"));
         return;
       }
       if (view.composing || view.compositionStarted || view.state.selection.ranges.length !== 1) {
-        onPasteError?.('请完成当前输入，并保留一个插入位置后粘贴图片');
+        onPasteError?.(t("请完成当前输入，并保留一个插入位置后粘贴图片"));
         return;
       }
       const key = documentKey;
@@ -836,7 +846,7 @@ const TextEditor = forwardRef<TextEditorHandle, Props>(function TextEditor({
         // Async disk writes must never insert into a replacement document or draft.
         if (editorRef.current?.view !== view || latestRef.current.documentKey !== key
           || view.state.doc !== doc) return false;
-        const insert = sources.map((source) => `![截图](${source})`).join('\n');
+        const insert = sources.map((source) => t("![截图]({0})", source)).join('\n');
         view.dispatch({
           changes: { from, to, insert },
           selection: { anchor: from + insert.length },

@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import { useEffect, useRef, useState } from 'react';
 import {
   generateSystemThumbnail,
@@ -47,6 +49,13 @@ export default function SystemPreviewRenderer({
   onQuickLook,
   onOpenDefault,
 }: SystemPreviewRendererProps) {
+  const { locale } = useI18n();
+  const [statusMessage, setStatusMessage] = useState<{ key: string; values: (string | number)[] } | null>(null);
+  useEffect(() => {
+    if (statusMessage) onNotice(t(statusMessage.key, ...statusMessage.values));
+  }, [statusMessage, locale, onNotice]);
+
+
   const hostRef = useRef<HTMLDivElement>(null);
   const [snapshot, setSnapshot] = useState<SystemPreviewSnapshot | null>(null);
   const [error, setError] = useState('');
@@ -58,7 +67,7 @@ export default function SystemPreviewRenderer({
     setFallbackLoading(false);
 
     if (!desktop) {
-      onNotice(`${STATUS_PREFIX}桌面版可使用系统 Quick Look`);
+      setStatusMessage({ key: "{0}桌面版可使用系统 Quick Look", values: [STATUS_PREFIX] });
       return;
     }
 
@@ -83,11 +92,11 @@ export default function SystemPreviewRenderer({
         const next = await generateSystemThumbnail(entry.path);
         if (!active) return;
         setSnapshot(next);
-        onNotice(`${STATUS_PREFIX}只读 · Quick Look 缩略图`);
+        setStatusMessage({ key: "{0}只读 · Quick Look 缩略图", values: [STATUS_PREFIX] });
       } catch (reason) {
         if (!active) return;
         setError(`${embedError}; ${errorMessage(reason)}`);
-        onNotice(`${STATUS_PREFIX}只读 · Quick Look 不可用`);
+        setStatusMessage({ key: "{0}只读 · Quick Look 不可用", values: [STATUS_PREFIX] });
       } finally {
         if (active) setFallbackLoading(false);
       }
@@ -119,7 +128,7 @@ export default function SystemPreviewRenderer({
               return;
             }
             phase = 'shown';
-            onNotice(`${STATUS_PREFIX}只读 · Quick Look 交互预览`);
+            setStatusMessage({ key: "{0}只读 · Quick Look 交互预览", values: [STATUS_PREFIX] });
             if (pendingBounds) sendResize(pendingBounds);
           })
           .catch((reason) => void loadThumbnailFallback(errorMessage(reason)));
@@ -159,14 +168,14 @@ export default function SystemPreviewRenderer({
   }
 
   const actions = <div className="renderer-actions system-preview-actions">
-    <button onClick={() => void runAction(onQuickLook)}>独立窗口预览</button>
-    <button onClick={() => void runAction(onOpenDefault)}>用默认应用打开</button>
+    <button onClick={() => void runAction(onQuickLook)}>{t("独立窗口预览")}</button>
+    <button onClick={() => void runAction(onOpenDefault)}>{t("用默认应用打开")}</button>
   </div>;
 
   if (!desktop) {
     return <div className="empty-state system-preview-fallback">
       <strong>{entry.name}</strong>
-      <span>桌面版可调用 macOS Quick Look；浏览器 Demo 不访问本地文件。</span>
+      <span>{t("桌面版可调用 macOS Quick Look；浏览器 Demo 不访问本地文件。")}</span>
     </div>;
   }
 
@@ -175,23 +184,23 @@ export default function SystemPreviewRenderer({
       ref={hostRef}
       className={`system-preview-native-host${snapshot ? ' fallback' : ''}`}
       role="region"
-      aria-label={`${entry.name} 内嵌系统预览`}
+      aria-label={t("{0} 内嵌系统预览", entry.name)}
     >
-      {fallbackLoading ? <div className="empty-state"><strong>正在生成缩略图回退…</strong></div> : null}
+      {fallbackLoading ? <div className="empty-state"><strong>{t("正在生成缩略图回退…")}</strong></div> : null}
       {!fallbackLoading && snapshot ? <>
         <img
           src={`data:${snapshot.mimeType};base64,${snapshot.dataBase64}`}
           width={snapshot.width || undefined}
           height={snapshot.height || undefined}
-          alt={`${entry.name} 系统缩略图`}
+          alt={t("{0} 系统缩略图", entry.name)}
         />
-        <span className="system-preview-fallback-note">交互预览不可用：{error}</span>
+        <span className="system-preview-fallback-note">{t("交互预览不可用：")}{error}</span>
       </> : null}
       {!fallbackLoading && error && !snapshot ? <div className="empty-state system-preview-fallback" role="alert">
         <strong>{entry.name}</strong>
-        <span>无法生成系统预览：{error}</span>
+        <span>{t("无法生成系统预览：")}{error}</span>
       </div> : null}
-      {!fallbackLoading && !error && !snapshot ? <div className="system-preview-loading">正在载入交互预览…</div> : null}
+      {!fallbackLoading && !error && !snapshot ? <div className="system-preview-loading">{t("正在载入交互预览…")}</div> : null}
     </div>
     {actions}
   </div>;

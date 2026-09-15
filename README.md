@@ -24,6 +24,10 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 - **Paste screenshots.** In Markdown Edit or Split, `⌘V` saves clipboard images beside the document in `assets/` and inserts relative image references (PNG/JPEG/GIF/WebP, up to 8 images and 10 MB per paste).
 - **Compare side by side.** `⌘N` opens an independent workspace window. `⌘P` opens native print settings for rendered Markdown.
 
+## Interface language
+
+The development version adds **System / 简体中文 / English** in the title bar. Switching is immediate, remembers your selection, and does not translate your documents or reset the editor. [Behavior, system-dialog boundaries and validation](docs/LANGUAGES.md). The existing Beta 5 downloads below do not include this unreleased change.
+
 ## Markdown Kanban
 
 In a folder's `+` menu, choose **新建看板** (New board), or open the [sample Markdown file](docs/fixtures/kanban.md). A `localview: kanban` opening header enables the board: `##` headings are columns, top-level task items are cards, and indented descriptions/subtasks move with each card. Ordinary task lists keep their normal preview.

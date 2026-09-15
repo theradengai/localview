@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import {
   useEffect,
   useLayoutEffect,
@@ -64,6 +66,8 @@ function MenuButton({
   enabled: boolean;
   onCommand: (command: MarkdownCommand) => void;
 }) {
+  const { locale } = useI18n();
+
   return <button
     type="button"
     role="menuitem"
@@ -72,7 +76,7 @@ function MenuButton({
     tabIndex={-1}
     className={`markdown-table-menu-item${entry.destructive ? ' destructive' : ''}`}
     onClick={() => enabled && onCommand(entry.command)}
-  >{entry.label}</button>;
+  >{t(entry.label)}</button>;
 }
 
 export default function MarkdownTableMenu({
@@ -82,6 +86,8 @@ export default function MarkdownTableMenu({
   onCommand,
   onClose,
 }: Props) {
+  const { locale } = useI18n();
+
   const menuRef = useRef<HTMLDivElement>(null);
   const tableGridRef = useRef<HTMLDivElement>(null);
   const focusFrameRef = useRef<number | null>(null);
@@ -100,7 +106,7 @@ export default function MarkdownTableMenu({
       y: Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin)),
     };
     setPosition((current) => current.x === next.x && current.y === next.y ? current : next);
-  }, [panel, x, y]);
+  }, [panel, x, y, locale]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -180,7 +186,7 @@ export default function MarkdownTableMenu({
     ref={menuRef}
     className="markdown-table-menu"
     role={panel === 'main' ? 'menu' : 'dialog'}
-    aria-label={panel === 'main' ? 'Markdown 表格' : '插入表格'}
+    aria-label={panel === 'main' ? t("Markdown 表格") : t("插入表格")}
     style={style}
     onKeyDown={handleKeyDown}
   >
@@ -190,20 +196,19 @@ export default function MarkdownTableMenu({
       onKeyDown={handleTableKeyDown}
     >
       <div className="markdown-table-subpanel-head">
-        <button type="button" onClick={() => setPanel('main')} aria-label="返回表格菜单">‹</button>
-        <strong>插入表格</strong>
+        <button type="button" onClick={() => setPanel('main')} aria-label={t("返回表格菜单")}>‹</button>
+        <strong>{t("插入表格")}</strong>
       </div>
       <div className="markdown-table-size-label" aria-live="polite">
-        {tableSize.columns} 列 × {tableSize.rows} 行
-      </div>
-      <div ref={tableGridRef} className="markdown-table-grid" role="grid" aria-label="选择表格大小">
+        {t("{0} 列 × {1} 行", tableSize.columns, tableSize.rows)}</div>
+      <div ref={tableGridRef} className="markdown-table-grid" role="grid" aria-label={t("选择表格大小")}>
         {Array.from({ length: 8 }, (_, row) => Array.from({ length: 8 }, (_, column) => {
           const active = column < tableSize.columns && row < tableSize.rows;
           return <button
             key={`${row}-${column}`}
             type="button"
             role="gridcell"
-            aria-label={`${column + 1} 列 × ${row + 1} 行`}
+            aria-label={t("{0} 列 × {1} 行", column + 1, row + 1)}
             aria-selected={active}
             data-table-cell={`${column + 1}-${row + 1}`}
             tabIndex={row === tableSize.rows - 1 && column === tableSize.columns - 1 ? 0 : -1}
@@ -220,7 +225,7 @@ export default function MarkdownTableMenu({
         tabIndex={-1}
         className="markdown-table-menu-item"
         onClick={() => setPanel('size')}
-      >插入表格…</button> : null}
+      >{t("插入表格…")}</button> : null}
       {hasTableContext ? <div className="markdown-table-menu-section">
         {TABLE_ENTRIES.map((entry) => <MenuButton
           key={entry.command}
@@ -230,8 +235,7 @@ export default function MarkdownTableMenu({
         />)}
       </div> : null}
       {!availability.insertTable && !hasTableContext ? <div className="markdown-table-menu-empty">
-        将光标放在空白位置或表格内
-      </div> : null}
+        {t("将光标放在空白位置或表格内")}</div> : null}
     </>}
   </div>;
 }

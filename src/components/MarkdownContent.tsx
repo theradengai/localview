@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import { createContext, useContext, useMemo } from 'react';
 import remarkGfm from 'remark-gfm';
@@ -17,11 +19,13 @@ type TaskActions = {
 };
 const TaskContext = createContext<TaskActions>({ source: '' });
 const TaskInput: Components['input'] = ({ node, checked, type }) => {
+  useI18n();
+
   const { source, onTaskToggle, onTaskHistory } = useContext(TaskContext);
   const statusOffset = node?.properties?.['data-task-offset'];
   const enabled = type === 'checkbox' && typeof statusOffset === 'number' && Boolean(onTaskToggle);
   return <input type="checkbox" checked={Boolean(checked)} disabled={!enabled}
-    aria-label={checked ? '标记任务为未完成' : '标记任务为已完成'}
+    aria-label={checked ? t("标记任务为未完成") : t("标记任务为已完成")}
     onChange={event => {
       if (!enabled || !onTaskToggle?.({ source, statusOffset: statusOffset as number, checked: event.currentTarget.checked })) {
         event.currentTarget.checked = Boolean(checked);

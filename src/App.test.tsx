@@ -1,3 +1,4 @@
+import { setLanguagePreference, LANGUAGE_STORAGE_KEY } from './lib/i18n';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef, StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
@@ -1559,7 +1560,7 @@ describe('workspace transition and folder preparation races', () => {
     await user.click(screen.getByRole('button', { name: '打开文件夹' }));
     expect(await screen.findByText(/rollback denied/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /根目录新建/ })).toBeNull();
-    expect(screen.getByText('No folder opened')).toBeTruthy();
+    expect(screen.getByText('未打开文件夹')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'plan.md' })).toBeNull();
   });
 
@@ -3949,5 +3950,30 @@ describe('folder multi-selection and batch operations', () => {
     fireEvent.keyDown(editor, { key: 'Backspace', metaKey: true });
     expect(mocks.prepareTrash).not.toHaveBeenCalled();
     expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
+
+
+describe('application interface language', () => {
+  it('switches immediately, persists the choice, and preserves an unsaved editor and selected filename', async () => {
+    mocks.desktop = false;
+    render(<App />);
+    await screen.findByRole('button', { name: 'README.md' });
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    const editor = await screen.findByRole('textbox', { name: 'editor' });
+    const source = '# 打开文件夹\nEnglish / 中文 content {0}';
+    fireEvent.change(editor, { target: { value: source } });
+    fireEvent.change(screen.getByRole('combobox', { name: '界面语言' }), { target: { value: 'en' } });
+    expect(screen.getByRole('button', { name: 'Open folder' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Split' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'editor' })).toBe(editor);
+    expect((editor as HTMLTextAreaElement).value).toBe(source);
+    expect(screen.getByRole('button', { name: 'README.md' })).toBeTruthy();
+    expect(window.localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace menu' }));
+    expect(screen.getByRole('menuitem', { name: 'New window' })).toBeTruthy();
+    act(() => setLanguagePreference('zh-CN'));
+    expect(screen.getByRole('menuitem', { name: '新建窗口' })).toBeTruthy();
+    expect((editor as HTMLTextAreaElement).value).toBe(source);
   });
 });

@@ -1,4 +1,4 @@
-/** UI-only helpers. Callers supply normalized paths; filesystem authority stays in Rust. */
+import { t } from './i18n';
 export type TreeSelection = { paths: string[]; anchor: string | null };
 
 export function retainVisibleSelection(paths: readonly string[], visible: readonly string[]): string[] {
@@ -56,12 +56,12 @@ export async function runTreeBatch<T>(
     } catch (error) {
       // Rejections are uncertain outcomes, not permission to lose progress or retry.
       const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-      return { completed, remaining: items.slice(index), failure: detail.trim() || '操作结果不确定，请检查实际文件状态' };
+      return { completed, remaining: items.slice(index), failure: detail.trim() || t("操作结果不确定，请检查实际文件状态") };
     }
     if (!result.ok) return {
       completed,
       remaining: items.slice(index),
-      failure: result.message.trim() || '操作未完成，请检查实际文件状态',
+      failure: result.message.trim() || t("操作未完成，请检查实际文件状态"),
     };
     completed.push(items[index]);
   }

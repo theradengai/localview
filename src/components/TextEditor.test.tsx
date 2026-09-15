@@ -1,3 +1,5 @@
+import { setLanguagePreference } from '../lib/i18n';
+import { undo, redo } from '@codemirror/commands';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { EditorView } from '@uiw/react-codemirror';
 import { createRef } from 'react';
@@ -581,4 +583,25 @@ describe('TextEditor Markdown interactions', () => {
       expect(ref.current).toBeNull();
     }
   });
+  it('keeps the real editor, selection, source and undo/redo across language changes', () => {
+    const onChange = vi.fn();
+    const original = '# 中文打开文件夹\nbody';
+    const editor = renderEditor({ value: original, onChange });
+    const { view, content } = editorView(editor.container);
+    act(() => view.dispatch({ changes: { from: original.length, insert: ' edited' }, selection: { anchor: 4, head: 8 }, userEvent: 'input.type' }));
+    const modified = view.state.doc.toString();
+    onChange.mockClear();
+    act(() => setLanguagePreference('en'));
+    expect(editorView(editor.container).view).toBe(view);
+    expect(editorView(editor.container).content).toBe(content);
+    expect(view.state.doc.toString()).toBe(modified);
+    expect(view.state.selection.main.anchor).toBe(4);
+    expect(view.state.selection.main.head).toBe(8);
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => { expect(undo(view)).toBe(true); });
+    expect(view.state.doc.toString()).toBe(original);
+    act(() => { expect(redo(view)).toBe(true); });
+    expect(view.state.doc.toString()).toBe(modified);
+  });
+
 });

@@ -1,3 +1,5 @@
+import { act } from '@testing-library/react';
+import { setLanguagePreference } from '../lib/i18n';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopEntry, SpreadsheetWorkbookSnapshot } from '../lib/desktop';
@@ -229,4 +231,19 @@ describe('SpreadsheetRenderer', () => {
     expect(screen.queryByText('Stale first file')).toBeNull();
     expect(screen.getByText('Second file')).toBeTruthy();
   });
+  it('changes labels without re-reading the workbook, resetting pagination, or translating cell data', async () => {
+    mocks.readSpreadsheet.mockResolvedValue(snapshot('打开文件夹'));
+    const rendererProps = props();
+    render(<SpreadsheetRenderer {...rendererProps} />);
+    await screen.findByRole('grid', { name: 'Data 单元格' });
+    fireEvent.click(screen.getByRole('button', { name: '下 200 行' }));
+    expect(screen.getAllByText('201').length).toBeGreaterThan(0);
+    act(() => setLanguagePreference('en'));
+    expect(screen.getByRole('grid', { name: 'Data cells' })).toBeTruthy();
+    expect(screen.getAllByText('201').length).toBeGreaterThan(0);
+    expect(mocks.readSpreadsheet).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 200 rows' }));
+    expect(screen.getByText('打开文件夹')).toBeTruthy();
+  });
+
 });

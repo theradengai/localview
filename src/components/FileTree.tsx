@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import {
   memo,
   useCallback,
@@ -131,6 +133,8 @@ function FileTree({
   onMoveDrop,
   onMoveEnd,
 }: Props) {
+  useI18n();
+
   const [fallbackSelection, setFallbackSelection] = useState<string[]>([]);
   const selection = selectionPaths ?? fallbackSelection;
   const selectionRef = useRef(selection);
@@ -264,11 +268,11 @@ function FileTree({
       <TreeCreateInput
         key={createDraft.id}
         ref={createInputRef}
-        ariaLabel={`在 ${basename(createDraft.parentPath)} 中${folder ? '新建文件夹' : createDraft.kind === 'kanban' ? '新建看板文件' : '新建 Markdown 文件'}`}
+        ariaLabel={t("在 {0} 中{1}", basename(createDraft.parentPath), folder ? t("新建文件夹") : createDraft.kind === 'kanban' ? t("新建看板文件") : t("新建 Markdown 文件"))}
         disabled={createBusy || locked}
         invalid={createInvalid}
         maxLength={folder ? MAX_DIRECTORY_NAME_UTF16_UNITS : MAX_MARKDOWN_FILENAME_UTF16_UNITS}
-        placeholder={folder ? '新建文件夹' : createDraft.kind === 'kanban' ? '看板.md' : 'untitled.md'}
+        placeholder={folder ? t("新建文件夹") : createDraft.kind === 'kanban' ? t("看板.md") : 'untitled.md'}
         onSubmit={onSubmitCreate}
         onCancel={onCancelCreate}
       />
@@ -451,7 +455,7 @@ function FileTree({
           {renaming ? <TreeRenameInput
             key={renameDraft.id}
             ref={renameInputRef}
-            ariaLabel={`重命名 ${node.name}`}
+            ariaLabel={t("重命名 {0}", node.name)}
             disabled={renameBusy}
             invalid={renameInvalid}
             initialValue={renameDraft.editableName}
@@ -472,14 +476,14 @@ function FileTree({
               type="button"
               disabled={createBusy || renameBusy || renameDraft !== null || locked || preparingFolders.has(path)}
               aria-busy={preparingFolders.has(path)}
-              aria-label={`在 ${node.name} 中新建`}
+              aria-label={t("在 {0} 中新建", node.name)}
               onClick={(event) => onOpenCreateMenu(event, path, node)}
             >+</button> : null}
           <button
             className="tree-action-button tree-more-button"
             type="button"
             disabled={createBusy || renameBusy || renameDraft !== null || locked}
-            aria-label={node.kind === 'folder' ? `${node.name} 文件夹操作` : `${node.name} 操作`}
+            aria-label={node.kind === 'folder' ? t("{0} 文件夹操作", node.name) : t("{0} 操作", node.name)}
             onClick={(event) => {
               selectForAction(path);
               onOpenNodeMenu(event, node);
@@ -494,7 +498,7 @@ function FileTree({
     </div>;
   });
 
-  return <div className="file-tree" role="group" aria-label="文件与文件夹（支持多选）"
+  return <div className="file-tree" role="group" aria-label={t("文件与文件夹（支持多选）")}
     onPointerDownCapture={() => { pointerFocusRef.current = true; }}
     onMouseDownCapture={() => { pointerFocusRef.current = true; }}
     onClick={(event) => {
@@ -505,7 +509,7 @@ function FileTree({
     }}
   >
     {createDraft?.parentPath === normalizePath(rootPath) ? renderCreateEditor(0) : null}
-    {tree.length ? renderNodes(tree) : <div className="tree-empty">打开文件夹后显示真实目录树</div>}
+    {tree.length ? renderNodes(tree) : <div className="tree-empty">{t("打开文件夹后显示真实目录树")}</div>}
   </div>;
 }
 

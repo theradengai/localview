@@ -1,3 +1,5 @@
+import { useI18n } from '../lib/useI18n';
+import { t } from '../lib/i18n';
 import { memo, useMemo } from 'react';
 import MarkdownContent from './MarkdownContent';
 import KanbanBoard from './KanbanBoard';
@@ -21,6 +23,8 @@ type Props = {
 };
 
 function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope, demoImages, onTaskToggle, onTaskHistory, documentKey = selectedPath, onKanbanChange }: Props) {
+  const { locale } = useI18n();
+
   const components = useMemo(() => ({
     img: ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => {
       const original = typeof src === 'string' ? src : '';
@@ -35,11 +39,11 @@ function MarkdownPreview({ content, desktop, rootPath, selectedPath, assetScope,
     },
   }), [assetScope, desktop, rootPath, selectedPath, demoImages]);
 
-  const board = useMemo(() => parseKanban(content), [content]);
+  const board = useMemo(() => parseKanban(content), [content, locale]);
   if (board.kind === 'board') return <KanbanBoard key={documentKey} board={board} documentKey={documentKey}
     onChange={onKanbanChange} onHistory={onTaskHistory} />;
   if (board.kind === 'invalid') return <div className="kanban-invalid">
-    <h2>看板暂不可操作</h2><p role="alert">{board.error}</p><p>原文完整保留。切换到编辑或分栏修正 Markdown 后会恢复看板。</p><pre>{content}</pre>
+    <h2>{t("看板暂不可操作")}</h2><p role="alert">{board.error}</p><p>{t("原文完整保留。切换到编辑或分栏修正 Markdown 后会恢复看板。")}</p><pre>{content}</pre>
   </div>;
   return <div className="preview-pane markdown-body">
     <MarkdownContent content={content} components={components} onTaskToggle={onTaskToggle} onTaskHistory={onTaskHistory} />

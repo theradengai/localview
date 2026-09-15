@@ -34,7 +34,7 @@ const reports = [];
 try {
   for (const [name, engine] of Object.entries({ chromium, webkit })) {
     const browser = await engine.launch({ headless: true });
-    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    const page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1400, height: 900 } });
     page.setDefaultTimeout(15000);
     const report = { browser: name, version: browser.version(), cases: [], errors: [], status: 'running' };
     reports.push(report);
