@@ -15,11 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Use the fixed production candidate, not the old helper-branch source
+      - name: Use the final production candidate
         run: |
           set -euo pipefail
           cp scripts/native-language-smoke.rs "$RUNNER_TEMP/native-language-smoke.rs"
-          git checkout --detach 678e43ee54a027acce4bc08a8532fe09df5c846c
+          git checkout --detach 777f7ba13281ad020ab0a4401683098b4315a9c4
           mkdir -p "$RUNNER_TEMP/native-evidence"
           git rev-parse HEAD > "$RUNNER_TEMP/native-evidence/SOURCE_SHA.txt"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
@@ -37,6 +37,9 @@ jobs:
           hook='    let app = builder\n        .on_page_load(|webview, payload| { if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) { native_language_smoke::install(webview.app_handle()); } })\n'
           p.write_text('mod native_language_smoke;\n'+text.replace(needle,hook))
           controller=(pathlib.Path(os.environ['RUNNER_TEMP'])/'native-language-smoke.rs').read_text().replace('.mode-tabs','.mode-switcher')
+          needle='            let chinese=menu(&app);'
+          assert controller.count(needle)==1
+          controller=controller.replace(needle,needle+'\n            for expected in ["关于 LocalView", "隐藏 LocalView", "切换全屏"] { assert!(chinese.iter().any(|(_,t)|t==expected), "Missing translation: {expected}"); }')
           pathlib.Path('src-tauri/src/native_language_smoke.rs').write_text(controller)
           p=pathlib.Path('src-tauri/tauri.conf.json'); config=json.loads(p.read_text())
           config['identifier']='ai.theradeng.localview.native-smoke.'+os.environ['GITHUB_RUN_ID']
