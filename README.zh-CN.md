@@ -6,7 +6,7 @@
 
 无需导入、无需 Vault、无需强制索引。文件仍然是你磁盘上的普通文件。
 
-[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.5) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
+[English](README.md) · [下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
 
 ![LocalView 预览、分栏、编辑、任务列表与 HTML 演示](docs/images/localview-demo.gif)
 
@@ -26,7 +26,7 @@
 
 ## 界面语言
 
-开发版在标题栏新增 **跟随系统 / 简体中文 / English**。切换立即生效并记住选择，不翻译已有文件、不重建编辑器。[行为边界与验证说明](docs/LANGUAGES.md)。下方已发布的 Beta 5 安装包尚不包含本次改动。
+Beta 6 在标题栏新增 **跟随系统 / 简体中文 / English**。切换立即生效并记住选择，不翻译已有文件、不重建编辑器。[行为边界与验证说明](docs/LANGUAGES.md)。
 
 ## Markdown 看板
 
@@ -42,12 +42,12 @@
 
 ## 下载与安装
 
-**0.2.0-beta.5 · macOS Monterey 12 及以上。** 本次为预发布测试版，不是稳定版。当前界面主要为简体中文；本次 Beta 不提供 Windows/Linux 支持。
+**0.2.0-beta.6 · macOS Monterey 12 及以上。** 本次为预发布测试版，不是稳定版。界面支持简体中文和英文；本次 Beta 不提供 Windows/Linux 支持。
 
 | 电脑 | 安装包 |
 | --- | --- |
-| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_aarch64.dmg) |
-| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_x64.dmg) |
+| Apple Silicon，M 系列芯片 | [ARM64 DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.6/LocalView_0.2.0-beta.6_aarch64.dmg) |
+| Intel Mac，包括 Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.6/LocalView_0.2.0-beta.6_x64.dmg) |
 
 退出旧版 LocalView，打开 DMG，将应用拖入“应用程序”，弹出安装磁盘后，从“应用程序”打开。
 

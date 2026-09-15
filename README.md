@@ -6,7 +6,7 @@ A lightweight, macOS-first workspace for local documents. Browse real folders, e
 
 No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
-[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.5) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
+[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
 
 ![LocalView: preview, edit, split view, tasks and HTML](docs/images/localview-demo.gif)
 
@@ -26,7 +26,7 @@ No import step. No vault. No mandatory indexing. Your files stay ordinary files.
 
 ## Interface language
 
-The development version adds **System / 简体中文 / English** in the title bar. Switching is immediate, remembers your selection, and does not translate your documents or reset the editor. [Behavior, system-dialog boundaries and validation](docs/LANGUAGES.md). The existing Beta 5 downloads below do not include this unreleased change.
+Beta 6 adds **System / 简体中文 / English** in the title bar. Switching is immediate, remembers your selection, and does not translate your documents or reset the editor. [Behavior, system-dialog boundaries and validation](docs/LANGUAGES.md).
 
 ## Markdown Kanban
 
@@ -42,12 +42,12 @@ Drag a card by its handle, or move it with the details panel's column selector. 
 
 ## Download
 
-**0.2.0-beta.5 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The app interface is currently primarily Simplified Chinese. Windows and Linux builds are not supported in this Beta.
+**0.2.0-beta.6 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The interface supports Simplified Chinese and English. Windows and Linux builds are not supported in this Beta.
 
 | Your Mac | Installer |
 | --- | --- |
-| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_aarch64.dmg) |
-| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.5/LocalView_0.2.0-beta.5_x64.dmg) |
+| Apple Silicon — M-series chip | [Apple Silicon DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.6/LocalView_0.2.0-beta.6_aarch64.dmg) |
+| Intel — including Intel MacBook Air | [Intel DMG](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.6/LocalView_0.2.0-beta.6_x64.dmg) |
 
 Quit an older LocalView, open the DMG, drag **LocalView** into **Applications**, then eject the disk image. Launch the installed copy.
 

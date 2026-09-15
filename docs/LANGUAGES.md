@@ -1,9 +1,9 @@
 # Interface languages / 界面语言
 
-The development version supports **System / 简体中文 / English** in the title bar.
-This change is not included in the already-published Beta 5 installers; a new release is required.
+LocalView 0.2.0-beta.6 supports **System / 简体中文 / English** in the title bar.
+Beta 5 and older installers do not include this feature.
 
-开发版可在标题栏选择 **跟随系统 / 简体中文 / English**。已经发布的 Beta 5 安装包不包含本次改动，需要后续新版本。
+LocalView 0.2.0-beta.6 可在标题栏选择 **跟随系统 / 简体中文 / English**。Beta 5 及更早安装包不包含此功能，请升级到 Beta 6。
 
 ## Behavior
 
@@ -26,4 +26,4 @@ Newly created boards and inserted template text use the language selected at cre
 
 Locale tests cover system detection, persistence failures, storage propagation, placeholders, opaque user data, the real CodeMirror instance/selection/history, application drafts and spreadsheet paging without a second file read. The isolated Chromium/WebKit checks cover both languages, preference persistence/propagation and board source preservation. They use only synthetic browser-demo documents, not an installed LocalView or private local files.
 
-macOS CI checks the native command and reversible label mapping. OS dialogs, multiple real desktop windows and the native language picker still require a macOS acceptance pass before a release is claimed.
+Release validation combines macOS compilation/tests, browser regressions, and an isolated native acceptance app using the same UI source. Release evidence records the actual results. Physical-device IME, system-owned dialogs, and macOS 12 hardware remain separate manual compatibility checks; automated smoke does not establish every OS interaction.
