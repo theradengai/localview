@@ -1,44 +1,79 @@
 import { useEffect } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
-import { LANGUAGE_PREFERENCE_EVENT, setLanguagePreference, type LanguagePreference } from './i18n';
-import { useI18n } from './useI18n';
+import { listen } from '@tauri-apps/api/event';
+import {
+  getLanguagePreference, getLocale, LANGUAGE_PREFERENCE_EVENT,
+  setLanguagePreference, suspendLanguageStorageEvents, type LanguagePreference,
+} from './i18n';
 
 const NATIVE_LANGUAGE_EVENT = 'localview-ui-language';
-let menuUpdates: Promise<unknown> = Promise.resolve();
+type LanguageSnapshot = { preference: LanguagePreference; revision: number };
+function isSnapshot(value: unknown): value is LanguageSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const snapshot = value as Partial<LanguageSnapshot>;
+  return ['system', 'en', 'zh-CN'].includes(snapshot.preference ?? '')
+    && Number.isSafeInteger(snapshot.revision) && snapshot.revision! >= 0;
+}
 
+/** The native process orders changes. Receiving windows never rebroadcast them. */
 export function useNativeLanguageSync() {
-  const { locale } = useI18n();
   useEffect(() => {
     if (!isTauri()) return;
-    menuUpdates = menuUpdates.catch(() => undefined)
-      .then(() => invoke('set_ui_language', { language: locale })).catch(error => {
-      console.error('LocalView could not update native menu labels:', error);
-    });
-  }, [locale]);
-
-  useEffect(() => {
-    if (!isTauri()) return;
+    const resumeStorageEvents = suspendLanguageStorageEvents();
     let disposed = false;
     let stop: (() => void) | undefined;
+    let latest: LanguageSnapshot | undefined;
+    let pending = 0;
+    let lastWriteSucceeded = true;
+    const report = (error: unknown) => console.error('LocalView language synchronization failed:', error);
+    const apply = (value: unknown) => {
+      if (disposed || !isSnapshot(value) || (latest && value.revision < latest.revision)) return;
+      latest = value;
+      if (pending > 0 || !lastWriteSucceeded) return;
+      setLanguagePreference(value.preference, false);
+      // The backend checks this revision again at the menu mutation boundary.
+      void invoke('set_ui_language', { request: {
+        action: 'menu', language: getLocale(), revision: value.revision,
+      } }).catch(report);
+    };
+    const initialPreference = getLanguagePreference();
+    let writes: Promise<unknown> = listen<unknown>(NATIVE_LANGUAGE_EVENT, event => apply(event.payload))
+      .then(unlisten => {
+        if (disposed) { unlisten(); return; }
+        stop = unlisten;
+        return invoke('set_ui_language', { request: {
+          action: 'initialize', preference: initialPreference,
+        } }).then(apply);
+      }).catch(report);
     const broadcast = (event: Event) => {
-      const value = (event as CustomEvent<LanguagePreference>).detail;
-      void emit(NATIVE_LANGUAGE_EVENT, value).catch(error => {
-        console.error('LocalView could not synchronize interface language:', error);
+      const preference = (event as CustomEvent<LanguagePreference>).detail;
+      if (!['system', 'en', 'zh-CN'].includes(preference)) return;
+      pending += 1;
+      // Serialize writes from this window so a rapid A → B → A is not reordered.
+      writes = writes.catch(report).then(async () => {
+        if (disposed) return;
+        try {
+          const value = await invoke('set_ui_language', { request: { action: 'select', preference } });
+          lastWriteSucceeded = true;
+          apply(value);
+        } catch (error) {
+          lastWriteSucceeded = false;
+          report(error);
+        } finally {
+          pending -= 1;
+          if (!disposed && pending === 0 && latest) apply(latest);
+        }
       });
     };
+    const systemChanged = () => { if (latest?.preference === 'system') apply(latest); };
     window.addEventListener(LANGUAGE_PREFERENCE_EVENT, broadcast);
-    void listen<unknown>(NATIVE_LANGUAGE_EVENT, event => {
-      const value = event.payload;
-      if (!disposed && (value === 'system' || value === 'en' || value === 'zh-CN')) {
-        setLanguagePreference(value, false);
-      }
-    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; })
-      .catch(error => console.error('LocalView could not listen for language changes:', error));
+    window.addEventListener('languagechange', systemChanged);
     return () => {
       disposed = true;
       stop?.();
+      resumeStorageEvents();
       window.removeEventListener(LANGUAGE_PREFERENCE_EVENT, broadcast);
+      window.removeEventListener('languagechange', systemChanged);
     };
   }, []);
 }

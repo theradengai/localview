@@ -6,6 +6,15 @@ export const LANGUAGE_STORAGE_KEY = 'localview.language';
 export const LANGUAGE_PREFERENCE_EVENT = 'localview-language-preference';
 const messages: Readonly<Record<string, string>> = english;
 const listeners = new Set<() => void>();
+let nativeStorageUsers = 0;
+
+// Desktop windows consume revisioned native snapshots, not unversioned storage echoes.
+// Storage still persists preferences; browsers retain their normal storage-event path.
+export function suspendLanguageStorageEvents(): () => void {
+  nativeStorageUsers += 1;
+  let active = true;
+  return () => { if (active) { active = false; nativeStorageUsers -= 1; } };
+}
 
 export function normalizeLanguagePreference(value: unknown): LanguagePreference {
   return value === 'en' || value === 'zh-CN' ? value : 'system';
@@ -49,6 +58,7 @@ export function setLanguagePreference(value: LanguagePreference, broadcast = tru
   }
 }
 function storageChanged(event: StorageEvent): void {
+  if (nativeStorageUsers > 0) return;
   if (event.key !== LANGUAGE_STORAGE_KEY && event.key !== null) return;
   // Session storage must never change the application preference.
   try { if (event.storageArea && event.storageArea !== window.localStorage) return; }
