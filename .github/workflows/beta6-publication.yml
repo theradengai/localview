@@ -1,0 +1,30 @@
+name: Publish verified LocalView Beta 6
+on:
+  push:
+    branches: [ci/beta6-publish-tools]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Verify all evidence and publish only complete, hash-checked release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/beta6-publication/publish.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: beta6-published-release
+          path: |
+            ${{ runner.temp }}/beta6-publication/release/
+            ${{ runner.temp }}/beta6-publication/published.json
+          retention-days: 14
+          if-no-files-found: error
