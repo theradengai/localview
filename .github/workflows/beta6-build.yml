@@ -1,64 +1,11 @@
-name: Prepare and build LocalView Beta 6
+name: Build fixed LocalView Beta 6
 on:
   push:
     branches: [ci/beta6-build-tools]
 permissions:
   contents: read
 jobs:
-  prepare:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.commit.outputs.sha }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with: {fetch-depth: 0}
-      - name: Prepare only version and documentation changes on verified staging
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse origin/staging)" = 6264278543d19e7f1d0369ab028210bf6fc29a90
-          git checkout --detach 6264278543d19e7f1d0369ab028210bf6fc29a90
-          python3 - <<'PY'
-          from pathlib import Path
-          old='0.2.0-beta.5'; new='0.2.0-beta.6'
-          counts={'package.json':1,'package-lock.json':2,'src-tauri/Cargo.toml':1,'src-tauri/Cargo.lock':1,'src-tauri/tauri.conf.json':1}
-          for name,count in counts.items():
-              p=Path(name); text=p.read_text(); assert text.count(old)==count,name
-              p.write_text(text.replace(old,new))
-          for name in ['README.md','README.zh-CN.md','docs/INSTALL.md']:
-              p=Path(name); text=p.read_text(); assert old in text,name
-              text=text.replace(old,new)
-              text=text.replace('The development version adds','Beta 6 adds').replace(' The existing Beta 5 downloads below do not include this unreleased change.','')
-              text=text.replace('The app interface is currently primarily Simplified Chinese.','The interface supports Simplified Chinese and English.')
-              text=text.replace('开发版在标题栏新增','Beta 6 在标题栏新增').replace('下方已发布的 Beta 5 安装包尚不包含本次改动。','')
-              text=text.replace('当前界面主要为简体中文；','界面支持简体中文和英文；')
-              p.write_text(text)
-          p=Path('CHANGELOG.md'); text=p.read_text(); assert text.count('## Unreleased')==1
-          p.write_text(text.replace('## Unreleased','## 0.2.0-beta.6 — 2026-09-15 (prerelease)',1))
-          p=Path('docs/LANGUAGES.md'); text=p.read_text()
-          text=text.replace('The development version supports','LocalView 0.2.0-beta.6 supports')
-          text=text.replace('This change is not included in the already-published Beta 5 installers; a new release is required.','Beta 5 and older installers do not include this feature.')
-          text=text.replace('开发版可在标题栏选择','LocalView 0.2.0-beta.6 可在标题栏选择').replace('已经发布的 Beta 5 安装包不包含本次改动，需要后续新版本。','Beta 5 及更早安装包不包含此功能，请升级到 Beta 6。')
-          text=text.replace('macOS CI checks the native command and reversible label mapping. OS dialogs, multiple real desktop windows and the native language picker still require a macOS acceptance pass before a release is claimed.','Release validation combines macOS compilation/tests, browser regressions, and an isolated native acceptance app using the same UI source. Release evidence records the actual results. Physical-device IME, system-owned dialogs, and macOS 12 hardware remain separate manual compatibility checks; automated smoke does not establish every OS interaction.')
-          p.write_text(text)
-          PY
-      - name: Commit release candidate without test instrumentation or helper workflows
-        id: commit
-        run: |
-          set -euo pipefail
-          test ! -e src-tauri/src/native_language_smoke.rs
-          test ! -e .github/workflows/beta6-build.yml
-          git diff --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json README.md README.zh-CN.md CHANGELOG.md docs/INSTALL.md docs/LANGUAGES.md
-          git commit -m 'release: prepare LocalView 0.2.0-beta.6 bilingual interface'
-          git push origin HEAD:refs/heads/staging
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git show --stat --oneline HEAD
   build:
-    needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
@@ -74,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
+          ref: 678e43ee54a027acce4bc08a8532fe09df5c846c
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version-file: .nvmrc, cache: npm}
@@ -91,7 +38,7 @@ jobs:
         env:
           BUNDLE_ROOT: src-tauri/target/${{ matrix.target }}/release/bundle
           EXPECTED_ARCH: ${{ matrix.architecture }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+          SOURCE_SHA: 678e43ee54a027acce4bc08a8532fe09df5c846c
         run: |
           set -euo pipefail
           test "$(uname -m)" = "$EXPECTED_ARCH"
