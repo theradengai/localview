@@ -1,0 +1,73 @@
+name: Validate bilingual native macOS windows
+on:
+  push:
+    branches: [ci/beta6-native-check]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {persist-credentials: false}
+      - run: git archive --format=tar.gz HEAD > /tmp/localview-current-source.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: localview-current-source
+          path: /tmp/localview-current-source.tar.gz
+          retention-days: 1
+  native:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc, cache: npm}
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: {toolchain: 1.91.1}
+      - name: Add test controller to this disposable checkout only
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, os
+          p=pathlib.Path('src-tauri/src/lib.rs')
+          text=p.read_text()
+          needle='    let app = builder\n'
+          assert text.count(needle)==1
+          text=text.replace(needle,'    let app = builder\n        .setup(|app| { native_language_smoke::install(app.handle()); Ok(()) })\n')
+          p.write_text('mod native_language_smoke;\n'+text)
+          pathlib.Path('src-tauri/src/native_language_smoke.rs').write_bytes(pathlib.Path('scripts/native-language-smoke.rs').read_bytes())
+          p=pathlib.Path('src-tauri/tauri.conf.json'); config=json.loads(p.read_text())
+          config['identifier']='ai.theradeng.localview.native-smoke.'+os.environ['GITHUB_RUN_ID']
+          p.write_text(json.dumps(config,indent=2)+'\n')
+          PY
+      - name: Build an isolated native test executable
+        run: npm run tauri:build -- --debug --no-bundle -- --locked
+      - name: Exercise three real WKWebView windows and native menus
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/native-evidence" "$RUNNER_TEMP/native-fixture"
+          export LOCALVIEW_SMOKE_FIXTURE="$RUNNER_TEMP/native-fixture/保留原文.md"
+          export LOCALVIEW_SMOKE_RESULT="$RUNNER_TEMP/native-evidence/result.json"
+          printf '# 待办\n\nSynthetic native language fixture.\n' > "$LOCALVIEW_SMOKE_FIXTURE"
+          python3 - <<'PY'
+          import os, subprocess, pathlib
+          exe=pathlib.Path('src-tauri/target/debug/localview').resolve()
+          assert exe.is_file()
+          log=pathlib.Path(os.environ['RUNNER_TEMP'])/'native-evidence/process.log'
+          with log.open('wb') as output:
+              result=subprocess.run([str(exe),os.environ['LOCALVIEW_SMOKE_FIXTURE']],stdout=output,stderr=subprocess.STDOUT,timeout=150)
+          print(log.read_text())
+          report=pathlib.Path(os.environ['LOCALVIEW_SMOKE_RESULT'])
+          if report.exists(): print(report.read_text())
+          result.check_returncode()
+          assert report.is_file(), 'Missing native evidence'
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: native-language-evidence
+          path: ${{ runner.temp }}/native-evidence/
+          retention-days: 14
+          if-no-files-found: warn
