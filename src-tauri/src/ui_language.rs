@@ -19,6 +19,7 @@ const LABELS: &[(&str, &str)] = &[
     ("Select All", "全选"),
     ("View", "视图"),
     ("Enter Full Screen", "进入全屏"),
+    ("Toggle Full Screen", "切换全屏"),
     ("Window", "窗口"),
     ("Minimize", "最小化"),
     ("Zoom", "缩放"),
@@ -27,6 +28,12 @@ const LABELS: &[(&str, &str)] = &[
 ];
 
 fn menu_label(text: &str, language: &str) -> Option<&'static str> {
+    // Tauri can use the lowercase Cargo package name in these predefined labels.
+    let text = match text {
+        "About localview" => "About LocalView",
+        "Hide localview" => "Hide LocalView",
+        _ => text,
+    };
     LABELS.iter().find_map(|(en, zh)| {
         if text == *en || text == *zh {
             Some(if language == "zh-CN" { *zh } else { *en })
@@ -161,6 +168,14 @@ pub async fn set_ui_language(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_native_menu_labels_are_translated() {
+        assert_eq!(menu_label("About localview", "zh-CN"), Some("关于 LocalView"));
+        assert_eq!(menu_label("Hide localview", "zh-CN"), Some("隐藏 LocalView"));
+        assert_eq!(menu_label("Toggle Full Screen", "zh-CN"), Some("切换全屏"));
+        assert_eq!(menu_label("About localview", "en"), Some("About LocalView"));
+    }
 
     #[test]
     fn native_preference_has_one_monotonic_authority() {
