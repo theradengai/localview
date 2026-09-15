@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: 678e43ee54a027acce4bc08a8532fe09df5c846c
+          ref: 777f7ba13281ad020ab0a4401683098b4315a9c4
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version-file: .nvmrc, cache: npm}
@@ -38,7 +38,7 @@ jobs:
         env:
           BUNDLE_ROOT: src-tauri/target/${{ matrix.target }}/release/bundle
           EXPECTED_ARCH: ${{ matrix.architecture }}
-          SOURCE_SHA: 678e43ee54a027acce4bc08a8532fe09df5c846c
+          SOURCE_SHA: 777f7ba13281ad020ab0a4401683098b4315a9c4
         run: |
           set -euo pipefail
           test "$(uname -m)" = "$EXPECTED_ARCH"
