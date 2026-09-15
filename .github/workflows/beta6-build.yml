@@ -21,57 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: 777f7ba13281ad020ab0a4401683098b4315a9c4
+          ref: 4ae06b5678646f65b44ab1b6ecd66b36ceb82493
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with: {node-version-file: .nvmrc, cache: npm}
-      - run: npm ci
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-        with:
-          toolchain: 1.91.1
-          targets: ${{ matrix.target }}
-      - name: Build uninstrumented release candidate
-        run: |
-          test ! -e src-tauri/src/native_language_smoke.rs
-          npm run tauri:build -- --target '${{ matrix.target }}' -- --locked
-      - name: Verify bundles, native startup, and original fixture bytes
-        env:
-          BUNDLE_ROOT: src-tauri/target/${{ matrix.target }}/release/bundle
-          EXPECTED_ARCH: ${{ matrix.architecture }}
-          SOURCE_SHA: 777f7ba13281ad020ab0a4401683098b4315a9c4
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = "$EXPECTED_ARCH"
-          node scripts/verify-macos-bundle.mjs "$BUNDLE_ROOT/macos/LocalView.app" "$EXPECTED_ARCH"
-          for image in "$BUNDLE_ROOT"/dmg/*.dmg; do hdiutil verify "$image"; done
-          python3 - <<'PY'
-          import os, pathlib, subprocess, time, hashlib, json, tempfile
-          root=pathlib.Path(os.environ['BUNDLE_ROOT']); app=(root/'macos/LocalView.app').resolve()
-          plist=json.loads(subprocess.check_output(['/usr/bin/plutil','-convert','json','-o','-',str(app/'Contents/Info.plist')]))
-          exe=app/'Contents/MacOS'/plist['CFBundleExecutable']
-          with tempfile.TemporaryDirectory(prefix='localview-beta6-') as d:
-              fixture=pathlib.Path(d)/'原文.md'; original='# 待办\n\nNative Beta 6 startup fixture.\n'; fixture.write_text(original)
-              with (pathlib.Path(d)/'process.log').open('w') as log:
-                  process=subprocess.Popen([str(exe),str(fixture)],stdout=log,stderr=subprocess.STDOUT)
-                  try:
-                      time.sleep(8)
-                      assert process.poll() is None,'Native app exited during startup'
-                      assert fixture.read_text()==original,'Startup changed fixture'
-                  finally:
-                      if process.poll() is None:
-                          process.terminate()
-                          try: process.wait(timeout=10)
-                          except subprocess.TimeoutExpired: process.kill(); process.wait()
-          images=list((root/'dmg').glob('*.dmg')); assert len(images)==1
-          image=images[0]; digest=hashlib.sha256(image.read_bytes()).hexdigest()
-          (root/'dmg/SHA256SUMS.txt').write_text(digest+'  '+image.name+'\n')
-          evidence={'version':'0.2.0-beta.6','sourceCommit':os.environ['SOURCE_SHA'],'sourceTree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),'architecture':os.environ['EXPECTED_ARCH'],'runner':os.environ['RUNNER_OS'],'nativeHost':os.uname().machine,'dmg':image.name,'sha256':digest,'checks':['bundle version','architecture','signature','license notices','private build paths excluded','disk image integrity','native startup 8 seconds','fixture bytes unchanged'],'instrumented':False}
-          (root/('dmg/BUILD-'+os.environ['EXPECTED_ARCH']+'.json')).write_text(json.dumps(evidence,indent=2)+'\n')
-          print(json.dumps(evidence,indent=2))
-          PY
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: Beta6-${{ matrix.architecture }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/
-          retention-days: 14
-          if-no-files-found: error
+      - uses: actions/setup-node@249970cb... 
