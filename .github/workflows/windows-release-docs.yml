@@ -1,0 +1,111 @@
+name: Prepare Windows release documentation
+on:
+  push:
+    branches: [ci/windows-release-docs-20260916]
+permissions:
+  contents: write
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {ref: feat/windows-desktop-20260916, fetch-depth: 0}
+      - name: Update only user documentation
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cec2d5546d88e2a6acfa2a668222ba291209b0c8
+          python3 - <<'PY'
+          from pathlib import Path
+          def edit(name, replacements):
+              p=Path(name); s=p.read_text()
+              for old,new in replacements:
+                  assert old in s, (name,old)
+                  s=s.replace(old,new)
+              p.write_text(s)
+          edit('README.md',[
+              ('A lightweight, macOS-first workspace for local documents.','A lightweight workspace for local documents on macOS and Windows.'),
+              ('No import step. No vault. No mandatory indexing. Your files stay ordinary files.','No index required. Open a file or folder directly. Preview multiple formats and edit Markdown, HTML and text in place. Your files stay ordinary files.'),
+              ('Windows and Linux builds are not supported in this Beta.','Windows x64 is available separately as Beta 7 (see below). Linux installers are not published.'),
+              ('## Download\n','## Download\n\n**Windows x64 — 0.2.0-beta.7:** [download the NSIS installer](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe). Targets Windows 10/11 (64-bit). Current-user installation; WebView2 is downloaded when missing. Unsigned Beta: read the [Windows guide and limitations](docs/WINDOWS.md) and verify the release checksum.\n\n**macOS — previous verified Beta 6 installers remain available:**\n'),
+              ('| Numbers / Pages / Keynote / Word / PowerPoint | macOS Quick Look preview; availability and page controls depend on the installed provider |','| Numbers / Pages / Keynote / Word / PowerPoint | macOS: Quick Look; Windows: default-application fallback, not embedded Office editing/preview |'),
+          ])
+          edit('README.zh-CN.md',[
+              ('一个轻量、macOS 优先的本地文档工作台','一个轻量、支持 macOS 和 Windows 的本地文档工作台'),
+              ('无需导入、无需 Vault、无需强制索引。文件仍然是你磁盘上的普通文件。','不需要索引，直接打开文件或文件夹。支持多种格式预览，并可编辑 Markdown、HTML 和文本。无需导入、无需建库，文件仍是磁盘上的普通文件。'),
+              ('本次 Beta 不提供 Windows/Linux 支持。','Windows x64 已单独提供 Beta 7（见下方）；暂未发布 Linux 安装包。'),
+              ('## 下载与安装\n','## 下载与安装\n\n**Windows x64 — 0.2.0-beta.7：** [下载 NSIS 安装器](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)。面向 Windows 10/11（64 位），为当前用户安装；缺少 WebView2 时自动下载运行环境。安装包未签名，请先阅读 [Windows 说明与边界](docs/WINDOWS.md)，并核对 Release 的校验值。\n\n**macOS：继续提供已经验证发布的 Beta 6 安装包：**\n'),
+          ])
+          p=Path('docs/WINDOWS.md')
+          assert not p.exists()
+          p.write_text('''# Windows Beta / Windows 测试版
+
+          ## 中文
+
+          **LocalView 0.2.0-beta.7** 是 Windows x64 首版，面向 Windows 10/11（64 位）。不需要索引，直接打开本地文件或文件夹；目录按需展开，修改写回原文件。
+
+          ### 安装
+
+          从 [Beta 7 Release](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) 下载 `LocalView_0.2.0-beta.7_x64-setup.exe`。安装范围为当前用户，安装器支持英文和简体中文。应用依赖 Microsoft Edge WebView2 Runtime；缺少时会下载并安装，因此不是完全离线安装包。
+
+          本 Beta **没有 Windows 代码签名**，可能出现 SmartScreen 或发布者未知提示。先核对仓库、版本和 Release 中的 SHA-256 校验值，再决定是否运行；不要关闭系统安全保护。当前更新方式是下载新版安装器，不提供应用内自动更新。首版不注册或接管 Windows 默认文件关联。
+
+          ### 使用与支持范围
+
+          使用「打开文件」「打开文件夹」或 `Ctrl+O`；也可把本地文件路径作为 `localview.exe` 的命令行参数。`Ctrl+S` 立即保存，`Ctrl+Z` 撤销，`Ctrl+Y` 重做，`Ctrl+N` 新窗口，`Ctrl+P` 打印 Markdown。文件树支持 Ctrl 多选、Shift 连选和 F2 重命名。
+
+          | 格式 | Windows 行为 |
+          | --- | --- |
+          | Markdown | 编辑、实时预览、分栏、任务勾选、自动保存 |
+          | Markdown 看板 | 卡片拖拽、详情编辑、列管理；同一份普通 `.md` 文件 |
+          | HTML | 源码编辑、分栏、沙盒交互预览，本地相对 CSS、图片、脚本 |
+          | 文本、常见代码文件 | 文本编辑、自动保存 |
+          | 图片 / PDF | 预览；PDF 控件由 WebView2 提供 |
+          | CSV / XLS / XLSX / ODS | 只读表格，显示保存值；不编辑、不重算公式 |
+          | Word / PowerPoint / iWork | 默认应用打开，不提供 Windows 内嵌 Office/iWork 预览或编辑 |
+
+          支持「跟随系统 / 简体中文 / English」，只切换界面，不翻译或改写文件名、正文、表格数据或看板内容。
+
+          ### 安全与边界
+
+          工作区仅支持本地盘符路径，支持中文、空格和 DOS 短路径别名。UNC/网络共享、设备路径、备用数据流以及工作区内的符号链接/junction/reparse point 不在支持范围内。跨盘移动不回退复制后删除；同名新建或移动不覆盖目标。保存检查磁盘版本，外部修改触发冲突处理。
+
+          删除仅请求系统回收站；回收站不可用时报告失败，不回退永久删除，也不删除工作区根目录。HTML 保持沙盒和独立资源范围，不允许访问特权原生命令或远程网络。
+
+          Windows 与 macOS 共用前端和文件模型。macOS Beta 6 的既有安装包保留，不会被 Windows 安装器替换。
+
+          ### 开发与验证
+
+          使用 Node.js 24 LTS、Rust 1.91.1、Visual Studio C++ Build Tools、Windows SDK 和 WebView2。`npm ci` 后运行 `npm run tauri:dev`；`npm run tauri:build -- -- --locked` 在 `src-tauri/target/release/bundle/nsis/` 生成安装包。
+
+          Windows CI 运行前端、Rust、临时回收站、NSIS 安装及安装后真实 WebView2 交互检查。CDP 只通过测试子进程环境启用，不写入发布配置。Release 附件记录实际结果和源码/安装包校验值。仅使用托管 Windows 环境和临时示例文件，不访问用户私人资料。
+
+          托管环境验证不等于完整认证所有 Windows 10/11 实机、输入法、杀毒软件、打印机或系统对话框。
+
+          ## English
+
+          **0.2.0-beta.7** is the first Windows x64 Beta, targeting 64-bit Windows 10/11. No index, import, vault or database is required: open a local file or folder and edit the original file.
+
+          Download the current-user NSIS installer from the [Beta 7 release](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7). Microsoft Edge WebView2 Runtime is required and is downloaded when missing. This Beta is unsigned; verify its published SHA-256 checksum before running it and do not disable system security. Updates require downloading a new installer. File defaults are not registered or taken over.
+
+          Markdown, Markdown Kanban, HTML and plain text support editing. Images and PDF support preview; PDF controls depend on WebView2. CSV/XLS/XLSX/ODS are read-only saved-value grids. Word, PowerPoint and iWork use a default-application fallback, not an embedded Office renderer. Chinese/English UI switching does not translate documents.
+
+          Open through the toolbar or Ctrl+O. Ctrl+S saves, Ctrl+Z undoes, Ctrl+Y redoes, Ctrl+N opens a window and Ctrl+P prints Markdown. The tree supports Ctrl/Shift selection and F2 rename.
+
+          Local drive-letter paths, Unicode, spaces and DOS aliases are supported. UNC/network shares, devices, alternate streams and in-workspace reparse points are unsupported. Moves never overwrite or fall back to cross-volume copy-delete. Deletion uses the Recycle Bin only; unavailable recycling is an error, not permanent deletion. HTML previews remain sandboxed with scoped local resources and no privileged native command or remote-network access.
+
+          Build with Node.js 24, Rust 1.91.1, MSVC C++ Build Tools, a Windows SDK and WebView2. The workflow checks an actual NSIS-installed release binary with disposable fixtures; debugging is enabled only in the test process environment. Hosted-runner evidence does not certify every physical Windows 10/11, IME, antivirus or system-dialog configuration. The existing macOS Beta 6 installers remain available separately.
+          ''')
+          p=Path('CHANGELOG.md');s=p.read_text();assert '## 0.2.0-beta.7' not in s
+          s=s.replace('# Changelog\n','# Changelog\n\n## 0.2.0-beta.7 — 2026-09-16 (Windows prerelease)\n\n- First Windows x64 NSIS installer with current-user installation and WebView2 bootstrap. Existing macOS Beta 6 remains available.\n- Direct opening without indexing, Windows shortcuts, Unicode/drive-letter/DOS-alias paths, native create/save/move/rename and recycle-only deletion.\n- Markdown/HTML/text editing, interactive Markdown Kanban, image/PDF previews and read-only spreadsheet grids. Office/iWork use a default-application fallback on Windows.\n- Preserve conflict checks, per-window workspace isolation and fail-closed path boundaries. Add actual installed WebView2 acceptance and Windows dependency notices.\n- Unsigned prerelease targeting Windows 10/11 x64; [platform guide and validation boundaries](docs/WINDOWS.md).\n')
+          p.write_text(s)
+          p=Path('docs/INSTALL.md');s=p.read_text();i=s.index('\n');p.write_text(s[:i+1]+'\n**Windows x64 Beta 7:** see [Windows installation and limitations](WINDOWS.md). **Windows 用户：** 请使用 [Windows 安装与兼容性说明](WINDOWS.md)。下文保留 macOS Beta 6 安装方式。\n'+s[i+1:])
+          PY
+          git diff --check
+      - name: Commit only release documentation to the feature branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md README.zh-CN.md CHANGELOG.md docs/INSTALL.md docs/WINDOWS.md
+          git commit -m 'docs: publish Windows installation and format support boundaries'
+          git push origin HEAD:refs/heads/feat/windows-desktop-20260916
