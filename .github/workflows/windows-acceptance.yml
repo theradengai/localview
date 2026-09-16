@@ -1,0 +1,96 @@
+name: Validate installed Windows release
+on:
+  push:
+    branches: [ci/windows-native-acceptance-20260916]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 6ccfeb9fbbde8aef881234e0167b945fe969daf6
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+      - name: Obtain the exact successful build artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = 'theradengai/localview'
+          $runId = 35094538156
+          $complete = $false
+          for ($i=0; $i -lt 100; $i++) {
+            $run = gh api "repos/$repo/actions/runs/$runId" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read source build run' }
+            if ($run.head_sha -ne '6ccfeb9fbbde8aef881234e0167b945fe969daf6') { throw 'Unexpected build head' }
+            if ($run.status -eq 'completed') {
+              if ($run.conclusion -ne 'success') { throw "Source build failed: $($run.conclusion)" }
+              $complete = $true
+              break
+            }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $complete) { throw 'Source build has not completed' }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/windows-installer", "$env:RUNNER_TEMP/windows-acceptance" | Out-Null
+          gh run download $runId --repo $repo --name LocalView-Windows-x64 --dir "$env:RUNNER_TEMP/windows-installer"
+          if ($LASTEXITCODE -ne 0) { throw 'Installer artifact download failed' }
+          $manifest = Get-Content "$env:RUNNER_TEMP/windows-installer/BUILD-PROVENANCE.json" | ConvertFrom-Json
+          if ($manifest.sourceTree -ne (git rev-parse 'HEAD^{tree}')) { throw 'Build tree mismatch' }
+          if ($manifest.version -ne '0.2.0-beta.7' -or $manifest.architecture -ne 'x86_64') { throw 'Unexpected version or architecture' }
+          $file = Join-Path "$env:RUNNER_TEMP/windows-installer" $manifest.installer
+          if ((Get-FileHash $file -Algorithm SHA256).Hash.ToLower() -ne $manifest.sha256) { throw 'Installer hash mismatch' }
+          Copy-Item "$env:RUNNER_TEMP/windows-installer/BUILD-PROVENANCE.json" "$env:RUNNER_TEMP/windows-acceptance/BUILD-PROVENANCE.json"
+      - name: Install into this disposable runner and inspect the executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/windows-installer/*-setup.exe")
+          if ($files.Count -ne 1) { throw 'Expected one installer' }
+          $dest = "$env:RUNNER_TEMP/LocalView-installed"
+          $process = Start-Process -FilePath $files[0].FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $exe = Join-Path $dest 'localview.exe'
+          if (-not (Test-Path $exe)) { throw 'Installed executable missing' }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Expected x64 PE binary' }
+          $notice = @(Get-ChildItem $dest -Filter THIRD_PARTY_NOTICES.md -Recurse)
+          if ($notice.Count -ne 1) { throw 'Distribution notices missing' }
+          if ((Get-FileHash $notice[0].FullName).Hash -ne (Get-FileHash THIRD_PARTY_NOTICES.md).Hash) { throw 'Notice content mismatch' }
+          @{status='passed'; installedPath=$dest; executableSHA256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); architecture='x86_64'; version=(Get-Item $exe).VersionInfo.ProductVersion; signature=(Get-AuthenticodeSignature $exe).Status.ToString(); installerSHA256=(Get-FileHash $files[0].FullName -Algorithm SHA256).Hash.ToLower(); sourceTree=(git rev-parse 'HEAD^{tree}')} | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/windows-acceptance/installation.json"
+      - name: Install isolated browser control library
+        run: npm install --prefix "$env:RUNNER_TEMP/browser-tools" --ignore-scripts --save-exact playwright@1.58.2
+      - name: Exercise the installed native application with real temporary files
+        shell: pwsh
+        run: |
+          node scripts/verify-windows-native.mjs "$env:RUNNER_TEMP/browser-tools/package.json" "$env:RUNNER_TEMP/LocalView-installed/localview.exe" "$env:RUNNER_TEMP/windows-acceptance"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the uninstaller completes without deleting a user document
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = "$env:RUNNER_TEMP/LocalView-installed"
+          $control = "$env:RUNNER_TEMP/localview-uninstall-control.md"
+          '# Keep this user document' | Set-Content -Encoding utf8 $control
+          $before = (Get-FileHash $control).Hash
+          $uninstallers = @(Get-ChildItem "$dest/*uninstall*.exe")
+          if ($uninstallers.Count -ne 1) { throw 'Uninstaller missing' }
+          $process = Start-Process $uninstallers[0].FullName -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Uninstaller failed: $($process.ExitCode)" }
+          if (Test-Path "$dest/localview.exe") { throw 'Application not removed' }
+          if ((Get-FileHash $control).Hash -ne $before) { throw 'Uninstall changed the document' }
+          @{status='passed'; userDocumentPreserved=$true} | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/windows-acceptance/uninstall.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: windows-installed-acceptance
+          path: ${{ runner.temp }}/windows-acceptance/
+          retention-days: 14
+          if-no-files-found: error
