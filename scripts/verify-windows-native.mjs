@@ -29,7 +29,6 @@ await fs.writeFile(path.join(root, 'board.md'), '---\nlocalview: kanban\n---\n# 
 await fs.writeFile(path.join(root, 'style.css'), '#native-html { color: rgb(1, 2, 3); }');
 await fs.writeFile(path.join(root, 'action.js'), "document.querySelector('#change').onclick=()=>document.querySelector('#native-html').textContent='Clicked native HTML';");
 await fs.writeFile(path.join(root, 'preview.html'), '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="./style.css"></head><body><h1 id="native-html">Native HTML</h1><img width="32" src="./image.png"><button id="change">Change</button><script src="./action.js"></script></body></html>');
-// Purpose-generated PDF, no third-party document content.
 const stream = 'BT /F1 24 Tf 50 700 Td (LocalView native PDF fixture) Tj ET';
 const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
 let pdf = '%PDF-1.4\n'; const offsets = [0];
@@ -127,12 +126,15 @@ try {
   await wait(async()=>await page.locator('.language-picker').inputValue()==='en','Native cross-window language');
   assert.equal(await fs.readFile(documentPath,'utf8'),saved);
   record('Ctrl+N creates an independent native window and language changes synchronize across windows');
-  // Plugin-internal PDF controls vary by Runtime; preserve its actual screenshot.
-  await page.bringToFront(); await open('sample.pdf');
+  await page.bringToFront();
+  const deliveredPdf = page.waitForResponse(response => response.url().includes('/sample.pdf') && response.status() === 200);
+  await open('sample.pdf');
   const pdfSource=await page.locator('iframe[title="sample.pdf"]').getAttribute('src');
   assert.ok(pdfSource&&/localview/.test(pdfSource));
-  const pdfResult=await page.evaluate(async url=>{const response=await fetch(url);return {status:response.status,type:response.headers.get('content-type'),prefix:(await response.text()).slice(0,8)};},pdfSource);
-  assert.equal(pdfResult.status,200);assert.match(pdfResult.type,/application\/pdf/);assert.match(pdfResult.prefix,/^%PDF-/);
+  const pdfResponse=await deliveredPdf;
+  assert.equal(pdfResponse.status(),200);
+  assert.match(pdfResponse.headers()['content-type'],/application\/pdf/);
+  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);
   await new Promise(resolve=>setTimeout(resolve,2500));
   await page.screenshot({path:path.join(output,'windows-pdf.png')});
   record('PDF preview receives a valid application/pdf response through the scoped native protocol');

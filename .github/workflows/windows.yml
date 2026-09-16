@@ -1,7 +1,7 @@
 name: Check and build Windows
 on:
   pull_request:
-    paths: ['src/**', 'src-tauri/**', 'scripts/**', 'package*.json', '.github/workflows/windows.yml']
+    paths: ['src/**', 'src-tauri/**', 'scripts/**', 'package*.json', '.gitattributes', '.github/workflows/windows.yml']
   push:
     branches: [main, staging]
     tags: ['v*']
@@ -14,7 +14,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with: {persist-credentials: false}
@@ -26,11 +26,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/windows-evidence" | Out-Null
           git rev-parse HEAD | Set-Content "$env:RUNNER_TEMP/windows-evidence/SOURCE_SHA.txt"
-          npm audit --audit-level=low
+          npm audit --audit-level=low 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-evidence/audit.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm test
+          npm test 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-evidence/frontend.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build
+          npm run build 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-evidence/build.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with: {toolchain: 1.91.1, components: rustfmt}
@@ -54,7 +54,10 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml windows_recycle_bin_real_fixture -- --ignored --nocapture 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-evidence/recycle.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build release installer
-        run: npm run tauri:build -- -- --locked
+        shell: pwsh
+        run: |
+          npm run tauri:build -- -- --locked 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-evidence/installer-build.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Hash installer
         shell: pwsh
         run: |
@@ -70,6 +73,12 @@ jobs:
           path: src-tauri/target/release/bundle/nsis/
           retention-days: 14
           if-no-files-found: error
+      - name: Verify actual installation and native WebView2 interface
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $installer = (Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)[0].FullName
+          ./scripts/verify-windows-install.ps1 -Installer $installer -Evidence "$env:RUNNER_TEMP/windows-evidence"
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: always()
         with:
