@@ -25,7 +25,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
           $installer = Get-ChildItem "$env:RUNNER_TEMP/installer/*-setup.exe"
           if ((Get-FileHash $installer.FullName).Hash.ToLower() -ne 'b499b8246a894a70afdda3eb721634ff7e7a30123116c8f216b8f641702bdd0f') { throw 'Installer hash mismatch' }
-      - name: Verify actual frame authority rather than the existence of an injected object
+      - name: Probe native isolation with positive controls and actual file bytes
         shell: python
         run: |
           from pathlib import Path
@@ -42,7 +42,8 @@ jobs:
             assert.equal(await fs.readFile(canaryPath,'utf8'),'Trusted main-window write.');
             const previewAuthority=await frame.locator('body').evaluate(async (_,args)=>{
               const api=window.__TAURI_INTERNALS__;
-              const result={globalType:typeof api,invokeType:typeof api?.invoke};
+              const result={globalType:typeof api,invokeType:typeof api?.invoke,transportType:typeof api?.ipc,postMessageType:typeof api?.postMessage};
+              try { result.parentTransport=typeof window.parent.__TAURI_INTERNALS__?.ipc; } catch { result.parentTransport='cross-origin-denied'; }
               if(typeof api?.invoke!=='function') return {...result,read:'unavailable',write:'unavailable'};
               const attempt=(command,body)=>Promise.race([
                 api.invoke(command,body).then(value=>({status:'resolved',value})).catch(error=>({status:'rejected',error:String(error)})),
@@ -56,10 +57,14 @@ jobs:
             await fs.writeFile(path.join(output,'preview-authority.json'),JSON.stringify(previewAuthority,null,2));
             await new Promise(resolve=>setTimeout(resolve,1000));
             assert.equal(await fs.readFile(canaryPath,'utf8'),'Trusted main-window write.','Untrusted preview must not write the native canary');
-            assert.ok(previewAuthority.read==='unavailable'||previewAuthority.read.status==='rejected','Frame read must be unavailable or explicitly rejected, not just time out');
-            assert.ok(previewAuthority.write==='unavailable'||previewAuthority.write.status==='rejected','Frame write must be unavailable or explicitly rejected, not just time out');'''
+            assert.equal(previewAuthority.parentTransport,'cross-origin-denied');
+            // Tauri core.js queues invoke() when ipc is absent. A timeout by itself is never accepted.
+            const denied=value=>value==='unavailable'||value.status==='rejected'||(value.status==='timeout'&&previewAuthority.transportType==='undefined'&&previewAuthority.postMessageType==='undefined');
+            assert.ok(denied(previewAuthority.read),'Frame read needs explicit rejection or independently verified absent transport');
+            assert.ok(denied(previewAuthority.write),'Frame write needs explicit rejection or independently verified absent transport');'''
           s=s.replace(needle,replacement)
-          s=s.replace('rejects remote fetch and has no Tauri bridge','rejects remote fetch and cannot read or write through privileged Tauri commands')
+          s=s.replace('rejects remote fetch and has no Tauri bridge','rejects remote fetch and cannot use privileged native commands')
+          s=s.replace("  assert.equal(report.errors.length,0,JSON.stringify(report.errors));", "  assert.equal(await fs.readFile(canaryPath,'utf8'),'Trusted main-window write.');\n  assert.equal(report.errors.length,0,JSON.stringify(report.errors));")
           p.write_text(s,encoding='utf-8')
       - name: Install and verify real application
         shell: pwsh
