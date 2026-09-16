@@ -103,9 +103,26 @@ try {
   await wait(()=>frame.locator('img').evaluate(image=>image.complete&&image.naturalWidth>0),'HTML relative image');
   await frame.getByRole('button',{name:'Change'}).click();
   await frame.getByRole('heading',{name:'Clicked native HTML'}).waitFor();
-  assert.equal(await frame.locator('body').evaluate(()=>typeof window.__TAURI_INTERNALS__),'undefined');
+  // WebView2 may inject an internal object in child frames. Verify the actual
+  // command boundary with a positive main-window control, not the object's shape.
+  const control = await page.evaluate(file => window.__TAURI_INTERNALS__.invoke('read_text_file', { path: file }), documentPath);
+  assert.equal(control.content, saved);
+  const isolation = await frame.locator('body').evaluate(async (_, file) => {
+    const bridge = window.__TAURI_INTERNALS__;
+    if (typeof bridge?.invoke !== 'function') return { denied: true, reason: 'No callable bridge' };
+    return Promise.race([
+      bridge.invoke('read_text_file', { path: file }).then(
+        () => ({ denied: false, reason: 'Preview executed a native file-read command' }),
+        error => ({ denied: true, reason: String(error) }),
+      ),
+      new Promise(resolve => setTimeout(() => resolve({ denied: false, reason: 'IPC result timed out; denial not established' }), 8000)),
+    ]);
+  }, documentPath);
+  report.htmlIPC = isolation;
+  assert.equal(isolation.denied, true, JSON.stringify(isolation));
+  assert.match(isolation.reason, /No callable bridge|not allowed|denied|origin|Failed to fetch|NetworkError/i);
   assert.equal(await frame.locator('body').evaluate(async()=>{try{await fetch('https://example.com/');return false;}catch{return true;}}),true);
-  record('Sandboxed native HTML resolves relative CSS, images and scripts, rejects remote fetch and has no Tauri bridge');
+  record('Sandboxed native HTML resolves relative assets and interactions while native file-read commands and external fetch are denied');
   await open('board.md'); await page.locator('.kanban-card-title').filter({hasText:'First card'}).waitFor();
   const grip=page.locator('.kanban-card .kanban-grip').first();
   const target=page.locator('.kanban-column').nth(1);
