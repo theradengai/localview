@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = path.join(root, 'THIRD_PARTY_NOTICES.md');
 const cachePath = path.join(root, 'docs/licenses/upstream-license-cache.json');
-const targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];
+const targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'];
 const args = new Set(process.argv.slice(2));
 for (const arg of args) {
   if (!['--check', '--refresh-upstream'].includes(arg)) throw new Error(`Unknown argument: ${arg}`);
@@ -148,6 +148,9 @@ for (const pkg of [...cargoPackages.values()].sort((a, b) => compare(`${a.name}@
       docs.push(upstream(rawUrl('madsmtm/objc2', revision, 'LICENSE.md')));
       docs.push({ ...mitTemplate(), label: 'MIT license terms (canonical no-copyright-header text; not an attribution to UNIC)' });
       selection = 'MIT is selected where the package offers alternatives. The published crate has no license file or explicit source copyright header; the upstream authors field is preserved separately. The upstream LICENSE.md below also records its Apple SDK provenance caveat; this inventory does not resolve that caveat.';
+    } else if (['webview2-com', 'webview2-com-macros', 'webview2-com-sys'].includes(pkg.name) && pkg.license === 'MIT' && pkg.repository?.replace(/\.git$/, '').replace(/\/$/, '') === 'https://github.com/wravery/webview2-rs') {
+      docs.push(upstream(rawUrl('wravery/webview2-rs', revision, 'LICENSE')));
+      selection = 'The published wrapper crate omits its repository-level MIT license file. The exact source revision license is reproduced here. Microsoft WebView2 Runtime remains a separately licensed Microsoft component, not covered by this wrapper license.';
     } else if (pkg.name === 'alloc-stdlib' && pkg.license === 'BSD-3-Clause') {
       docs.push(upstream(rawUrl('dropbox/rust-alloc-no-stdlib', revision, 'LICENSE')));
     } else if (pkg.name.startsWith('unic-') && pkg.license === 'MIT/Apache-2.0') {
