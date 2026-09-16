@@ -1,0 +1,52 @@
+from pathlib import Path
+
+def replace(name, pairs):
+    p=Path(name); text=p.read_text()
+    for before,after in pairs:
+        assert before in text,(name,before)
+        text=text.replace(before,after,1)
+    p.write_text(text)
+
+replace('README.md',[
+('**Open a file, see the folder context.**','**Open local files directly. Preview and edit in place.**'),
+('A lightweight, macOS-first workspace for local documents. Browse real folders, edit Markdown in place, preview HTML and spreadsheets, and compare folders in independent windows.','A lightweight document workspace for **macOS and Windows**. Open a file or folder directly, browse its real directory tree, preview different formats, and edit Markdown, HTML or text in place.'),
+('No import step. No vault. No mandatory indexing. Your files stay ordinary files.','**No indexing. No import step.** Your files stay ordinary files, in their original folders.'),
+('[Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6)','[Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6)'),
+('Real filesystem operations are available in the macOS app.','Real filesystem operations are available in the desktop apps.'),
+('Open a supported file from Finder and see its folder context. Expand directories on demand.','Choose **Open file** or **Open folder** to see its folder context; on Windows, `Ctrl+O` opens a file. Finder integration remains available on macOS. Expand directories on demand.'),
+('Sandboxed interactive HTML, images, PDFs, CSV, Excel, ODS, and system-provided Office/iWork previews.','Sandboxed interactive HTML, images, PDFs, CSV, Excel and ODS. Office/iWork uses Quick Look on macOS; Windows offers an **Open in default app** action instead of an embedded Office preview.'),
+('select files/folders with `⌘` or `Shift`, drag the selected group between folders, and move the group to macOS Trash with one confirmation.','select files/folders with `⌘`/`Ctrl` or `Shift`, drag the selected group between folders, and move the group to macOS Trash or the Windows Recycle Bin with one confirmation.'),
+('600 ms idle auto-save, `⌘S` to save immediately','600 ms idle auto-save, `⌘S` / `Ctrl+S` to save immediately'),
+('In Markdown Edit or Split, `⌘V` saves clipboard images','In Markdown Edit or Split, `⌘V` / `Ctrl+V` saves clipboard images'),
+('`⌘N` opens an independent workspace window. `⌘P` opens native print settings for rendered Markdown.','`⌘N` / `Ctrl+N` opens an independent workspace window. `⌘P` / `Ctrl+P` opens print settings for rendered Markdown.'),
+('Beta 6 adds **System / 简体中文 / English** in the title bar.','Both desktop platforms offer **System / 简体中文 / English** in the title bar (introduced in macOS Beta 6).'),
+('**0.2.0-beta.6 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The interface supports Simplified Chinese and English. Windows and Linux builds are not supported in this Beta.','**Windows x64: 0.2.0-beta.7 · macOS: 0.2.0-beta.6.** These are prereleases, not stable releases. Both offer Simplified Chinese and English. Windows targets Windows 10/11 x64 with WebView2 and local drive-letter workspaces. Native ARM64 Windows, UNC/network workspaces and Linux packages are not included. [Windows guide and verification](docs/WINDOWS.md).\n\n**[Windows x64 installer](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)** · [Windows checksums](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/SHA256SUMS.txt)\n\nInstall for the current user. If WebView2 is missing, the installer downloads its bootstrapper and needs a network connection. The Beta is **unsigned**: Windows may show a publisher/SmartScreen warning. Verify the source and checksum; do not disable system-wide security protection.\n\nThe existing macOS release remains unchanged and requires macOS Monterey 12 or later:'),
+('macOS Quick Look preview; availability and page controls depend on the installed provider','macOS: Quick Look, depending on the provider. Windows: open in the default application; no embedded Office/iWork renderer'),
+('Use Node.js 24 LTS, Rust 1.91.1 or later, and Xcode Command Line Tools on macOS.','Use Node.js 24 LTS and Rust 1.91.1 or later. macOS requires Xcode Command Line Tools; Windows requires the MSVC Rust toolchain, C++ Build Tools/Windows SDK and Microsoft WebView2. See [Windows development](docs/WINDOWS.md#development).')])
+
+replace('README.zh-CN.md',[
+('**打开文件，就看到文件夹上下文。**','**无需索引，直接打开。多格式预览与编辑。**'),
+('一个轻量、macOS 优先的本地文档工作台：浏览真实目录，直接编辑 Markdown，预览 HTML 和表格，并排打开多个文件夹。','一个面向 **macOS 和 Windows** 的轻量本地文档工作台：直接打开文件或文件夹，浏览真实目录，预览不同格式，在原处编辑 Markdown、HTML 和文本。'),
+('无需导入、无需 Vault、无需强制索引。文件仍然是你磁盘上的普通文件。','**不需要索引，也不需要导入。** 文件留在原文件夹，仍然是磁盘上的普通文件。'),
+('[下载 Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6)','[Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6)'),
+('真实文件读写由 macOS 应用提供。','真实文件读写由桌面应用提供。'),
+('在 Finder 里打开支持的文件，自动展示所在文件夹上下文，按需展开目录。','点击“打开文件”或“打开文件夹”，直接展示所在目录上下文，按需展开；Windows 支持 `Ctrl+O` 打开文件，macOS 保留 Finder 集成。'),
+('HTML 本地交互预览、图片、PDF、CSV、Excel、ODS，以及 macOS Quick Look 提供的 Office/iWork 预览。','HTML 本地交互预览、图片、PDF、CSV、Excel、ODS；Office/iWork 在 macOS 使用 Quick Look，Windows 提供“用默认应用打开”，不冒充内嵌 Office 预览。'),
+('用 `⌘` 多选或 `Shift` 连选文件与目录，整组拖动到其他文件夹，一次确认后批量移到废纸篓。','用 `⌘` / `Ctrl` 多选或 `Shift` 连选文件与目录，整组拖动到其他文件夹，一次确认后批量移到 macOS 废纸篓或 Windows 回收站。'),
+('`⌘S` 立即保存','`⌘S` / `Ctrl+S` 立即保存'),
+('按 `⌘V`，图片保存','按 `⌘V` / `Ctrl+V`，图片保存'),
+('`⌘N` 打开独立工作区窗口，`⌘P` 打印渲染后的 Markdown','`⌘N` / `Ctrl+N` 打开独立工作区窗口，`⌘P` / `Ctrl+P` 打印渲染后的 Markdown'),
+('Beta 6 在标题栏新增 **跟随系统 / 简体中文 / English**。','两个桌面平台都可在标题栏选择 **跟随系统 / 简体中文 / English**（macOS 自 Beta 6 起提供）。'),
+('**0.2.0-beta.6 · macOS Monterey 12 及以上。** 本次为预发布测试版，不是稳定版。界面支持简体中文和英文；本次 Beta 不提供 Windows/Linux 支持。','**Windows x64：0.2.0-beta.7；macOS：0.2.0-beta.6。** 都是预发布测试版，不是稳定版，均支持中英文界面。Windows 首版面向 Windows 10/11 x64、WebView2 与本地盘符目录；不包含 Windows 原生 ARM64、UNC/网络目录或 Linux 安装包。详见 [Windows 使用与验证边界](docs/WINDOWS.md)。\n\n**[下载 Windows x64 安装包](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)** · [Windows 校验文件](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/SHA256SUMS.txt)\n\n运行 EXE 后安装到当前用户。若缺少 WebView2，安装程序会联网下载其引导程序。本 Beta **尚未进行 Windows 代码签名**，可能出现未知发布者/SmartScreen 提示；请核对来源和校验值，不需要关闭系统安全保护。\n\n已有 macOS Beta 6 安装包保持不变，要求 macOS Monterey 12 及以上：'),
+('系统 Quick Look 预览，翻页能力取决于已安装的系统预览组件','macOS：系统 Quick Look，翻页取决于预览组件；Windows：用默认应用打开，不支持内嵌 Office/iWork 预览'),
+('需要 Node.js 24 LTS、Rust 1.91.1 或更高版本，以及 macOS 的 Xcode Command Line Tools。','需要 Node.js 24 LTS、Rust 1.91.1 或更高版本。macOS 需要 Xcode Command Line Tools；Windows 需要 MSVC Rust 工具链、C++ Build Tools/Windows SDK 与 Microsoft WebView2，详见 [Windows 开发说明](docs/WINDOWS.md#development)。')])
+
+replace('CHANGELOG.md',[('# Changelog\n','# Changelog\n\n## 0.2.0-beta.7 — 2026-09-16 (Windows prerelease)\n\n- Add a Windows x64 desktop build and current-user NSIS installer; preserve existing macOS Beta 6 packages.\n- Open local files directly without indexing/importing; support Windows Ctrl shortcuts, native window controls, File Explorer, Unicode drive-letter paths and DOS short aliases.\n- Retain Markdown/HTML/text editing, auto-save, tasks and Markdown Kanban, plus images/PDF and read-only CSV/XLS/XLSX/ODS grids. Windows Office/iWork opens in the default application.\n- Scope resources to Windows WebView2 origins; keep interactive HTML isolated from native commands and external network access.\n- Add no-follow handle checks, exclusive creation, version-checked saves, bounded attachments, no-overwrite moves/renames and recycle-only deletion. Reject UNC/network roots, reparse-point traversal and cross-volume moves.\n- Include Windows dependency notices, native filesystem/Recycle Bin tests and installed-application WebView2 acceptance. Release attachments record actual results and build provenance.\n- Unsigned Windows Beta. Hosted-runner acceptance does not certify all Windows 10/11 physical devices, IME or OS dialogs. [Windows guide](docs/WINDOWS.md).\n')])
+
+replace('docs/FEATURES.md',[('A lightweight, macOS-first local file workspace.','A lightweight local file workspace for macOS and Windows.\n\n**Platform scope:** Windows x64 starts with Beta 7; existing macOS installers remain Beta 6. Shared editing, images/PDF, read-only spreadsheet grids and Kanban do not require indexing. macOS-only integration below (Finder, Quick Look, app-menu conventions and associations) is not a Windows promise. On Windows use Open file / Ctrl+O, File Explorer and Recycle Bin; Office/iWork opens externally. UNC/network workspaces, reparse-point traversal and cross-volume moves are outside the first Windows Beta. [Windows guide](WINDOWS.md).')])
+p=Path('docs/INSTALL.md');first,rest=p.read_text().split('\n',1)
+p.write_text(first+'\n\n**Windows x64 (Beta 7):** see [Windows installation and verification](WINDOWS.md). The Windows installer is unsigned and uses WebView2. The macOS Beta 6 DMGs below remain unchanged.\n\n**Windows 用户：** 请看 [Windows 安装与校验](WINDOWS.md)；下文继续保留 macOS Beta 6 安装说明。\n'+rest)
+replace('CONTRIBUTING.md',[
+('On macOS, install Node.js 24, Rust (CI uses 1.91.1), and Xcode Command Line Tools.','Use Node.js 24 and Rust (CI uses 1.91.1). On macOS, install Xcode Command Line Tools. On Windows, use MSVC Rust, C++ Build Tools/Windows SDK and WebView2; see [Windows development](docs/WINDOWS.md#development).'),
+('## Build installers\n','## Build installers\n\nOn Windows, `npm run tauri:build -- -- --locked` uses `src-tauri/tauri.windows.conf.json` and produces a current-user NSIS installer in `src-tauri/target/release/bundle/nsis/`. **Check and build Windows** validates native operations, Recycle Bin and the actual installed WebView2 application. Artifact upload alone is not release approval: the whole run must succeed. Native acceptance uses disposable fixtures only; production code does not enable remote debugging.\n\nOn macOS:\n'),
+('All current Beta builds use ad-hoc signing, not Developer ID signing or Apple notarization.','macOS Beta builds use ad-hoc signing, not Developer ID signing or Apple notarization. Windows Beta installers are unsigned.')])

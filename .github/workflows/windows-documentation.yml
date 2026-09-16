@@ -1,0 +1,35 @@
+name: Prepare Windows release documentation
+on:
+  push:
+    branches: [ci/windows-docs-20260916]
+permissions:
+  contents: write
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0}
+      - name: Apply documentation on the exact candidate only
+        run: |
+          set -euo pipefail
+          cp .github/windows-readme-update.py /tmp/windows-readme-update.py
+          cp docs/WINDOWS.md /tmp/WINDOWS.md
+          git checkout --detach 89506ec7d8d8b734495ff1fb0c52eb8a1ca4c698
+          cp /tmp/WINDOWS.md docs/WINDOWS.md
+          python3 /tmp/windows-readme-update.py
+          git diff --check
+          python3 - <<'PY'
+          import pathlib,re
+          for name in ['README.md','README.zh-CN.md','CONTRIBUTING.md','CHANGELOG.md','docs/WINDOWS.md','docs/FEATURES.md','docs/INSTALL.md']:
+              p=pathlib.Path(name)
+              for link in re.findall(r'\]\(([^)]+)\)',p.read_text()):
+                  if '://' not in link and not link.startswith('#'):
+                      assert (p.parent/link.split('#')[0]).exists(),(name,link)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md README.zh-CN.md CONTRIBUTING.md CHANGELOG.md docs/WINDOWS.md docs/FEATURES.md docs/INSTALL.md
+          git commit -m 'docs: introduce Windows beta with no-index positioning and explicit platform limits'
+          git push origin HEAD:refs/heads/docs/windows-release-20260916
