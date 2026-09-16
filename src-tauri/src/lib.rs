@@ -43,6 +43,10 @@ mod image_paste;
 mod quick_look;
 mod spreadsheet;
 mod ui_language;
+#[cfg(windows)]
+mod windows_fs;
+#[cfg(windows)]
+mod windows_recycle;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +173,10 @@ struct WorkspaceContext {
 
 struct WorkspaceRoot {
     path: PathBuf,
+    #[cfg(windows)]
+    _windows_directory: fs::File,
+    #[cfg(windows)]
+    windows_identity: windows_fs::Identity,
     #[cfg(unix)]
     directory: OwnedFd,
     #[cfg(unix)]
@@ -535,40 +543,54 @@ fn active_workspace_capability_with_generation(
 }
 
 fn open_workspace_root(path: &Path) -> Result<WorkspaceRoot, String> {
-    let canonical = fs::canonicalize(path).map_err(|error| error.to_string())?;
-
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        let directory = unix_fs::open(
-            &canonical,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| format!("Unable to open the selected workspace: {error}"))?;
-        let handle_stat = unix_fs::fstat(&directory)
-            .map_err(|error| format!("Unable to inspect the selected workspace: {error}"))?;
-        if !FileType::from_raw_mode(handle_stat.st_mode).is_dir() {
-            return Err("The selected workspace is not a directory".to_string());
-        }
-        let path_stat =
-            unix_fs::stat(&canonical).map_err(|_| "WORKSPACE_ROOT_CHANGED".to_string())?;
-        if handle_stat.st_dev != path_stat.st_dev || handle_stat.st_ino != path_stat.st_ino {
-            return Err("WORKSPACE_ROOT_CHANGED".to_string());
-        }
+        let directory = windows_fs::root_handle(path).map_err(|e| e.message)?;
+        let identity = windows_fs::identity(&directory).map_err(|e| e.message)?;
+        let canonical = fs::canonicalize(path).map_err(|e| e.to_string())?;
         return Ok(WorkspaceRoot {
             path: canonical,
-            directory,
-            device: handle_stat.st_dev as u64,
-            inode: handle_stat.st_ino as u64,
+            _windows_directory: directory,
+            windows_identity: identity,
         });
     }
-
-    #[cfg(not(unix))]
+    #[cfg(not(windows))]
     {
-        if !canonical.is_dir() {
-            return Err("The selected workspace is not a directory".to_string());
+        let canonical = fs::canonicalize(path).map_err(|error| error.to_string())?;
+
+        #[cfg(unix)]
+        {
+            let directory = unix_fs::open(
+                &canonical,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| format!("Unable to open the selected workspace: {error}"))?;
+            let handle_stat = unix_fs::fstat(&directory)
+                .map_err(|error| format!("Unable to inspect the selected workspace: {error}"))?;
+            if !FileType::from_raw_mode(handle_stat.st_mode).is_dir() {
+                return Err("The selected workspace is not a directory".to_string());
+            }
+            let path_stat =
+                unix_fs::stat(&canonical).map_err(|_| "WORKSPACE_ROOT_CHANGED".to_string())?;
+            if handle_stat.st_dev != path_stat.st_dev || handle_stat.st_ino != path_stat.st_ino {
+                return Err("WORKSPACE_ROOT_CHANGED".to_string());
+            }
+            return Ok(WorkspaceRoot {
+                path: canonical,
+                directory,
+                device: handle_stat.st_dev as u64,
+                inode: handle_stat.st_ino as u64,
+            });
         }
-        Ok(WorkspaceRoot { path: canonical })
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            if !canonical.is_dir() {
+                return Err("The selected workspace is not a directory".to_string());
+            }
+            Ok(WorkspaceRoot { path: canonical })
+        }
     }
 }
 
@@ -660,6 +682,13 @@ fn map_watch_event(
     paths: &[PathBuf],
     needs_rescan: bool,
 ) -> Option<WorkspaceFsEvent> {
+    #[cfg(windows)]
+    let normalized_paths = paths
+        .iter()
+        .filter_map(|path| windows_fs::event_path(root, path))
+        .collect::<Vec<_>>();
+    #[cfg(windows)]
+    let paths = &normalized_paths;
     let mut seen = HashSet::new();
     let mapped = paths
         .iter()
@@ -741,12 +770,20 @@ fn create_workspace_watcher(
 }
 
 fn scoped_existing_path(state: &WorkspaceState, path: impl AsRef<Path>) -> Result<PathBuf, String> {
-    let root = active_workspace_root(state)?;
-    let canonical = fs::canonicalize(path).map_err(|error| error.to_string())?;
-    if canonical != root && !canonical.starts_with(&root) {
-        return Err("Path is outside the active workspace".to_string());
+    #[cfg(windows)]
+    {
+        return windows_fs::scoped_path(state, path.as_ref())
+            .map_err(|e| format!("{}: {}", e.code, e.message));
     }
-    Ok(canonical)
+    #[cfg(not(windows))]
+    {
+        let root = active_workspace_root(state)?;
+        let canonical = fs::canonicalize(path).map_err(|error| error.to_string())?;
+        if canonical != root && !canonical.starts_with(&root) {
+            return Err("Path is outside the active workspace".to_string());
+        }
+        Ok(canonical)
+    }
 }
 
 #[tauri::command]
@@ -1001,7 +1038,18 @@ where
 {
     let name = normalize_markdown_file_name(name)?;
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        return windows_fs::create_markdown(
+            state,
+            parent_path,
+            &name,
+            after_parent_canonicalized,
+            before_final_create,
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (
             state,
@@ -1090,7 +1138,18 @@ where
 {
     let name = normalize_directory_name(name)?;
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        return windows_fs::create_folder(
+            state,
+            parent_path,
+            &name,
+            after_parent_canonicalized,
+            mutation_hook,
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (
             state,
@@ -1269,6 +1328,15 @@ fn read_text_file_impl(
     state: &WorkspaceState,
     path: &Path,
 ) -> Result<TextFileSnapshot, CommandError> {
+    #[cfg(windows)]
+    {
+        let bytes = windows_fs::read_bytes(state, path)?;
+        let version = version_for_bytes(&bytes);
+        let content = String::from_utf8(bytes)
+            .map_err(|_| CommandError::new("INVALID_UTF8", "The file is not valid UTF-8"))?;
+        return Ok(TextFileSnapshot { content, version });
+    }
+
     #[cfg(unix)]
     {
         let scoped = open_scoped_file(state, path)?;
@@ -1281,7 +1349,7 @@ fn read_text_file_impl(
         return Ok(TextFileSnapshot { content, version });
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let path = scoped_existing_path(state, path).map_err(CommandError::legacy)?;
         if !path.is_file() {
@@ -1308,7 +1376,7 @@ fn read_text_file(
     read_text_file_impl(&state, Path::new(&path))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn create_temp_file(path: &Path, content: &[u8]) -> Result<PathBuf, String> {
     let parent = path
         .parent()
@@ -1468,12 +1536,17 @@ fn write_text_file_impl(
     content: &str,
     expected_version: &str,
 ) -> Result<String, CommandError> {
+    #[cfg(windows)]
+    {
+        return windows_fs::write_text(state, path, content, expected_version);
+    }
+
     #[cfg(unix)]
     {
         return write_text_file_with_hook(state, path, content, expected_version, || {});
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let path = scoped_existing_path(state, path).map_err(CommandError::legacy)?;
         if !path.is_file() {
@@ -1681,7 +1754,13 @@ fn move_candidate_to_trash_impl(
     state: &WorkspaceState,
     candidate: &TrashCandidate,
 ) -> Result<TrashedItem, String> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        return windows_fs::trash(state, candidate)
+            .map_err(|e| format!("{}: {}", e.code, e.message));
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (state, candidate);
         return Err("TRASH_UNSUPPORTED".to_string());
@@ -1724,7 +1803,13 @@ fn prepare_trash(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<TrashCandidate, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::prepare_trash(&state, Path::new(&path));
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (path, window, registry);
         Err(CommandError::new("IO_ERROR", "TRASH_UNSUPPORTED"))
@@ -1807,7 +1892,7 @@ const RENAME_RELOCATION_ERRORS: RelocationErrorCodes = RelocationErrorCodes {
     strict_rollback_identity: true,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn move_directory_error(code: &str, message: impl Into<String>) -> CommandError {
     CommandError::new(code, message)
 }
@@ -2008,7 +2093,7 @@ fn move_preflight(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn is_rename_trim_whitespace(character: char) -> bool {
     matches!(
         character as u32,
@@ -2026,7 +2111,7 @@ fn is_rename_trim_whitespace(character: char) -> bool {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn rename_locked_suffix(name: &str) -> &str {
     match name.rfind('.') {
         Some(index) if index > 0 && index < name.len() - 1 => &name[index..],
@@ -2034,12 +2119,12 @@ fn rename_locked_suffix(name: &str) -> &str {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn rename_name_has_extension(name: &str) -> bool {
     matches!(name.rfind('.'), Some(index) if index > 0 && index < name.len() - 1)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn validate_workspace_rename_name(
     original_name: &str,
     requested_name: &str,
@@ -3013,7 +3098,17 @@ fn prepare_workspace_move(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<MoveCandidate, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::prepare_move(
+            &state,
+            Path::new(&source_path),
+            Path::new(&destination_directory),
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (source_path, destination_directory, window, registry);
         Err(CommandError::new(
@@ -3038,7 +3133,13 @@ fn move_workspace_entry(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<MovedWorkspaceEntry, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::move_entry(&state, &candidate);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (candidate, window, registry);
         Err(CommandError::new(
@@ -3059,7 +3160,13 @@ fn reconcile_workspace_move(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<MoveReconciliation, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::reconcile_move(&state, &candidate);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (candidate, window, registry);
         Err(CommandError::new(
@@ -3081,7 +3188,13 @@ fn prepare_workspace_rename(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<RenameCandidate, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::prepare_rename(&state, Path::new(&source_path), &new_name);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (source_path, new_name, window, registry);
         Err(CommandError::new(
@@ -3102,7 +3215,13 @@ fn rename_workspace_entry(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<RenamedWorkspaceEntry, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::rename_entry(&state, &candidate);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (candidate, window, registry);
         Err(CommandError::new(
@@ -3123,7 +3242,13 @@ fn reconcile_workspace_rename(
     window: WebviewWindow,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<RenameReconciliation, CommandError> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let state = workspace_for_window(&registry, &window).map_err(CommandError::legacy)?;
+        return windows_fs::reconcile_rename(&state, &candidate);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (candidate, window, registry);
         Err(CommandError::new(
@@ -3702,8 +3827,8 @@ fn argument_to_path(value: String) -> Option<PathBuf> {
         return None;
     }
 
-    let path = if let Ok(url) = url::Url::parse(&value) {
-        url.to_file_path().ok()?
+    let path = if value.starts_with("file:") {
+        url::Url::parse(&value).ok()?.to_file_path().ok()?
     } else {
         PathBuf::from(value)
     };
@@ -3999,6 +4124,15 @@ fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
+fn html_preview_csp() -> String {
+    let origin = if cfg!(windows) {
+        "http://localview.localhost"
+    } else {
+        "localview:"
+    };
+    format!("default-src 'none'; script-src 'unsafe-inline' {origin} blob:; style-src 'unsafe-inline' {origin}; img-src {origin} data: blob:; font-src {origin} data:; media-src {origin} blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri {origin}; navigate-to 'none'")
+}
+
 fn protocol_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Vec<u8>> {
     let mut response = Response::builder()
         .status(status)
@@ -4007,10 +4141,7 @@ fn protocol_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> R
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .header("X-Content-Type-Options", "nosniff");
     if content_type.starts_with("text/html") {
-        response = response.header(
-            header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'; script-src 'unsafe-inline' localview: blob:; style-src 'unsafe-inline' localview:; img-src localview: data: blob:; font-src localview: data:; media-src localview: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri localview:; navigate-to 'none'",
-        );
+        response = response.header(header::CONTENT_SECURITY_POLICY, &html_preview_csp());
     }
     response.body(body).expect("valid local asset response")
 }
@@ -4069,10 +4200,18 @@ fn local_asset_response(
             .decode_utf8()
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         let relative = Path::new(decoded.as_ref());
-        if relative.is_absolute() {
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
             return Err(StatusCode::FORBIDDEN);
         }
         let requested = root.join(relative);
+        #[cfg(windows)]
+        let canonical =
+            windows_fs::scoped_path(state, &requested).map_err(|_| StatusCode::FORBIDDEN)?;
+        #[cfg(not(windows))]
         let canonical = fs::canonicalize(requested).map_err(|_| StatusCode::NOT_FOUND)?;
         if canonical == root || !canonical.starts_with(&root) || !canonical.is_file() {
             return Err(StatusCode::FORBIDDEN);
@@ -4084,6 +4223,9 @@ fn local_asset_response(
                 return Err(StatusCode::FORBIDDEN);
             }
         }
+        #[cfg(windows)]
+        let data = windows_fs::read_bytes(state, &canonical).map_err(|_| StatusCode::FORBIDDEN)?;
+        #[cfg(not(windows))]
         let data = fs::read(&canonical).map_err(|_| StatusCode::NOT_FOUND)?;
         Ok((canonical, data))
     })();

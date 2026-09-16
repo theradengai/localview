@@ -1,3 +1,4 @@
+import { containsPath } from './paths';
 import type { DesktopEntry } from './desktop';
 import { normalizePath, parentPath } from './desktop';
 
@@ -25,14 +26,7 @@ function findTreePath<T extends DirectoryTreeNode>(nodes: T[], path: string): T 
   return null;
 }
 
-export function containsPath(parent: string, target: string): boolean {
-  const normalizedParent = normalizePath(parent);
-  const normalizedTarget = normalizePath(target);
-  if (normalizedTarget === normalizedParent) return true;
-  if (normalizedParent === '/') return normalizedTarget.startsWith('/');
-  const separator = normalizedParent.endsWith('/') ? '' : '/';
-  return normalizedTarget.startsWith(`${normalizedParent}${separator}`);
-}
+export { containsPath } from './paths';
 
 export function mergeDirectoryEntries<T extends DirectoryTreeNode>(existing: T[] | undefined, incoming: DesktopEntry[]): T[] {
   const previous = new Map((existing ?? []).map((node) => [normalizePath(node.path), node]));

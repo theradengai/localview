@@ -1,6 +1,6 @@
 [package]
 name = "localview"
-version = "0.2.0-beta.6"
+version = "0.2.0-beta.7"
 license = "MIT"
 repository = "https://github.com/theradengai/localview"
 description = "A lightweight local-first document workspace"
@@ -40,3 +40,6 @@ objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-quick-look-ui = "0.3.2"
 objc2-quick-look-thumbnailing = "0.3.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }

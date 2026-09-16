@@ -1,3 +1,4 @@
+import { isWindows } from '../lib/platform';
 import { useI18n } from '../lib/useI18n';
 import { t } from '../lib/i18n';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
@@ -172,7 +173,7 @@ export default function SpreadsheetRenderer({
       <strong>{t("无法读取表格")}</strong>
       <span>{error}</span>
       <div className="renderer-actions">
-        <button onClick={() => void runAction(onQuickLook)}>{t("系统快速预览")}</button>
+        {!isWindows() && <button onClick={() => void runAction(onQuickLook)}>{t("系统快速预览")}</button>}
         <button onClick={() => void runAction(onOpenDefault)}>{t("用默认应用打开")}</button>
       </div>
     </div>;
@@ -205,7 +206,7 @@ export default function SpreadsheetRenderer({
         >{t("后 50 列")}</button>
       </div>
       <div className="renderer-actions">
-        <button onClick={() => void runAction(onQuickLook)}>{t("系统快速预览")}</button>
+        {!isWindows() && <button onClick={() => void runAction(onQuickLook)}>{t("系统快速预览")}</button>}
         <button onClick={() => void runAction(onOpenDefault)}>{t("默认应用")}</button>
       </div>
     </div>

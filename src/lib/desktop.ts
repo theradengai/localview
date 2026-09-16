@@ -1,3 +1,6 @@
+import { normalizePath, parentPath, joinPath, containsPath } from './paths';
+export { normalizePath, parentPath, basename, joinPath } from './paths';
+import { isWindows } from './platform';
 import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -251,6 +254,12 @@ export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
 
+export async function chooseFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const result = await open({ directory: false, multiple: false, title: t("打开文件") });
+  return typeof result === 'string' ? result : null;
+}
+
 export async function chooseFolder(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const result = await open({ directory: true, multiple: false, title: t("打开文件夹") });
@@ -481,11 +490,11 @@ export function assetUrl(path: string, workspaceRoot: string, assetScope: string
 
   const root = normalizePath(workspaceRoot);
   const target = normalizePath(path);
-  if (!root || !assetScope || (target !== root && !containsNormalizedPath(root, target))) {
+  if (!root || !assetScope || (target !== root && !containsPath(root, target))) {
     throw new Error('Resource path is outside the active workspace');
   }
 
-  const relative = target === root ? '' : target.slice(root.length + (root === '/' ? 0 : 1));
+  const relative = target === root ? '' : target.slice(root.length + (root.endsWith('/') ? 0 : 1));
   const encoded = relative.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   return protocolUrl(`asset/${encodeURIComponent(assetScope)}/${encoded}`);
 }
@@ -493,56 +502,18 @@ export function assetUrl(path: string, workspaceRoot: string, assetScope: string
 export function previewAssetUrl(path: string, workspaceRoot: string, token: string): string {
   const root = normalizePath(workspaceRoot);
   const target = normalizePath(path);
-  if (!root || (target !== root && !containsNormalizedPath(root, target))) {
+  if (!root || (target !== root && !containsPath(root, target))) {
     throw new Error('Resource path is outside the active workspace');
   }
-  const relative = target === root ? '' : target.slice(root.length + (root === '/' ? 0 : 1));
+  const relative = target === root ? '' : target.slice(root.length + (root.endsWith('/') ? 0 : 1));
   const encoded = relative.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   return protocolUrl(`preview/${encodeURIComponent(token)}/${encoded}`);
 }
 
 function protocolUrl(path: string): string {
-  return navigator.userAgent.includes('Windows')
+  return isWindows()
     ? `http://localview.localhost/${path}`
     : `localview://localhost/${path}`;
-}
-
-function containsNormalizedPath(root: string, target: string): boolean {
-  if (root === '/') return target.startsWith('/');
-  return target.startsWith(`${root.endsWith('/') ? root : `${root}/`}`);
-}
-
-export function normalizePath(path: string): string {
-  const normalized = path.replace(/\\/g, '/');
-  if (normalized === '/' || /^[a-z]:\/+$/i.test(normalized)) {
-    return normalized.slice(0, 2) === '/' ? '/' : `${normalized.slice(0, 2)}/`;
-  }
-  return normalized.replace(/\/+$/, '');
-}
-
-export function parentPath(path: string): string {
-  const normalized = normalizePath(path);
-  const index = normalized.lastIndexOf('/');
-  if (index <= 0) return '/';
-  return normalized.slice(0, index);
-}
-
-export function basename(path: string): string {
-  const normalized = normalizePath(path);
-  return normalized.slice(normalized.lastIndexOf('/') + 1) || normalized;
-}
-
-export function joinPath(base: string, child: string): string {
-  if (!child) return normalizePath(base);
-  if (child.startsWith('/')) return normalizePath(child);
-  const parts = `${normalizePath(base)}/${child}`.split('/');
-  const stack: string[] = [];
-  for (const part of parts) {
-    if (!part || part === '.') continue;
-    if (part === '..') stack.pop();
-    else stack.push(part);
-  }
-  return `/${stack.join('/')}`;
 }
 
 export function resolveResourcePath(filePath: string, resource: string): string {
