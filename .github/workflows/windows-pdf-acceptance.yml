@@ -15,56 +15,65 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with: {fetch-depth: 0}
-      - name: Separate the PDF stream from the viewer navigation wrapper
+      - name: Check the PDF stream without executing code inside the native viewer
         run: |
           set -euo pipefail
           git checkout --detach d1769c28b87dc5ff942cf3744e63151d368a7d21
           python3 - <<'PY'
           from pathlib import Path
           p=Path('scripts/verify-windows-native.mjs'); s=p.read_text()
-          before="  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);\n  await new Promise(resolve=>setTimeout(resolve,2500));"
-          after='''  // A PDF navigation is handed to WebView2's built-in viewer, so CDP may
-            // expose its generated HTML wrapper as the navigation response body.
-            // Read the exact same resource inside the same-origin document frame;
-            // never loosen application CSP/CORS or intercept/replace response bytes.
-            const pdfHandle = await page.locator('iframe[title="sample.pdf"]').elementHandle();
-            const pdfDocument = await pdfHandle.contentFrame();
-            assert.ok(pdfDocument, 'PDF document frame missing');
-            const streamResult = await pdfDocument.evaluate(async url => {
-              const response = await fetch(url);
-              const content = await response.text();
-              return { status: response.status, type: response.headers.get('content-type'), content };
-            }, pdfSource);
-            assert.equal(streamResult.status, 200);
-            assert.match(streamResult.type, /application\\/pdf/);
-            assert.equal(streamResult.content, pdf, 'Scoped PDF stream differs from the original fixture');
-            report.pdfStream = { status: streamResult.status, type: streamResult.type, exactFixtureMatch: true };
-            assert.equal(await fs.readFile(path.join(root,'sample.pdf'),'utf8'),pdf);
+          before="  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);\n  await new Promise(resolve=>setTimeout(resolve,2500));\n  await page.screenshot({path:path.join(output,'windows-pdf.png')});"
+          after='''  // WebView2 PDF navigation exposes a generated viewer wrapper to CDP.
+            // Capture the actual viewer, then independently read its original
+            // scoped stream using the native browser's resource-loading API.
+            // No script is executed in the PDF viewer and no CSP/CORS is changed.
             await new Promise(resolve=>setTimeout(resolve,8000));
-            report.pdfFrames = await Promise.all(page.frames().map(async item => ({
-              url: item.url(),
-              markup: await item.evaluate(() => document.documentElement.outerHTML.slice(0,12000)).catch(()=>'Unavailable plugin frame'),
-            })));'''
+            await page.screenshot({path:path.join(output,'windows-pdf.png')});
+            const nativeSession = await page.context().newCDPSession(page);
+            const resourceTree = await nativeSession.send('Page.getFrameTree');
+            const bounded = (promise, label) => Promise.race([promise,
+              new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+' timed out')),15000))]);
+            const resource = (await bounded(nativeSession.send('Network.loadNetworkResource', {
+              frameId: resourceTree.frameTree.frame.id, url: pdfSource,
+              options: { disableCache: true, includeCredentials: true },
+            }), 'Scoped PDF resource')).resource;
+            report.pdfResource = { success: resource.success, status: resource.httpStatusCode, error: resource.netErrorName };
+            assert.equal(resource.success, true, JSON.stringify(report.pdfResource));
+            assert.equal(resource.httpStatusCode, 200);
+            assert.ok(resource.stream, 'PDF resource stream missing');
+            const chunks = [];
+            try {
+              for (let i=0;i<16;i++) {
+                const chunk = await bounded(nativeSession.send('IO.read', { handle: resource.stream, size: 65536 }), 'PDF stream read');
+                chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? 'base64' : 'utf8'));
+                if (chunk.eof) break;
+                assert.ok(i<15, 'PDF fixture exceeded its bounded stream size');
+              }
+            } finally { await nativeSession.send('IO.close', { handle: resource.stream }).catch(()=>{}); }
+            assert.equal(Buffer.concat(chunks).toString('utf8'),pdf,'Scoped PDF stream differs from original fixture');
+            assert.equal(await fs.readFile(path.join(root,'sample.pdf'),'utf8'),pdf);
+            report.pdfStream = { status:200, type:pdfResponse.headers()['content-type'], exactFixtureMatch:true };
+            await nativeSession.detach();'''
           assert s.count(before)==1
           s=s.replace(before,after)
           p.write_text(s)
           PY
           node --check scripts/verify-windows-native.mjs
           git diff --check
-      - name: Commit the test-only correction
+      - name: Commit the bounded test-only correction
         id: commit
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add scripts/verify-windows-native.mjs
-          git commit -m 'test(windows): verify original PDF stream separately from WebView2 viewer wrapper'
-          git push origin HEAD:refs/heads/test/windows-pdf-stream-20260916
+          git commit -m 'test(windows): separate native PDF viewer capture from scoped resource byte verification'
+          git push origin HEAD:refs/heads/test/windows-pdf-native-resource-20260916
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   installed:
     needs: prepare
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 6
     permissions:
       contents: read
       actions: read
@@ -76,8 +85,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version-file: .nvmrc}
-      - name: Verify the unchanged binary with the corrected PDF test
+      - name: Verify unchanged binary with bounded PDF resource and viewer checks
         shell: pwsh
+        timeout-minutes: 4
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
