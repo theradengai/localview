@@ -1,0 +1,40 @@
+name: Apply Windows namespace corrections
+on:
+  push:
+    branches: [ci/windows-path-fix-20260916]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0}
+      - name: Apply the bounded reviewed patch on its exact source
+        run: |
+          set -euo pipefail
+          cp .github/windows-path-fix.patch /tmp/windows-path-fix.patch
+          git checkout --detach 6ccfeb9fbbde8aef881234e0167b945fe969daf6
+          git apply --check /tmp/windows-path-fix.patch
+          git apply /tmp/windows-path-fix.patch
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: {toolchain: 1.91.1, components: rustfmt}
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit only source changes for native CI
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/windows_fs.rs src-tauri/src/windows_fs_tests.rs src-tauri/src/lib.rs .gitattributes
+          git commit -m 'fix(windows): normalize short aliases without following junctions and preserve error contracts'
+          git push origin HEAD:refs/heads/fix/windows-path-aliases-20260916
+          mkdir -p /tmp/windows-source
+          git archive --format=tar.gz HEAD > /tmp/windows-source/source.tar.gz
+          git rev-parse HEAD > /tmp/windows-source/SOURCE_SHA.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-path-fixed-source
+          path: /tmp/windows-source/
+          retention-days: 3
