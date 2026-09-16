@@ -17,8 +17,8 @@ use windows::{
     Win32::{
         Foundation::HANDLE,
         Storage::FileSystem::{
-            FileRenameInfo, GetFileInformationByHandle, SetFileInformationByHandle,
-            BY_HANDLE_FILE_INFORMATION,
+            FileRenameInfo, GetFileInformationByHandle, GetLongPathNameW,
+            SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
         },
     },
 };
@@ -97,7 +97,7 @@ pub(super) fn root_handle(path: &Path) -> Result<File, CommandError> {
 
 /// Reject NT device paths, UNC/network roots, alternate streams and ambiguous names.
 /// This first Windows release intentionally supports local drive-letter workspaces.
-fn drive_path(path: &Path) -> Result<String, CommandError> {
+fn lexical_drive_path(path: &Path) -> Result<String, CommandError> {
     let raw = path
         .to_str()
         .ok_or_else(|| error("INVALID_PATH", "Path is not valid Unicode"))?
@@ -123,6 +123,44 @@ fn drive_path(path: &Path) -> Result<String, CommandError> {
         raw.trim_end_matches('\\').to_string()
     })
 }
+// Expand DOS 8.3 names without canonicalizing away reparse-point boundaries.
+// The deepest existing prefix also normalizes create/delete watcher paths.
+fn drive_path(path: &Path) -> Result<String, CommandError> {
+    let validated = lexical_drive_path(path)?;
+    let mut prefix = PathBuf::from(&validated);
+    let mut suffix = Vec::new();
+    loop {
+        let input = wide(prefix.as_os_str());
+        let mut buffer = vec![0u16; 32768];
+        let length =
+            unsafe { GetLongPathNameW(PCWSTR(input.as_ptr()), Some(&mut buffer)) } as usize;
+        if length > 0 && length < buffer.len() {
+            let expanded = String::from_utf16(&buffer[..length])
+                .map_err(|_| error("INVALID_PATH", "Path is not valid Unicode"))?;
+            let mut expanded = PathBuf::from(expanded);
+            for part in suffix.iter().rev() {
+                expanded.push(part);
+            }
+            return lexical_drive_path(&expanded);
+        }
+        let Some(name) = prefix.file_name().map(|name| name.to_os_string()) else {
+            return Ok(validated);
+        };
+        suffix.push(name);
+        if !prefix.pop() {
+            return Ok(validated);
+        }
+    }
+}
+
+pub(super) fn legacy_error(value: CommandError) -> String {
+    if value.code == value.message || value.message == "Path is outside the active workspace" {
+        value.message
+    } else {
+        format!("{}: {}", value.code, value.message)
+    }
+}
+
 pub(super) fn validate_name(name: &str) -> Result<(), CommandError> {
     if name.is_empty()
         || name == "."
@@ -308,7 +346,16 @@ pub(super) fn create_markdown<F: FnOnce(), G: FnOnce()>(
             .map_err(|_| error("IO_ERROR", "File operations unavailable"))?;
         validate_name(name)?;
         let mut scope = Scope::new(state)?;
-        let parent = scope.directory(parent)?;
+        let parent = scope.directory(parent).map_err(|value| {
+            if matches!(value.code.as_str(), "INVALID_PATH" | "MOVE_BUNDLE_BOUNDARY") {
+                error(
+                    "MARKDOWN_PARENT_NOT_DIRECTORY",
+                    "MARKDOWN_PARENT_NOT_DIRECTORY",
+                )
+            } else {
+                value
+            }
+        })?;
         after_parent();
         before_create();
         scope.current(state)?;
@@ -339,7 +386,7 @@ pub(super) fn create_markdown<F: FnOnce(), G: FnOnce()>(
             },
         })
     })();
-    result.map_err(|e: CommandError| format!("{}: {}", e.code, e.message))
+    result.map_err(legacy_error)
 }
 pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
     state: &WorkspaceState,
@@ -354,7 +401,16 @@ pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
             .map_err(|_| error("IO_ERROR", "File operations unavailable"))?;
         validate_name(name)?;
         let mut scope = Scope::new(state)?;
-        let parent = scope.directory(parent)?;
+        let parent = scope.directory(parent).map_err(|value| {
+            if matches!(value.code.as_str(), "INVALID_PATH" | "MOVE_BUNDLE_BOUNDARY") {
+                error(
+                    "DIRECTORY_PARENT_NOT_DIRECTORY",
+                    "DIRECTORY_PARENT_NOT_DIRECTORY",
+                )
+            } else {
+                value
+            }
+        })?;
         after_parent();
         hook(DirectoryCreateHookPhase::BeforeFinalCreate);
         scope.current(state)?;
@@ -370,7 +426,7 @@ pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
         hook(DirectoryCreateHookPhase::AfterCreate);
         entry_from_path(&created).map_err(CommandError::legacy)
     })();
-    result.map_err(|e: CommandError| format!("{}: {}", e.code, e.message))
+    result.map_err(legacy_error)
 }
 fn unique() -> String {
     format!(

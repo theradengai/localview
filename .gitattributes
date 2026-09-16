@@ -1,0 +1,2 @@
+# Keep embedded multiline CSV fixture bytes identical on every CI host.
+src-tauri/tests/fixtures/*.csv text eol=lf

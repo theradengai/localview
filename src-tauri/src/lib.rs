@@ -772,8 +772,7 @@ fn create_workspace_watcher(
 fn scoped_existing_path(state: &WorkspaceState, path: impl AsRef<Path>) -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
-        return windows_fs::scoped_path(state, path.as_ref())
-            .map_err(|e| format!("{}: {}", e.code, e.message));
+        return windows_fs::scoped_path(state, path.as_ref()).map_err(windows_fs::legacy_error);
     }
     #[cfg(not(windows))]
     {
@@ -5386,28 +5385,32 @@ mod tests {
     fn maps_watch_events_without_temp_files_or_outside_paths() {
         use notify_debouncer_full::notify::event::{CreateKind, RenameMode};
 
-        let root = Path::new("/workspace");
+        let root = Path::new(if cfg!(windows) {
+            "C:/workspace"
+        } else {
+            "/workspace"
+        });
         let create = map_watch_event(
             root,
             &EventKind::Create(CreateKind::File),
             &[
-                PathBuf::from("/workspace/new.md"),
-                PathBuf::from("/workspace/.new.md.localview-1-0.tmp"),
-                PathBuf::from("/outside/no.md"),
+                root.join("new.md"),
+                root.join(".new.md.localview-1-0.tmp"),
+                root.parent().unwrap().join("outside/no.md"),
             ],
             false,
         )
         .expect("mapped create event");
         assert_eq!(create.kind, WorkspaceFsEventKind::Create);
-        assert_eq!(create.paths, vec!["/workspace/new.md"]);
+        assert_eq!(
+            create.paths,
+            vec![root.join("new.md").to_string_lossy().into_owned()]
+        );
 
         let rename = map_watch_event(
             root,
             &EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-            &[
-                PathBuf::from("/workspace/old.md"),
-                PathBuf::from("/workspace/new.md"),
-            ],
+            &[root.join("old.md"), root.join("new.md")],
             false,
         )
         .expect("mapped paired rename");
