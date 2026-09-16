@@ -5,6 +5,8 @@ on:
 permissions:
   contents: read
   actions: read
+env:
+  PYTHONUTF8: '1'
 jobs:
   installed:
     runs-on: windows-2022
@@ -27,7 +29,7 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          p=Path('scripts/verify-windows-native.mjs'); s=p.read_text()
+          p=Path('scripts/verify-windows-native.mjs'); s=p.read_text(encoding='utf-8')
           needle="  assert.equal(await frame.locator('body').evaluate(()=>typeof window.__TAURI_INTERNALS__),'undefined');"
           assert s.count(needle)==1
           replacement=r'''  const canaryPath=path.join(root,'privilege-canary.txt');
@@ -58,7 +60,7 @@ jobs:
             assert.ok(previewAuthority.write==='unavailable'||previewAuthority.write.status==='rejected','Frame write must be unavailable or explicitly rejected, not just time out');'''
           s=s.replace(needle,replacement)
           s=s.replace('rejects remote fetch and has no Tauri bridge','rejects remote fetch and cannot read or write through privileged Tauri commands')
-          p.write_text(s)
+          p.write_text(s,encoding='utf-8')
       - name: Install and verify real application
         shell: pwsh
         run: |
