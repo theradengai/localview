@@ -151,9 +151,37 @@ try {
   const pdfResponse=await deliveredPdf;
   assert.equal(pdfResponse.status(),200);
   assert.match(pdfResponse.headers()['content-type'],/application\/pdf/);
-  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);
-  await new Promise(resolve=>setTimeout(resolve,2500));
+  // WebView2 PDF navigation exposes a generated viewer wrapper to CDP.
+  // Capture the actual viewer, then independently read its original
+  // scoped stream using the native browser's resource-loading API.
+  // No script is executed in the PDF viewer and no CSP/CORS is changed.
+  await new Promise(resolve=>setTimeout(resolve,8000));
   await page.screenshot({path:path.join(output,'windows-pdf.png')});
+  const nativeSession = await page.context().newCDPSession(page);
+  const resourceTree = await nativeSession.send('Page.getFrameTree');
+  const bounded = (promise, label) => Promise.race([promise,
+    new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+' timed out')),15000))]);
+  const resource = (await bounded(nativeSession.send('Network.loadNetworkResource', {
+    frameId: resourceTree.frameTree.frame.id, url: pdfSource,
+    options: { disableCache: true, includeCredentials: true },
+  }), 'Scoped PDF resource')).resource;
+  report.pdfResource = { success: resource.success, status: resource.httpStatusCode, error: resource.netErrorName };
+  assert.equal(resource.success, true, JSON.stringify(report.pdfResource));
+  assert.equal(resource.httpStatusCode, 200);
+  assert.ok(resource.stream, 'PDF resource stream missing');
+  const chunks = [];
+  try {
+    for (let i=0;i<16;i++) {
+      const chunk = await bounded(nativeSession.send('IO.read', { handle: resource.stream, size: 65536 }), 'PDF stream read');
+      chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? 'base64' : 'utf8'));
+      if (chunk.eof) break;
+      assert.ok(i<15, 'PDF fixture exceeded its bounded stream size');
+    }
+  } finally { await nativeSession.send('IO.close', { handle: resource.stream }).catch(()=>{}); }
+  assert.equal(Buffer.concat(chunks).toString('utf8'),pdf,'Scoped PDF stream differs from original fixture');
+  assert.equal(await fs.readFile(path.join(root,'sample.pdf'),'utf8'),pdf);
+  report.pdfStream = { status:200, type:pdfResponse.headers()['content-type'], exactFixtureMatch:true };
+  await nativeSession.detach();
   record('PDF preview receives a valid application/pdf response through the scoped native protocol');
   assert.equal(report.errors.length,0,JSON.stringify(report.errors));
   report.status='passed';
