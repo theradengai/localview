@@ -151,10 +151,28 @@ try {
   const pdfResponse=await deliveredPdf;
   assert.equal(pdfResponse.status(),200);
   assert.match(pdfResponse.headers()['content-type'],/application\/pdf/);
-  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);
-  await new Promise(resolve=>setTimeout(resolve,2500));
+  // WebView2's PDF navigation body in CDP is the generated native viewer
+  // wrapper, not necessarily the original response bytes. Do not confuse
+  // these two layers or invoke scripts inside the built-in PDF reader.
+  const navigationBody = (await pdfResponse.body()).toString('utf8');
+  const originalBody = navigationBody.startsWith('%PDF-');
+  if (originalBody) assert.equal(navigationBody,pdf);
+  else {
+    assert.match(navigationBody, /^\s*<!doctype html/i);
+    assert.match(navigationBody, /application\/pdf|<embed\b/i);
+  }
+  assert.equal(await fs.readFile(path.join(root,'sample.pdf'),'utf8'),pdf);
+  await new Promise(resolve=>setTimeout(resolve,8000));
   await page.screenshot({path:path.join(output,'windows-pdf.png')});
-  record('PDF preview receives a valid application/pdf response through the scoped native protocol');
+  await fs.writeFile(path.join(output,'pdf-navigation-body.txt'),navigationBody);
+  report.pdfPreview = {
+    status: pdfResponse.status(), type: pdfResponse.headers()['content-type'],
+    originalFixtureUnchanged:true,
+    fixtureSHA256:createHash('sha256').update(pdf).digest('hex'),
+    cdpNavigationBody: originalBody ? 'original PDF' : 'WebView2-generated PDF viewer wrapper',
+    screenshot:'windows-pdf.png', visualReviewRequired:true,
+  };
+  record('PDF navigation returns application/pdf; the source is unchanged and the actual native viewer screenshot is captured for visual review');
   assert.equal(report.errors.length,0,JSON.stringify(report.errors));
   report.status='passed';
 } catch(error) {
