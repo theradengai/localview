@@ -151,8 +151,28 @@ try {
   const pdfResponse=await deliveredPdf;
   assert.equal(pdfResponse.status(),200);
   assert.match(pdfResponse.headers()['content-type'],/application\/pdf/);
-  assert.match((await pdfResponse.body()).toString('utf8').slice(0,8),/^%PDF-/);
-  await new Promise(resolve=>setTimeout(resolve,2500));
+  // A PDF navigation is handed to WebView2's built-in viewer, so CDP may
+  // expose its generated HTML wrapper as the navigation response body.
+  // Read the exact same resource inside the same-origin document frame;
+  // never loosen application CSP/CORS or intercept/replace response bytes.
+  const pdfHandle = await page.locator('iframe[title="sample.pdf"]').elementHandle();
+  const pdfDocument = await pdfHandle.contentFrame();
+  assert.ok(pdfDocument, 'PDF document frame missing');
+  const streamResult = await pdfDocument.evaluate(async url => {
+    const response = await fetch(url);
+    const content = await response.text();
+    return { status: response.status, type: response.headers.get('content-type'), content };
+  }, pdfSource);
+  assert.equal(streamResult.status, 200);
+  assert.match(streamResult.type, /application\/pdf/);
+  assert.equal(streamResult.content, pdf, 'Scoped PDF stream differs from the original fixture');
+  report.pdfStream = { status: streamResult.status, type: streamResult.type, exactFixtureMatch: true };
+  assert.equal(await fs.readFile(path.join(root,'sample.pdf'),'utf8'),pdf);
+  await new Promise(resolve=>setTimeout(resolve,8000));
+  report.pdfFrames = await Promise.all(page.frames().map(async item => ({
+    url: item.url(),
+    markup: await item.evaluate(() => document.documentElement.outerHTML.slice(0,12000)).catch(()=>'Unavailable plugin frame'),
+  })));
   await page.screenshot({path:path.join(output,'windows-pdf.png')});
   record('PDF preview receives a valid application/pdf response through the scoped native protocol');
   assert.equal(report.errors.length,0,JSON.stringify(report.errors));
