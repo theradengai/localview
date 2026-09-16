@@ -1,0 +1,106 @@
+name: Prepare Windows native fixes
+on:
+  push:
+    branches: [ci/windows-native-fix-20260916]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {ref: feat/windows-desktop-20260916, fetch-depth: 0}
+      - name: Apply exact native fix
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 6ccfeb9fbbde8aef881234e0167b945fe969daf6
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/windows_fs.rs'); s=p.read_text()
+          s=s.replace('FileRenameInfo, GetFileInformationByHandle, SetFileInformationByHandle,','FileRenameInfo, GetFileInformationByHandle, GetLongPathNameW, SetFileInformationByHandle,')
+          s=s.replace('fn drive_path(path: &Path) -> Result<String, CommandError> {','fn lexical_drive_path(path: &Path) -> Result<String, CommandError> {',1)
+          anchor='pub(super) fn validate_name(name: &str) -> Result<(), CommandError> {'
+          assert s.count(anchor)==1
+          helper=r'''// Expand DOS 8.3 names without canonicalizing away reparse-point boundaries.
+          // The deepest existing prefix also normalizes create/delete watcher paths.
+          fn drive_path(path: &Path) -> Result<String, CommandError> {
+              let validated = lexical_drive_path(path)?;
+              let mut prefix = PathBuf::from(&validated);
+              let mut suffix = Vec::new();
+              loop {
+                  let input = wide(prefix.as_os_str());
+                  let mut buffer = vec![0u16; 32768];
+                  let length = unsafe { GetLongPathNameW(PCWSTR(input.as_ptr()), Some(&mut buffer)) } as usize;
+                  if length > 0 && length < buffer.len() {
+                      let expanded = String::from_utf16(&buffer[..length])
+                          .map_err(|_| error("INVALID_PATH", "Path is not valid Unicode"))?;
+                      let mut expanded = PathBuf::from(expanded);
+                      for part in suffix.iter().rev() {
+                          expanded.push(part);
+                      }
+                      return lexical_drive_path(&expanded);
+                  }
+                  let Some(name) = prefix.file_name().map(|name| name.to_os_string()) else {
+                      return Ok(validated);
+                  };
+                  suffix.push(name);
+                  if !prefix.pop() {
+                      return Ok(validated);
+                  }
+              }
+          }
+
+          pub(super) fn legacy_error(value: CommandError) -> String {
+              if value.code == value.message || value.message == "Path is outside the active workspace" {
+                  value.message
+              } else {
+                  format!("{}: {}", value.code, value.message)
+              }
+          }
+
+          '''
+          s=s.replace(anchor,helper+anchor)
+          for fun,code in [('create_markdown','MARKDOWN_PARENT_NOT_DIRECTORY'),('create_folder','DIRECTORY_PARENT_NOT_DIRECTORY')]:
+              start=s.index('pub(super) fn '+fun)
+              pos=s.index('let parent = scope.directory(parent)?;',start)
+              old='let parent = scope.directory(parent)?;'
+              new=f'''let parent = scope.directory(parent).map_err(|value| {{
+                      if matches!(value.code.as_str(), "INVALID_PATH" | "MOVE_BUNDLE_BOUNDARY") {{
+                          error("{code}", "{code}")
+                      }} else {{
+                          value
+                      }}
+                  }})?;'''
+              s=s[:pos]+s[pos:].replace(old,new,1)
+          s=s.replace('result.map_err(|e: CommandError| format!("{}: {}", e.code, e.message))','result.map_err(legacy_error)')
+          p.write_text(s)
+          p=Path('src-tauri/src/lib.rs'); s=p.read_text()
+          a='return windows_fs::scoped_path(state, path.as_ref())\n            .map_err(|e| format!("{}: {}", e.code, e.message));'
+          assert s.count(a)==1
+          s=s.replace(a,'return windows_fs::scoped_path(state, path.as_ref()).map_err(windows_fs::legacy_error);')
+          start=s.index('    fn maps_watch_events_without_temp_files_or_outside_paths()')
+          end=s.index('\n    }',start)+6
+          part=s[start:end]
+          part=part.replace('let root = Path::new("/workspace");','let root = Path::new(if cfg!(windows) { "C:/workspace" } else { "/workspace" });')
+          part=part.replace('PathBuf::from("/workspace/new.md")','root.join("new.md")')
+          part=part.replace('PathBuf::from("/workspace/old.md")','root.join("old.md")')
+          part=part.replace('PathBuf::from("/workspace/.new.md.localview-1-0.tmp")','root.join(".new.md.localview-1-0.tmp")')
+          part=part.replace('PathBuf::from("/outside/no.md")','root.parent().unwrap().join("outside/no.md")')
+          part=part.replace('vec!["/workspace/new.md"]','vec![root.join("new.md").to_string_lossy().into_owned()]')
+          p.write_text(s[:start]+part+s[end:])
+          Path('.gitattributes').write_text('# Keep embedded multiline CSV fixture bytes identical on every CI host.\nsrc-tauri/tests/fixtures/*.csv text eol=lf\n')
+          PY
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: {toolchain: 1.91.1, components: rustfmt}
+      - name: Format and commit only reviewed source changes
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .gitattributes src-tauri/src/windows_fs.rs src-tauri/src/lib.rs
+          git commit -m 'fix(windows): expand DOS path aliases without bypassing workspace guards'
+          git push origin HEAD:refs/heads/feat/windows-desktop-20260916
+          git show --stat --oneline HEAD
