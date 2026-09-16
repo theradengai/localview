@@ -1,0 +1,60 @@
+name: Prepare main-frame-only Windows IPC
+on:
+  push:
+    branches: [ci/windows-ipc-fix-20260916]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0}
+      - name: Integrate the bounded transport on the exact candidate
+        run: |
+          set -euo pipefail
+          cp src-tauri/src/windows_ipc.js /tmp/windows_ipc.js
+          cp src-tauri/src/windows_ipc.rs /tmp/windows_ipc.rs
+          cp src/lib/windowsIpc.test.ts /tmp/windowsIpc.test.ts
+          git checkout --detach b0c5a3f3ed658602919a9f715c6e6bc7bfccc5e0
+          cp /tmp/windows_ipc.{js,rs} src-tauri/src/
+          cp /tmp/windowsIpc.test.ts src/lib/
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/lib.rs'); s=p.read_text()
+          needle='    #[cfg(desktop)]\n    {\n        builder = builder.plugin(tauri_plugin_single_instance::init('
+          assert s.count(needle)==1
+          s='#[cfg(windows)]\nmod windows_ipc;\n'+s
+          s=s.replace(needle,'    #[cfg(windows)]\n    {\n        builder = builder.invoke_system(windows_ipc::script());\n    }\n\n'+needle,1)
+          p.write_text(s)
+          PY
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc, cache: npm}
+      - run: npm ci
+      - name: Verify transport behavior and full frontend regression
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/windows-ipc-evidence
+          npm test 2>&1 | tee /tmp/windows-ipc-evidence/tests.log
+          npm run build 2>&1 | tee /tmp/windows-ipc-evidence/build.log
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: {toolchain: 1.91.1, components: rustfmt}
+      - name: Commit only reviewed source and tests
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/windows_ipc.js src-tauri/src/windows_ipc.rs src-tauri/src/lib.rs src/lib/windowsIpc.test.ts
+          git commit -m 'fix(windows): reserve native IPC transport and invoke key for trusted main frames'
+          git push origin HEAD:refs/heads/fix/windows-preview-ipc-20260916
+          git archive --format=tar.gz HEAD > /tmp/windows-ipc-evidence/source.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: windows-ipc-source-checks
+          path: /tmp/windows-ipc-evidence/
+          retention-days: 3
+          if-no-files-found: error
