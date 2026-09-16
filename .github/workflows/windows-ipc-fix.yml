@@ -19,7 +19,6 @@ jobs:
           cp src/lib/windowsIpc.test.ts /tmp/windowsIpc.test.ts
           git checkout --detach b0c5a3f3ed658602919a9f715c6e6bc7bfccc5e0
           cp /tmp/windows_ipc.{js,rs} src-tauri/src/
-          cp /tmp/windowsIpc.test.ts src/lib/
           python3 - <<'PY'
           from pathlib import Path
           p=Path('src-tauri/src/lib.rs'); s=p.read_text()
@@ -28,6 +27,13 @@ jobs:
           s='#[cfg(windows)]\nmod windows_ipc;\n'+s
           s=s.replace(needle,'    #[cfg(windows)]\n    {\n        builder = builder.invoke_system(windows_ipc::script());\n    }\n\n'+needle,1)
           p.write_text(s)
+          # This is a Node VM transport test, not browser TypeScript. Keep the
+          # application DOM-only tsconfig unchanged and avoid new dependencies.
+          s=Path('/tmp/windowsIpc.test.ts').read_text()
+          s=s.replace('(command: string, protocol: string)', '(command, protocol)')
+          s=s.replace('const window: Record<string, unknown>', 'const window')
+          s=s.replace('(bridge as typeof bridge & { postMessage: (value: unknown) => void }).postMessage', 'bridge.postMessage')
+          Path('src/lib/windowsIpc.test.mjs').write_text(s)
           PY
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version-file: .nvmrc, cache: npm}
@@ -47,7 +53,7 @@ jobs:
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src-tauri/src/windows_ipc.js src-tauri/src/windows_ipc.rs src-tauri/src/lib.rs src/lib/windowsIpc.test.ts
+          git add src-tauri/src/windows_ipc.js src-tauri/src/windows_ipc.rs src-tauri/src/lib.rs src/lib/windowsIpc.test.mjs
           git commit -m 'fix(windows): reserve native IPC transport and invoke key for trusted main frames'
           git push origin HEAD:refs/heads/fix/windows-preview-ipc-20260916
           git archive --format=tar.gz HEAD > /tmp/windows-ipc-evidence/source.tar.gz
