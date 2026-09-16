@@ -1,0 +1,73 @@
+name: Verify installed Windows candidate
+on:
+  push:
+    branches: [ci/windows-installed-acceptance-20260916]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installed:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {ref: cec2d5546d88e2a6acfa2a668222ba291209b0c8, persist-credentials: false}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc}
+      - name: Download exact previously built installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 35095850199 --repo theradengai/localview --name LocalView-Windows-x64 --dir "$env:RUNNER_TEMP/installer"
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          $installer = Get-ChildItem "$env:RUNNER_TEMP/installer/*-setup.exe"
+          if ((Get-FileHash $installer.FullName).Hash.ToLower() -ne 'b499b8246a894a70afdda3eb721634ff7e7a30123116c8f216b8f641702bdd0f') { throw 'Installer hash mismatch' }
+      - name: Verify actual frame authority rather than the existence of an injected object
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('scripts/verify-windows-native.mjs'); s=p.read_text()
+          needle="  assert.equal(await frame.locator('body').evaluate(()=>typeof window.__TAURI_INTERNALS__),'undefined');"
+          assert s.count(needle)==1
+          replacement=r'''  const canaryPath=path.join(root,'privilege-canary.txt');
+            await fs.writeFile(canaryPath,'Canary before main positive control.');
+            const canary=await page.evaluate(async path=>{
+              const before=await window.__TAURI_INTERNALS__.invoke('read_text_file',{path});
+              await window.__TAURI_INTERNALS__.invoke('write_text_file',{path,content:'Trusted main-window write.',expectedVersion:before.version});
+              return await window.__TAURI_INTERNALS__.invoke('read_text_file',{path});
+            },canaryPath);
+            assert.equal(await fs.readFile(canaryPath,'utf8'),'Trusted main-window write.');
+            const previewAuthority=await frame.locator('body').evaluate(async (_,args)=>{
+              const api=window.__TAURI_INTERNALS__;
+              const result={globalType:typeof api,invokeType:typeof api?.invoke};
+              if(typeof api?.invoke!=='function') return {...result,read:'unavailable',write:'unavailable'};
+              const attempt=(command,body)=>Promise.race([
+                api.invoke(command,body).then(value=>({status:'resolved',value})).catch(error=>({status:'rejected',error:String(error)})),
+                new Promise(resolve=>setTimeout(()=>resolve({status:'timeout'}),4000))
+              ]);
+              result.read=await attempt('read_text_file',{path:args.path});
+              result.write=await attempt('write_text_file',{path:args.path,content:'UNTRUSTED FRAME WRITE',expectedVersion:args.version});
+              return result;
+            },{path:canaryPath,version:canary.version});
+            report.previewAuthority=previewAuthority;
+            await fs.writeFile(path.join(output,'preview-authority.json'),JSON.stringify(previewAuthority,null,2));
+            await new Promise(resolve=>setTimeout(resolve,1000));
+            assert.equal(await fs.readFile(canaryPath,'utf8'),'Trusted main-window write.','Untrusted preview must not write the native canary');
+            assert.ok(previewAuthority.read==='unavailable'||previewAuthority.read.status==='rejected','Frame read must be unavailable or explicitly rejected, not just time out');
+            assert.ok(previewAuthority.write==='unavailable'||previewAuthority.write.status==='rejected','Frame write must be unavailable or explicitly rejected, not just time out');'''
+          s=s.replace(needle,replacement)
+          s=s.replace('rejects remote fetch and has no Tauri bridge','rejects remote fetch and cannot read or write through privileged Tauri commands')
+          p.write_text(s)
+      - name: Install and verify real application
+        shell: pwsh
+        run: |
+          $installer=(Get-ChildItem "$env:RUNNER_TEMP/installer/*-setup.exe")[0].FullName
+          ./scripts/verify-windows-install.ps1 -Installer $installer -Evidence "$env:RUNNER_TEMP/installed-evidence"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: installed-windows-evidence
+          path: ${{ runner.temp }}/installed-evidence/
+          retention-days: 14
+          if-no-files-found: error
