@@ -1,0 +1,35 @@
+name: Publish verified Windows Beta 7
+on:
+  push:
+    branches: [ci/windows-publish-20260916]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: windows-beta7-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Validate exact sources, native results and public installer bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATED_HEAD: 50e72b82fbe15b342806fdc58a295e6d716381fb
+          RELEASE_COMMIT: 147606002600275a22ac3a10d905b8be9b71740d
+          WINDOWS_RUN: '35100219448'
+          MACOS_RUN: '35100219382'
+          BROWSER_RUN: '35100219384'
+          PDF_SCREENSHOT_SHA256: 2a24fe9c7feb37fcef71f943067240fd57ac8edc5aa2a50cdf7ddb07856de9e8
+        run: python3 .github/windows-publication/publish.py
+      - name: Preserve the verified published assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-published-release
+          path: ${{ runner.temp }}/published-windows/
+          retention-days: 14
+          if-no-files-found: error
