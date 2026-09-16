@@ -6,7 +6,7 @@ use windows::{
     Win32::{
         System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED},
         UI::Shell::{
-            BHID_Transfer, FOLDERID_RecycleBin, IShellItem, ITransferSource,
+            BHID_Transfer, FOLDERID_RecycleBinFolder, IShellItem, ITransferSource,
             SHCreateItemFromParsingName, SHCreateItemInKnownFolder, KF_FLAG_DEFAULT,
             SIGDN_DESKTOPABSOLUTEPARSING,
         },
@@ -49,12 +49,12 @@ pub(super) fn recycle(path: &Path, expected_identity: &str) -> Result<String, Co
             let parent = item.GetParent()?;
             let transfer: ITransferSource = parent.BindToHandler(None, &BHID_Transfer)?;
             let bin: IShellItem =
-                SHCreateItemInKnownFolder(&FOLDERID_RecycleBin, KF_FLAG_DEFAULT, None)?;
+                SHCreateItemInKnownFolder(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
             let destination = transfer.RecycleItem(&item, &bin, 0)?;
             let name = destination.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?;
             let text = name.to_string();
             CoTaskMemFree(Some(name.0.cast()));
-            text
+            Ok(text?)
         })()
     }
     .map_err(|e| {
