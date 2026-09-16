@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod windows_ipc;
 use notify_debouncer_full::{
     new_debouncer_opt,
     notify::{
@@ -4268,6 +4270,11 @@ pub fn run() {
                 ),
             }
         });
+
+    #[cfg(windows)]
+    {
+        builder = builder.invoke_system(windows_ipc::script());
+    }
 
     #[cfg(desktop)]
     {
