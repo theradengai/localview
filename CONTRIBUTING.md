@@ -8,7 +8,7 @@ LocalView opens ordinary files in their folder context. The filesystem is the so
 
 ## Setup and tests
 
-On macOS, install Node.js 24, Rust (CI uses 1.91.1), and Xcode Command Line Tools. `.nvmrc` selects the Node major version. Keep both lockfiles committed.
+Use Node.js 24 and Rust (CI uses 1.91.1). On macOS, install Xcode Command Line Tools. On Windows, use MSVC Rust, C++ Build Tools/Windows SDK and WebView2; see [Windows development](docs/WINDOWS.md#development). `.nvmrc` selects the Node major version. Keep both lockfiles committed.
 
 ```bash
 npm ci
@@ -30,6 +30,10 @@ Use disposable sample folders for native filesystem tests. Tests that interact w
 
 ## Build installers
 
+On Windows, `npm run tauri:build -- -- --locked` uses `src-tauri/tauri.windows.conf.json` and produces a current-user NSIS installer in `src-tauri/target/release/bundle/nsis/`. **Check and build Windows** validates native operations, Recycle Bin and the actual installed WebView2 application. Artifact upload alone is not release approval: the whole run must succeed. Native acceptance uses disposable fixtures only; production code does not enable remote debugging.
+
+On macOS:
+
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri:build -- --target aarch64-apple-darwin
@@ -47,7 +51,7 @@ node scripts/verify-macos-bundle.mjs src-tauri/target/x86_64-apple-darwin/releas
 
 Use your GitHub noreply email for commits. Raw browser captures, local QA output, private recovery backups, and installers remain ignored; add only reviewed synthetic demonstration assets to `docs/images/`.
 
-All current Beta builds use ad-hoc signing, not Developer ID signing or Apple notarization. See [installation notes](docs/INSTALL.md).
+macOS Beta builds use ad-hoc signing, not Developer ID signing or Apple notarization. Windows Beta installers are unsigned. See [installation notes](docs/INSTALL.md).
 
 Before packaging a dependency change, regenerate and review `THIRD_PARTY_NOTICES.md` with `node scripts/generate-third-party-notices.mjs`. The generator needs installed npm dependencies and downloaded Cargo sources. Preserve upstream copyright notices and applicable source-availability requirements.
 

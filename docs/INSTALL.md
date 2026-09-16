@@ -1,5 +1,9 @@
 # Install and verify LocalView Beta
 
+**Windows x64 (Beta 7):** see [Windows installation and verification](WINDOWS.md). The Windows installer is unsigned and uses WebView2. The macOS Beta 6 DMGs below remain unchanged.
+
+**Windows 用户：** 请看 [Windows 安装与校验](WINDOWS.md)；下文继续保留 macOS Beta 6 安装说明。
+
 [English README](../README.md) · [中文说明](../README.zh-CN.md)
 
 ## Choose your installer

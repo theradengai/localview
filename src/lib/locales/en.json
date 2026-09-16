@@ -455,5 +455,8 @@
   "移动卡片": "Move card",
   "移动列": "Move column",
   "{0} 行": "Lines: {0}",
-  "已选择 {0} 项": "Selected: {0}"
+  "已选择 {0} 项": "Selected: {0}",
+  "打开文件": "Open file",
+  "{0}使用默认应用打开": "{0}Open in default app",
+  "Windows 版暂不提供此格式的内嵌预览，可用默认应用打开。文件不会上传。": "Embedded preview for this format is not available on Windows yet. Open it in your default app. No file is uploaded."
 }

@@ -1,32 +1,32 @@
 # LocalView
 
-**Open a file, see the folder context.**
+**Open local files directly. Preview and edit in place.**
 
-A lightweight, macOS-first workspace for local documents. Browse real folders, edit Markdown in place, preview HTML and spreadsheets, and compare folders in independent windows.
+A lightweight document workspace for **macOS and Windows**. Open a file or folder directly, browse its real directory tree, preview different formats, and edit Markdown, HTML or text in place.
 
-No import step. No vault. No mandatory indexing. Your files stay ordinary files.
+**No indexing. No import step.** Your files stay ordinary files, in their original folders.
 
-[简体中文](README.zh-CN.md) · [Download Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
+[简体中文](README.zh-CN.md) · [Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
 
 ![LocalView: preview, edit, split view, tasks and HTML](docs/images/localview-demo.gif)
 
-*Browser demo with synthetic documents: switch between Preview, Split and Edit, update a task, and open HTML. Real filesystem operations are available in the macOS app. [Static screenshot](docs/images/localview-demo.png).*
+*Browser demo with synthetic documents: switch between Preview, Split and Edit, update a task, and open HTML. Real filesystem operations are available in the desktop apps. [Static screenshot](docs/images/localview-demo.png).*
 
 ## What you can do
 
 - **Use Markdown as an interactive Kanban board.** Create a board from a folder’s `+` menu. Drag cards and columns, edit in the right-hand details panel, and switch to Split to see the same `.md` source. Board and source share undo and auto-save. [Format and limits](docs/KANBAN.md).
-- **Start with a file or folder.** Open a supported file from Finder and see its folder context. Expand directories on demand.
+- **Start with a file or folder.** Choose **Open file** or **Open folder** to see its folder context; on Windows, `Ctrl+O` opens a file. Finder integration remains available on macOS. Expand directories on demand.
 - **Work directly in Markdown.** Preview by default, source-preserving Live Preview when editing, or a left-preview/right-source split. Format selected text and edit supported tables cell by cell.
 - **Check off tasks in Preview.** Toggle tasks in Preview, Split or Edit with auto-save and undo. Pasted task lists with deep indentation also render while the original spacing and line endings are preserved.
-- **Preview more formats.** Sandboxed interactive HTML, images, PDFs, CSV, Excel, ODS, and system-provided Office/iWork previews.
-- **Organize in the folder.** Create Markdown files and folders, rename inline, select files/folders with `⌘` or `Shift`, drag the selected group between folders, and move the group to macOS Trash with one confirmation. See [selection controls and safety](docs/FOLDER_SELECTION.md).
-- **Keep changes safe.** 600 ms idle auto-save, `⌘S` to save immediately, and conflict detection when another application edits the same file.
-- **Paste screenshots.** In Markdown Edit or Split, `⌘V` saves clipboard images beside the document in `assets/` and inserts relative image references (PNG/JPEG/GIF/WebP, up to 8 images and 10 MB per paste).
-- **Compare side by side.** `⌘N` opens an independent workspace window. `⌘P` opens native print settings for rendered Markdown.
+- **Preview more formats.** Sandboxed interactive HTML, images, PDFs, CSV, Excel and ODS. Office/iWork uses Quick Look on macOS; Windows offers an **Open in default app** action instead of an embedded Office preview.
+- **Organize in the folder.** Create Markdown files and folders, rename inline, select files/folders with `⌘`/`Ctrl` or `Shift`, drag the selected group between folders, and move the group to macOS Trash or the Windows Recycle Bin with one confirmation. See [selection controls and safety](docs/FOLDER_SELECTION.md).
+- **Keep changes safe.** 600 ms idle auto-save, `⌘S` / `Ctrl+S` to save immediately, and conflict detection when another application edits the same file.
+- **Paste screenshots.** In Markdown Edit or Split, `⌘V` / `Ctrl+V` saves clipboard images beside the document in `assets/` and inserts relative image references (PNG/JPEG/GIF/WebP, up to 8 images and 10 MB per paste).
+- **Compare side by side.** `⌘N` / `Ctrl+N` opens an independent workspace window. `⌘P` / `Ctrl+P` opens print settings for rendered Markdown.
 
 ## Interface language
 
-Beta 6 adds **System / 简体中文 / English** in the title bar. Switching is immediate, remembers your selection, and does not translate your documents or reset the editor. [Behavior, system-dialog boundaries and validation](docs/LANGUAGES.md).
+Both desktop platforms offer **System / 简体中文 / English** in the title bar (introduced in macOS Beta 6). Switching is immediate, remembers your selection, and does not translate your documents or reset the editor. [Behavior, system-dialog boundaries and validation](docs/LANGUAGES.md).
 
 ## Markdown Kanban
 
@@ -42,7 +42,13 @@ Drag a card by its handle, or move it with the details panel's column selector. 
 
 ## Download
 
-**0.2.0-beta.6 · macOS Monterey 12 or later.** This is a prerelease, not a stable release. The interface supports Simplified Chinese and English. Windows and Linux builds are not supported in this Beta.
+**Windows x64: 0.2.0-beta.7 · macOS: 0.2.0-beta.6.** These are prereleases, not stable releases. Both offer Simplified Chinese and English. Windows targets Windows 10/11 x64 with WebView2 and local drive-letter workspaces. Native ARM64 Windows, UNC/network workspaces and Linux packages are not included. [Windows guide and verification](docs/WINDOWS.md).
+
+**[Windows x64 installer](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)** · [Windows checksums](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/SHA256SUMS.txt)
+
+Install for the current user. If WebView2 is missing, the installer downloads its bootstrapper and needs a network connection. The Beta is **unsigned**: Windows may show a publisher/SmartScreen warning. Verify the source and checksum; do not disable system-wide security protection.
+
+The existing macOS release remains unchanged and requires macOS Monterey 12 or later:
 
 | Your Mac | Installer |
 | --- | --- |
@@ -63,7 +69,7 @@ These are **ad-hoc-signed, non-notarized Beta builds**. macOS may block the firs
 | Plain text / common code files | Text editing and auto-save |
 | Images / PDF | Preview |
 | CSV / XLS / XLSX / ODS | Read-only grid, wrapped cells, sheet navigation for workbooks |
-| Numbers / Pages / Keynote / Word / PowerPoint | macOS Quick Look preview; availability and page controls depend on the installed provider |
+| Numbers / Pages / Keynote / Word / PowerPoint | macOS: Quick Look, depending on the provider. Windows: open in the default application; no embedded Office/iWork renderer |
 
 CSV requires UTF-8 (BOM accepted) and comma-separated values; leading zeros are preserved as text. Office editing, formula recalculation, macros, charts, and complete Office formatting fidelity are not implemented. Some complex Markdown tables fall back to source editing. Printing is currently Markdown-only.
 
@@ -73,7 +79,7 @@ Markdown reading and printing preserve ordinary line breaks. Edit, Split and Pre
 
 ## Develop locally
 
-Use Node.js 24 LTS, Rust 1.91.1 or later, and Xcode Command Line Tools on macOS.
+Use Node.js 24 LTS and Rust 1.91.1 or later. macOS requires Xcode Command Line Tools; Windows requires the MSVC Rust toolchain, C++ Build Tools/Windows SDK and Microsoft WebView2. See [Windows development](docs/WINDOWS.md#development).
 
 ```bash
 git clone https://github.com/theradengai/localview.git

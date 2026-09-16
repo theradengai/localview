@@ -1,3 +1,4 @@
+import { isWindows, htmlPreviewPolicy } from './lib/platform';
 import { useNativeLanguageSync } from './lib/useNativeLanguageSync';
 import LanguagePicker from './components/LanguagePicker';
 import { useI18n } from './lib/useI18n';
@@ -23,6 +24,7 @@ import {
   assetUrl,
   basename,
   chooseFolder,
+  chooseFile,
   chooseMoveDestination,
   createDirectory,
   createWorkspaceWindow,
@@ -522,9 +524,8 @@ function injectBaseTag(source: string, href: string): string {
 }
 
 function injectHtmlPreviewPolicy(source: string): string {
-  const policy = "default-src 'none'; script-src 'unsafe-inline' localview: blob:; style-src 'unsafe-inline' localview:; img-src localview: data: blob:; font-src localview: data:; media-src localview: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri localview:; navigate-to 'none'";
+  const policy = htmlPreviewPolicy();
   const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
-  if (/<meta\s+http-equiv=["']Content-Security-Policy["']/i.test(source)) return source;
   return /<head(?:\s[^>]*)?>/i.test(source)
     ? source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}\n${meta}`)
     : `${meta}\n${source}`;
@@ -1513,6 +1514,14 @@ export default function App() {
     }
   }, [requestWorkspaceTransition, showNotice]);
 
+  const handleOpenFile = useCallback(async () => {
+    if (!desktop || workspaceTransitionRef.current || documentActionGateRef.current !== 'idle') return;
+    try {
+      const path = await chooseFile();
+      if (path) await openIncomingPath(path);
+    } catch (error) { showNotice(errorMessage(error)); }
+  }, [desktop, openIncomingPath, showNotice]);
+
   const followPairedRename = useCallback(async (
     oldPath: string,
     newPath: string,
@@ -2139,6 +2148,9 @@ export default function App() {
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'r') {
         event.preventDefault();
         void requestReload();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        void handleOpenFile();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
         event.preventDefault();
         void handleNewWindow();
@@ -2146,7 +2158,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleExplicitSave, handleNewWindow, requestReload]);
+  }, [handleExplicitSave, handleNewWindow, requestReload, handleOpenFile]);
 
   const openCreatedMarkdown = useCallback((created: CreatedTextFile, initialContent?: string) => {
     const node = toNode(created.entry);
@@ -3435,7 +3447,8 @@ export default function App() {
 
   useEffect(() => {
     const onDeleteShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== 'Backspace') return;
+      const recycleKey = isWindows() && event.key === 'Delete' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+      if (!recycleKey && (!(event.metaKey || event.ctrlKey) || event.key !== 'Backspace')) return;
       if (createBusyRef.current !== null) return;
       const target = event.target as Element | null;
       if (event.isComposing || target?.closest('input, textarea, [contenteditable="true"], .cm-editor')) return;
@@ -3950,11 +3963,11 @@ export default function App() {
     textEditorRef.current?.openMarkdownTableTools({ x: rect.right, y: rect.bottom });
   };
 
-  return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''}`}>
+  return <div className={`app-shell ${desktop ? 'tauri-runtime' : ''} ${isWindows() ? 'windows-platform' : ''}`}>
     <header className="titlebar" data-tauri-drag-region="deep">
       <div className="traffic-lights" aria-hidden="true"><span className="traffic red" /><span className="traffic yellow" /><span className="traffic green" /></div>
       <div className="window-title">{rootPath ? `${basename(rootPath)} / ${selected?.name ?? 'LocalView'}` : 'LocalView'}</div>
-      <div className="title-actions"><LanguagePicker /><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>{t("打开文件夹")}</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>{t("在 Finder 中显示")}</button></div>
+      <div className="title-actions"><LanguagePicker /><button disabled={treeLocked} onClick={() => void handleOpenFile()}>{t("打开文件")}</button><button disabled={treeLocked} onClick={() => void handleOpenFolder()}>{t("打开文件夹")}</button><button disabled={interactionLocked || (!selected && !rootPath)} onClick={() => void handleReveal()}>{t("在 Finder 中显示")}</button></div>
     </header>
     <div className="workspace">
       <aside className="sidebar" aria-busy={Boolean(workspaceTransition)}><div

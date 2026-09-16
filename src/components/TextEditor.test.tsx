@@ -211,7 +211,7 @@ describe('TextEditor Markdown interactions', () => {
     await waitFor(() => expect(view.state.doc.toString()).toBe('before ![截图](assets/one.png)\n![截图](assets/two.png) after'));
     expect(onPasteImages.mock.calls[0][0]).toEqual([image]);
     expect(onChange).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(content, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(content, { key: 'z', metaKey: /Mac/.test(navigator.platform), ctrlKey: !/Mac/.test(navigator.platform) });
     await waitFor(() => expect(view.state.doc.toString()).toBe('before selected after'));
   });
 
@@ -337,7 +337,7 @@ describe('TextEditor Markdown interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: label }));
     expect(view.state.doc.toString()).toBe(expected);
     expect(onChange).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(content, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(content, { key: 'z', metaKey: /Mac/.test(navigator.platform), ctrlKey: !/Mac/.test(navigator.platform) });
     await waitFor(() => expect(view.state.doc.toString()).toBe('hello world'));
   });
 

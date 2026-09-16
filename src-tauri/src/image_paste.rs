@@ -49,7 +49,22 @@ fn save_images_with_hook<F: FnOnce()>(
         .map(image_extension)
         .collect::<Result<Vec<_>, _>>()?;
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let payloads = extensions
+            .iter()
+            .zip(images)
+            .map(|(ext, image)| (*ext, image.bytes.as_slice()))
+            .collect::<Vec<_>>();
+        return windows_fs::save_images(
+            state,
+            document_path,
+            workspace_generation,
+            &payloads,
+            before_write,
+        );
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (
             state,

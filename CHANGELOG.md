@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0-beta.7 — 2026-09-16 (Windows prerelease)
+
+- Add a Windows x64 desktop build and current-user NSIS installer; preserve existing macOS Beta 6 packages.
+- Open local files directly without indexing/importing; support Windows Ctrl shortcuts, native window controls, File Explorer, Unicode drive-letter paths and DOS short aliases.
+- Retain Markdown/HTML/text editing, auto-save, tasks and Markdown Kanban, plus images/PDF and read-only CSV/XLS/XLSX/ODS grids. Windows Office/iWork opens in the default application.
+- Scope resources to Windows WebView2 origins; keep interactive HTML isolated from native commands and external network access.
+- Add no-follow handle checks, exclusive creation, version-checked saves, bounded attachments, no-overwrite moves/renames and recycle-only deletion. Reject UNC/network roots, reparse-point traversal and cross-volume moves.
+- Include Windows dependency notices, native filesystem/Recycle Bin tests and installed-application WebView2 acceptance. Release attachments record actual results and build provenance.
+- Unsigned Windows Beta. Hosted-runner acceptance does not certify all Windows 10/11 physical devices, IME or OS dialogs. [Windows guide](docs/WINDOWS.md).
+
 ## 0.2.0-beta.6 — 2026-09-15 (prerelease)
 
 - Add immediate, persistent Simplified Chinese/English interface selection with a system default and multiwindow synchronization.

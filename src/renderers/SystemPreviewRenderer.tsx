@@ -1,3 +1,4 @@
+import { isWindows } from '../lib/platform';
 import { useI18n } from '../lib/useI18n';
 import { t } from '../lib/i18n';
 import { useEffect, useRef, useState } from 'react';
@@ -71,6 +72,10 @@ export default function SystemPreviewRenderer({
       return;
     }
 
+    if (isWindows()) {
+      setStatusMessage({ key: "{0}使用默认应用打开", values: [STATUS_PREFIX] });
+      return;
+    }
     const host = hostRef.current;
     if (!host) return;
     const previewHost: HTMLDivElement = host;
@@ -178,6 +183,12 @@ export default function SystemPreviewRenderer({
       <span>{t("桌面版可调用 macOS Quick Look；浏览器 Demo 不访问本地文件。")}</span>
     </div>;
   }
+
+  if (isWindows()) return <div className="empty-state system-preview-fallback">
+    <strong>{entry.name}</strong>
+    <span>{t("Windows 版暂不提供此格式的内嵌预览，可用默认应用打开。文件不会上传。")}</span>
+    <button onClick={() => void runAction(onOpenDefault)}>{t("用默认应用打开")}</button>
+  </div>;
 
   return <div className="system-preview-renderer">
     <div

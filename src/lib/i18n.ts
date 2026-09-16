@@ -1,3 +1,4 @@
+import { platformMessage } from './platform';
 import english from './locales/en.json';
 
 export type Locale = 'zh-CN' | 'en';
@@ -85,7 +86,8 @@ export function subscribeLanguage(listener: () => void): () => void {
 
 /** Translate application-owned messages only. Values are inserted once, never translated. */
 export function t(message: string, ...values: readonly (string | number)[]): string {
-  const template = getLocale() === 'en' ? messages[message] ?? message : message;
+  const translated = getLocale() === 'en' ? messages[message] ?? message : message;
+  const template = Object.prototype.hasOwnProperty.call(messages, message) ? platformMessage(translated) : translated;
   return template.replace(/\{(\d+)\}/g, (placeholder, index: string) =>
     Number(index) < values.length ? String(values[Number(index)]) : placeholder);
 }
