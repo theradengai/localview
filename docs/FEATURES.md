@@ -1,6 +1,8 @@
 # LocalView feature reference
 
-A lightweight, macOS-first local file workspace.
+A lightweight local file workspace for macOS and Windows.
+
+**Platform scope:** Windows x64 starts with Beta 7; existing macOS installers remain Beta 6. Shared editing, images/PDF, read-only spreadsheet grids and Kanban do not require indexing. macOS-only integration below (Finder, Quick Look, app-menu conventions and associations) is not a Windows promise. On Windows use Open file / Ctrl+O, File Explorer and Recycle Bin; Office/iWork opens externally. UNC/network workspaces, reparse-point traversal and cross-volume moves are outside the first Windows Beta. [Windows guide](WINDOWS.md).
 
 > Open a file, see the folder context.
 
