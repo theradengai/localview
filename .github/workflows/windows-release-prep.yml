@@ -1,0 +1,60 @@
+name: Prepare Windows release checks
+on:
+  push:
+    branches: [ci/windows-release-prep-20260916]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: feat/windows-desktop-20260916
+          fetch-depth: 0
+      - name: Apply bounded test and notice changes
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 7a3726b1d971bd962b93772d2c4f6ba5e3386d1c
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/components/TextEditor.test.tsx'); s=p.read_text()
+          old="fireEvent.keyDown(content, { key: 'z', ctrlKey: true });"
+          assert s.count(old)==2
+          s=s.replace(old,"fireEvent.keyDown(content, { key: 'z', metaKey: /Mac/.test(navigator.platform), ctrlKey: !/Mac/.test(navigator.platform) });")
+          p.write_text(s)
+          p=Path('scripts/generate-third-party-notices.mjs'); s=p.read_text()
+          old="const targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];"
+          assert s.count(old)==1
+          p.write_text(s.replace(old,"const targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'];"))
+          PY
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc, cache: npm}
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: {toolchain: 1.91.1, components: 'rustfmt,rust-docs'}
+      - name: Generate distribution notices from locked sources
+        run: |
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+          node scripts/generate-third-party-notices.mjs
+          node scripts/generate-third-party-notices.mjs --check
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          npm test
+          npm run build
+      - name: Commit verified source changes only
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/components/TextEditor.test.tsx scripts/generate-third-party-notices.mjs THIRD_PARTY_NOTICES.md src-tauri/src
+          git commit -m 'test: normalize modifier keys and include Windows dependency notices'
+          git push origin HEAD:refs/heads/feat/windows-desktop-20260916
+          git archive --format=tar.gz HEAD > /tmp/windows-release-source.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-release-source
+          path: /tmp/windows-release-source.tar.gz
+          retention-days: 3
+          if-no-files-found: error
