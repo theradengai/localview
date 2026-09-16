@@ -195,3 +195,33 @@ fn windows_recycle_bin_real_fixture() {
     assert!(!result.trashed_path.is_empty());
     println!("Recycled disposable item: {}", result.trashed_path);
 }
+
+#[test]
+fn windows_short_path_aliases_do_not_escape_or_break_scoped_operations() {
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let f = Fixture::new();
+    let canonical = fs::canonicalize(&f.root).unwrap();
+    let input = wide(canonical.as_os_str());
+    let mut output = vec![0u16; 32768];
+    let length = unsafe { GetShortPathNameW(PCWSTR(input.as_ptr()), Some(&mut output)) };
+    assert!(length > 0 && (length as usize) < output.len());
+    let short = PathBuf::from(String::from_utf16(&output[..length as usize]).unwrap());
+    assert_eq!(
+        comparable_path(&short).unwrap(),
+        comparable_path(&canonical).unwrap()
+    );
+    let created = create_markdown_file_impl(&f.state, &short, "short alias").unwrap();
+    assert!(Path::new(&created.entry.path).is_file());
+    assert_eq!(
+        read_bytes(&f.state, &short.join("short alias.md")).unwrap(),
+        b""
+    );
+    assert_eq!(
+        event_path(&canonical, &short.join("removed.md")).unwrap(),
+        canonical.join("removed.md")
+    );
+    assert!(Scope::new(&f.state)
+        .unwrap()
+        .relative(&short.parent().unwrap().join("outside.md"))
+        .is_err());
+}

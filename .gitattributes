@@ -1,0 +1,2 @@
+# Fixture bytes are test inputs; checkout must not rewrite embedded CSV line endings.
+src-tauri/tests/fixtures/** -text

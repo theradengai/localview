@@ -123,6 +123,71 @@ fn drive_path(path: &Path) -> Result<String, CommandError> {
         raw.trim_end_matches('\\').to_string()
     })
 }
+/// Expand 8.3 aliases without canonicalizing through a junction. Keep a missing
+/// suffix verbatim so deletion events and exclusive creates use the same namespace.
+/// Every operation still traverses the resulting components with no-follow handles.
+fn comparable_path(path: &Path) -> Result<String, CommandError> {
+    use windows::Win32::Storage::FileSystem::GetLongPathNameW;
+    let checked = drive_path(path)?;
+    let mut existing = PathBuf::from(format!("\\\\?\\{checked}"));
+    let mut suffix = Vec::new();
+    loop {
+        let input = wide(existing.as_os_str());
+        let mut output = vec![0u16; 32768];
+        let length = unsafe { GetLongPathNameW(PCWSTR(input.as_ptr()), Some(&mut output)) };
+        if length > 0 && (length as usize) < output.len() {
+            let text = String::from_utf16(&output[..length as usize])
+                .map_err(|_| error("INVALID_PATH", "Path is not valid Unicode"))?;
+            let mut expanded = PathBuf::from(text);
+            for component in suffix.iter().rev() {
+                expanded.push(component);
+            }
+            return drive_path(&expanded);
+        }
+        if length > 0 {
+            return Err(error("INVALID_PATH", "Path is too long"));
+        }
+        let failure = std::io::Error::last_os_error();
+        if !matches!(failure.raw_os_error(), Some(2 | 3)) {
+            return Err(CommandError::io(failure));
+        }
+        let name = existing
+            .file_name()
+            .ok_or_else(|| error("INVALID_PATH", "Local drive is unavailable"))?
+            .to_os_string();
+        suffix.push(name);
+        if !existing.pop() {
+            return Err(error("INVALID_PATH", "Local drive is unavailable"));
+        }
+    }
+}
+
+// Keep the legacy string-error contract used by the create and spreadsheet UI.
+pub(super) fn legacy_error(value: CommandError) -> String {
+    match value.code.as_str() {
+        "PATH_OUTSIDE_WORKSPACE" => value.message,
+        "MARKDOWN_FILE_EXISTS"
+        | "DIRECTORY_ENTRY_EXISTS"
+        | "MARKDOWN_PARENT_NOT_DIRECTORY"
+        | "DIRECTORY_PARENT_NOT_DIRECTORY" => value.code,
+        _ => format!("{}: {}", value.code, value.message),
+    }
+}
+fn create_parent_error(value: CommandError, markdown: bool) -> CommandError {
+    if value.code == "MOVE_BUNDLE_BOUNDARY"
+        || (value.code == "INVALID_PATH" && value.message == "Expected a directory")
+    {
+        let code = if markdown {
+            "MARKDOWN_PARENT_NOT_DIRECTORY"
+        } else {
+            "DIRECTORY_PARENT_NOT_DIRECTORY"
+        };
+        error(code, code)
+    } else {
+        value
+    }
+}
+
 pub(super) fn validate_name(name: &str) -> Result<(), CommandError> {
     if name.is_empty()
         || name == "."
@@ -186,8 +251,8 @@ impl Scope {
         })
     }
     fn relative(&self, path: &Path) -> Result<Vec<String>, CommandError> {
-        let root = drive_path(&self.root)?;
-        let target = drive_path(path)?;
+        let root = comparable_path(&self.root)?;
+        let target = comparable_path(path)?;
         let tail = if target.eq_ignore_ascii_case(&root) {
             ""
         } else {
@@ -198,7 +263,7 @@ impl Scope {
                     .is_some_and(|part| part.eq_ignore_ascii_case(&prefix))
             {
                 return Err(error(
-                    "WORKSPACE_CHANGED",
+                    "PATH_OUTSIDE_WORKSPACE",
                     "Path is outside the active workspace",
                 ));
             }
@@ -308,7 +373,9 @@ pub(super) fn create_markdown<F: FnOnce(), G: FnOnce()>(
             .map_err(|_| error("IO_ERROR", "File operations unavailable"))?;
         validate_name(name)?;
         let mut scope = Scope::new(state)?;
-        let parent = scope.directory(parent)?;
+        let parent = scope
+            .directory(parent)
+            .map_err(|e| create_parent_error(e, true))?;
         after_parent();
         before_create();
         scope.current(state)?;
@@ -339,7 +406,7 @@ pub(super) fn create_markdown<F: FnOnce(), G: FnOnce()>(
             },
         })
     })();
-    result.map_err(|e: CommandError| format!("{}: {}", e.code, e.message))
+    result.map_err(legacy_error)
 }
 pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
     state: &WorkspaceState,
@@ -354,7 +421,9 @@ pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
             .map_err(|_| error("IO_ERROR", "File operations unavailable"))?;
         validate_name(name)?;
         let mut scope = Scope::new(state)?;
-        let parent = scope.directory(parent)?;
+        let parent = scope
+            .directory(parent)
+            .map_err(|e| create_parent_error(e, false))?;
         after_parent();
         hook(DirectoryCreateHookPhase::BeforeFinalCreate);
         scope.current(state)?;
@@ -370,7 +439,7 @@ pub(super) fn create_folder<F: FnOnce(), G: Fn(DirectoryCreateHookPhase)>(
         hook(DirectoryCreateHookPhase::AfterCreate);
         entry_from_path(&created).map_err(CommandError::legacy)
     })();
-    result.map_err(|e: CommandError| format!("{}: {}", e.code, e.message))
+    result.map_err(legacy_error)
 }
 fn unique() -> String {
     format!(
@@ -843,8 +912,8 @@ pub(super) fn trash(
 
 /// Normalize watcher events without requiring the affected file to still exist.
 pub(super) fn event_path(root: &Path, path: &Path) -> Option<PathBuf> {
-    let root_text = drive_path(root).ok()?;
-    let target = drive_path(path).ok()?;
+    let root_text = comparable_path(root).ok()?;
+    let target = comparable_path(path).ok()?;
     if target.eq_ignore_ascii_case(&root_text) {
         return Some(root.to_path_buf());
     }
