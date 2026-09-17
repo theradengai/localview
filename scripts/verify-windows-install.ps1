@@ -42,3 +42,4 @@ node scripts/verify-windows-shell.mjs (Join-Path $tools 'package.json') $exe $Ev
 if ($LASTEXITCODE -ne 0) { throw 'Explorer folder menu acceptance failed' }
 node scripts/verify-windows-native.mjs (Join-Path $tools 'package.json') $exe $Evidence 2>&1 | Tee-Object (Join-Path $Evidence 'native-ui.log')
 if ($LASTEXITCODE -ne 0) { throw 'Installed native UI acceptance failed; inspect native-ui.json' }
+./scripts/verify-windows-shell-lifecycle.ps1 -Installer $Installer -Destination $destination -Evidence $Evidence
