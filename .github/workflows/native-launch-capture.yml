@@ -17,6 +17,7 @@ jobs:
         run: |
           python3 scripts/media/refine.py
           python3 scripts/media/finish.py
+          python3 scripts/media/stabilize.py
           python3 -m py_compile scripts/media/capture.py
           swiftc scripts/media/ax.swift -o "$RUNNER_TEMP/localview-media-ax"
           swiftc -swift-version 5 scripts/media/record.swift -o "$RUNNER_TEMP/localview-media-recorder"
