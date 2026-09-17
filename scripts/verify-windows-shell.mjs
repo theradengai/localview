@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 assert.equal(process.platform, 'win32');
@@ -32,6 +32,7 @@ const wait = async predicate => {
   throw new Error('Shell acceptance timeout: '+String(last??''));
 };
 const report = {status:'running', cases:[], limitations:['Windows 11 compact-menu placement requires Windows 11 desktop acceptance.','Background launch exercises the installed registry command; folder launch uses the actual Shell verb.']};
+const record = message => { report.cases.push(message); console.log(message); };
 let browser, pid;
 try {
   const registry = JSON.parse(ps(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;
@@ -49,7 +50,7 @@ try {
     assert.equal(registry[i].icon.toLowerCase(),`"${executable}",0`.toLowerCase());
   }
   report.registry=registry;
-  report.cases.push('Both current-user menu entries point to the quoted installed executable, with localized labels and icons');
+  record('Both current-user menu entries point to the quoted installed executable, with localized labels and icons');
   // Use the registered verb, not a reconstructed command, for the folder entry.
   pid=Number(ps(`$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:LOCALVIEW_SHELL_FOLDER -Verb 'LocalView.Open' -PassThru; $p.Id`));
   assert.ok(Number.isInteger(pid)&&pid>0,'Shell must return the owned application PID');
@@ -63,23 +64,30 @@ try {
   assert.equal(await fs.readFile(path.join(folder,'right-click.md'),'utf8'),fixture);
   assert.deepEqual(await fs.readdir(folder),['right-click.md']);
   await page.screenshot({path:path.join(output,'windows-explorer-open.png')});
-  report.cases.push('Actual Explorer folder verb opens a Unicode/space/ampersand folder and reads its document without rewriting or importing it');
+  record('Actual Explorer folder verb opens a Unicode/space/ampersand folder and reads its document without rewriting or importing it');
   await browser.close(); browser=undefined;
   try {execFileSync('taskkill',['/PID',String(pid),'/T','/F'],{stdio:'ignore'});}catch{}
   pid=undefined;
   await new Promise(resolve=>setTimeout(resolve,1200));
-  // Execute the exact background registration without cmd.exe or PowerShell expansion of the path.
-  pid=Number(ps(`$ErrorActionPreference='Stop'; $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\\Classes\\Directory\\Background\\shell\\LocalView.Open\\command');
-    $command=$key.GetValue(''); $match=[regex]::Match($command,'^"([^"]+)" (.+)$'); if(!$match.Success){throw 'Invalid command'};
-    $info=New-Object Diagnostics.ProcessStartInfo; $info.FileName=$match.Groups[1].Value; $info.UseShellExecute=$false;
-    $info.Arguments=$match.Groups[2].Value.Replace('%V',$env:LOCALVIEW_SHELL_FOLDER); $p=[Diagnostics.Process]::Start($info); $p.Id`));
+  // Preserve the exact installed Windows command line while avoiding a GUI child
+  // keeping a synchronous PowerShell parent's output pipes open indefinitely.
+  const command=registry[1].command.replace('%V',folder);
+  const match=/^"([^"]+)" (.+)$/.exec(command);
+  assert.ok(match);
+  assert.equal(match[1].toLowerCase(),executable.toLowerCase());
+  assert.equal(`"${match[1]}" ${match[2]}`,command);
+  const child=spawn(match[1],[match[2]],{
+    argv0:`"${match[1]}"`,windowsVerbatimArguments:true,env:environment,stdio:'ignore',
+  });
+  await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
+  pid=child.pid;
   assert.ok(Number.isInteger(pid)&&pid>0);
   await wait(async()=>{const response=await fetch('http://127.0.0.1:'+port+'/json/version');return response.ok;});
   browser=await chromium.connectOverCDP('http://127.0.0.1:'+port);
   page=await wait(()=>browser.contexts().flatMap(c=>c.pages()).find(p=>/tauri\.localhost/.test(p.url())));
   await page.locator('.tree-name').filter({hasText:/^right-click\.md$/}).waitFor();
   assert.equal(await fs.readFile(path.join(folder,'right-click.md'),'utf8'),fixture);
-  report.cases.push('The installed folder-background command opens the same exact folder without shell interpretation');
+  record('The installed folder-background command opens the same exact folder without shell interpretation');
   report.status='passed';
 } catch(error) {
   report.status='failed';report.error=String(error.stack??error);process.exitCode=1;
