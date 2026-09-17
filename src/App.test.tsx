@@ -1,5 +1,5 @@
 import { setLanguagePreference, LANGUAGE_STORAGE_KEY } from './lib/i18n';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createRef, StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1188,13 +1188,13 @@ describe('Markdown file creation', () => {
     await user.type(input, 'late{Enter}');
     await waitFor(() => expect(mocks.createMarkdownFile).toHaveBeenCalledOnce());
 
-    expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', true);
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', true);
     await act(async () => resolveCreate?.({
       entry: { name: 'late.md', path: '/workspace/late.md', kind: 'md' },
       snapshot: { content: '', version: 'empty-v1' },
     }));
-    await waitFor(() => expect(screen.getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', false));
-    await user.click(screen.getByRole('button', { name: '打开文件夹' }));
+    await waitFor(() => expect(within(screen.getByRole('banner')).getByRole('button', { name: '打开文件夹' })).toHaveProperty('disabled', false));
+    await user.click(within(screen.getByRole('banner')).getByRole('button', { name: '打开文件夹' }));
     await screen.findByRole('button', { name: '在 OTHER 根目录新建' });
     expect(mocks.setWorkspaceRoot).toHaveBeenCalledWith('/other');
     expect(screen.queryByRole('button', { name: /late\.md$/ })).toBeNull();
