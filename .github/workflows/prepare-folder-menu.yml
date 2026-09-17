@@ -1,0 +1,42 @@
+name: Prepare reviewed Explorer folder menu
+on:
+  push:
+    branches: [ci/folder-menu-prep-20260916]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0}
+      - name: Apply only the requested Windows installer changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src-tauri/windows/context-menu.nsh /tmp/context-menu.nsh
+          cp scripts/verify-windows-shell.mjs /tmp/verify-windows-shell.mjs
+          git checkout --detach 147606002600275a22ac3a10d905b8be9b71740d
+          mkdir -p src-tauri/windows
+          cp /tmp/context-menu.nsh src-tauri/windows/context-menu.nsh
+          cp /tmp/verify-windows-shell.mjs scripts/verify-windows-shell.mjs
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.windows.conf.json'); data=json.loads(p.read_text()); data['bundle']['windows']['nsis']['installerHooks']='windows/context-menu.nsh'; p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          for name in ['package.json','package-lock.json','src-tauri/tauri.conf.json','src-tauri/Cargo.toml','src-tauri/Cargo.lock']:
+              p=Path(name); s=p.read_text(); assert '0.2.0-beta.7' in s,name; p.write_text(s.replace('0.2.0-beta.7','0.2.0-beta.8'))
+          p=Path('scripts/verify-windows-install.ps1');s=p.read_text();needle="node scripts/verify-windows-native.mjs";assert s.count(needle)==1;s=s.replace(needle,"node scripts/verify-windows-shell.mjs (Join-Path $tools 'package.json') $exe $Evidence\nif ($LASTEXITCODE -ne 0) { throw 'Explorer folder menu acceptance failed' }\n"+needle);p.write_text(s)
+          p=Path('docs/WINDOWS.md');s=p.read_text();s=s.replace('releases/tag/v0.2.0-beta.7','releases/tag/v0.2.0-beta.8').replace('`LocalView_0.2.0-beta.7_x64-setup.exe`','`LocalView_0.2.0-beta.8_x64-setup.exe`').replace('Get-FileHash .\\LocalView_0.2.0-beta.7_x64-setup.exe','Get-FileHash .\\LocalView_0.2.0-beta.8_x64-setup.exe');s+='\n## Explorer folder menu / 资源管理器右键\n\nBeta 8 adds **Open with LocalView / 用 LocalView 打开** to a folder and to the empty background inside a folder. On Windows 11, use **Show more options / 显示更多选项** when it is not in the compact menu. Registration is per-user, does not replace default applications, and is removed by the matching uninstaller. The menu language follows the installer language, independently of the in-app language picker. Existing local-drive and reparse-point limits still apply.\n\n安装 Beta 8 后，可右键点击本地文件夹，或右键点击文件夹内空白处，选择「用 LocalView 打开」。Windows 11 可能需要先点「显示更多选项」。无需建立索引或导入文件。只注册当前用户菜单，不修改默认应用；卸载时清理本安装拥有的菜单项。菜单语言跟随安装程序语言，不随应用内语言切换即时更新。Beta 7 的安装包不会自动增加这些入口。\n';p.write_text(s)
+          for name in ['README.md','README.zh-CN.md']:
+              p=Path(name);s=p.read_text();s=s.replace('0.2.0-beta.7','0.2.0-beta.8');s+='\n### Open folders from Explorer / 从资源管理器打开\n\nWindows Beta 8: right-click a local folder or its empty background, then **Open with LocalView / 用 LocalView 打开**. Windows 11 may require **Show more options / 显示更多选项**. Menu text follows the installer language. Default applications stay unchanged; uninstall removes this installation’s menu entries. [Details / 说明](docs/WINDOWS.md#explorer-folder-menu--资源管理器右键).\n';p.write_text(s)
+          p=Path('CHANGELOG.md');s=p.read_text();s=s.replace('# Changelog','# Changelog\n\n## 0.2.0-beta.8 — Windows Explorer folder menus\n\n- Add current-user Open with LocalView to folders and folder backgrounds without changing file defaults.\n- Quote executable and folder paths; retain native workspace validation.\n- Remove only owned menu registrations on uninstall.\n- Test actual installed Shell invocation with Unicode, spaces and ampersands.\n- Windows-only installer release; macOS Beta 6 remains unchanged.\n',1);p.write_text(s)
+          PY
+          node --check scripts/verify-windows-shell.mjs
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/windows/context-menu.nsh src-tauri/tauri.windows.conf.json scripts/verify-windows-shell.mjs scripts/verify-windows-install.ps1 package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock README.md README.zh-CN.md docs/WINDOWS.md CHANGELOG.md
+          git commit -m 'feat(windows): open local folders directly from Explorer context menus'
+          git push origin HEAD:refs/heads/feat/windows-folder-menu-20260916
