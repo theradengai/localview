@@ -1,0 +1,58 @@
+name: Diagnose installed folder menu stages
+on:
+  push:
+    branches: [ci/folder-menu-diagnose-20260916]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installed:
+    runs-on: windows-2022
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: '80ee37735026af48a11cdfc0522df596fb9df568'
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc}
+      - name: Download and hash the already-built candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 35173544598 --repo theradengai/localview --name LocalView-Windows-x64 --dir "$env:RUNNER_TEMP/installer"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          $installer = Join-Path $env:RUNNER_TEMP 'installer/LocalView_0.2.0-beta.8_x64-setup.exe'
+          if ((Get-FileHash $installer).Hash.ToLower() -ne 'ede796d0d3d89e825fc75dca9e84a415411ec9b052d7ce8352f30e04dddf1e9d') { throw 'Candidate hash mismatch' }
+      - name: Add diagnostic markers to disposable test scripts only
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          p=Path('scripts/verify-windows-install.ps1');s=p.read_text()
+          before="$p = Start-Process -FilePath $Installer -ArgumentList @('/S', \"/D=$destination\") -Wait -PassThru"
+          assert s.count(before)==1
+          s=s.replace(before,"Write-Host 'BEGIN NSIS INSTALL'\n"+before.replace(' -Wait','')+"\nif (!$p.WaitForExit(45000)) { throw 'NSIS installation timed out after 45 seconds' }\nWrite-Host 'END NSIS INSTALL'")
+          s=s.replace('node scripts/verify-windows-shell.mjs',"Write-Host 'BEGIN SHELL OPEN'\nnode scripts/verify-windows-shell.mjs")
+          s=s.replace('node scripts/verify-windows-native.mjs',"Write-Host 'BEGIN NATIVE UI'\nnode scripts/verify-windows-native.mjs")
+          s=s.replace('./scripts/verify-windows-shell-lifecycle.ps1',"Write-Host 'BEGIN SHELL LIFECYCLE'\n./scripts/verify-windows-shell-lifecycle.ps1")
+          p.write_text(s)
+          p=Path('scripts/verify-windows-shell.mjs');s=p.read_text();s=s.replace('let browser, pid;',"const originalPush = report.cases.push;\nreport.cases.push = function (...items) { console.log(...items); return originalPush.apply(this, items); };\nlet browser, pid;")
+          s=s.replace('await browser.close(); browser=undefined;',"console.log('CLOSE FIRST CDP'); await browser.close(); browser=undefined; console.log('CLOSED FIRST CDP');")
+          s=s.replace("pid=Number(ps(`$ErrorActionPreference='Stop'; $p=Start-Process", "console.log('INVOKE REGISTERED SHELL VERB');\n  pid=Number(ps(`$ErrorActionPreference='Stop'; $p=Start-Process")
+          p.write_text(s)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic preparation failed' }
+      - name: Run bounded installed-menu diagnosis
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/menu-diagnosis" | Out-Null
+          ./scripts/verify-windows-install.ps1 -Installer "$env:RUNNER_TEMP/installer/LocalView_0.2.0-beta.8_x64-setup.exe" -Evidence "$env:RUNNER_TEMP/menu-diagnosis" *>&1 | Tee-Object "$env:RUNNER_TEMP/menu-diagnosis/stages.log"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: folder-menu-diagnosis
+          path: ${{ runner.temp }}/menu-diagnosis/
+          retention-days: 3
