@@ -834,7 +834,7 @@ describe('preview task editing', () => {
     render(<App />);
     await screen.findByText('workspace / plan.md');
     await waitFor(() => expect(document.querySelector('textarea[aria-label="editor"]')).toBeTruthy());
-    await user.click(screen.getByRole('checkbox'));
+    await user.click(await screen.findByRole('checkbox'));
     fireEvent.keyDown(window, { key: 's', metaKey: true });
     await user.click(await screen.findByRole('button', { name: '保留本地修改' }));
     expect(mocks.writeTextFile).toHaveBeenCalledExactlyOnceWith('/workspace/docs/plan.md', '- [x] local', 'v1');
