@@ -6,7 +6,7 @@
 
 **不需要索引，也不需要导入。** 文件留在原文件夹，仍然是磁盘上的普通文件。
 
-[English](README.md) · [Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
+[English](README.md) · [Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.8) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [反馈问题](https://github.com/theradengai/localview/issues/new/choose) · [MIT 许可证](LICENSE)
 
 ![LocalView 预览、分栏、编辑、任务列表与 HTML 演示](docs/images/localview-demo.gif)
 
@@ -42,9 +42,9 @@
 
 ## 下载与安装
 
-**Windows x64：0.2.0-beta.7；macOS：0.2.0-beta.6。** 都是预发布测试版，不是稳定版，均支持中英文界面。Windows 首版面向 Windows 10/11 x64、WebView2 与本地盘符目录；不包含 Windows 原生 ARM64、UNC/网络目录或 Linux 安装包。详见 [Windows 使用与验证边界](docs/WINDOWS.md)。
+**Windows x64：0.2.0-beta.8；macOS：0.2.0-beta.6。** 都是预发布测试版，不是稳定版，均支持中英文界面。Windows 首版面向 Windows 10/11 x64、WebView2 与本地盘符目录；不包含 Windows 原生 ARM64、UNC/网络目录或 Linux 安装包。详见 [Windows 使用与验证边界](docs/WINDOWS.md)。
 
-**[下载 Windows x64 安装包](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)** · [Windows 校验文件](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/SHA256SUMS.txt)
+**[下载 Windows x64 安装包](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.8/LocalView_0.2.0-beta.8_x64-setup.exe)** · [Windows 校验文件](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.8/SHA256SUMS.txt)
 
 运行 EXE 后安装到当前用户。若缺少 WebView2，安装程序会联网下载其引导程序。本 Beta **尚未进行 Windows 代码签名**，可能出现未知发布者/SmartScreen 提示；请核对来源和校验值，不需要关闭系统安全保护。
 
@@ -97,3 +97,7 @@ npm run tauri:dev
 欢迎提交可复现的问题和小而明确的改进。请不要在公开 Issue 中上传私人文档或密钥；安全问题见 [SECURITY.md](SECURITY.md)。
 
 LocalView 原创源码采用 [MIT 许可证](LICENSE)，第三方组件保留各自许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+### Open folders from Explorer / 从资源管理器打开
+
+Windows Beta 8: right-click a local folder or its empty background, then **Open with LocalView / 用 LocalView 打开**. Windows 11 may require **Show more options / 显示更多选项**. Menu text follows the installer language. Default applications stay unchanged; uninstall removes this installation’s menu entries. [Details / 说明](docs/WINDOWS.md#explorer-folder-menu--资源管理器右键).
