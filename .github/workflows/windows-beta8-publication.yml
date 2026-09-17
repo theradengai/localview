@@ -1,0 +1,36 @@
+name: Publish verified Explorer menu Beta 8
+on:
+  push:
+    branches: [ci/windows-beta8-publish-20260916]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: localview-beta8-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Extend existing release verification with Explorer and lifecycle gates
+        run: python3 .github/windows-beta8-publication/prepare.py
+      - name: Verify exact-source artifacts and publish the complete prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATED_HEAD: f5b4e762ab732a7390fd06079515cd0586bc4c78
+          RELEASE_COMMIT: c1e561784e0d1b2459b3e1b663430196071a4b7b
+          WINDOWS_RUN: '35175583474'
+          MACOS_RUN: '35175583510'
+          BROWSER_RUN: '35175583507'
+          PDF_SCREENSHOT_SHA256: 7d0cd5191e1957ca22b1362a1de26c317e227ade8968dba0539157b9f15dea37
+        run: python3 /tmp/publish-beta8.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-beta8-published-release
+          path: ${{ runner.temp }}/published-windows/
+          retention-days: 14
+          if-no-files-found: error
