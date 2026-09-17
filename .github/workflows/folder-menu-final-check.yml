@@ -1,0 +1,64 @@
+name: Verify bounded Explorer menu acceptance
+on:
+  push:
+    branches: [ci/folder-menu-final-check-20260916]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {ref: '282dbe7ab2a63e0955e74d810fc25fcddce6e0c6', fetch-depth: 0}
+      - name: Scope the existing navigation test to its title-bar button
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/App.test.tsx');s=p.read_text();old="import { act, fireEvent, render, screen, waitFor }";assert s.count(old)==1;s=s.replace(old,"import { act, fireEvent, render, screen, waitFor, within }")
+          start=s.index("  it('does not inject a completed old-workspace creation into the new tree'");end=s.index('\n  it(',start+1);block=s[start:end]
+          old="screen.getByRole('button', { name: '打开文件夹' })";assert block.count(old)==3
+          block=block.replace(old,"within(screen.getByRole('banner')).getByRole('button', { name: '打开文件夹' })")
+          p.write_text(s[:start]+block+s[end:])
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/App.test.tsx
+          git commit -m 'test: scope workspace navigation to the title-bar open-folder action'
+          git push origin HEAD:refs/heads/fix/folder-menu-test-scope-20260916
+  installed:
+    runs-on: windows-2022
+    timeout-minutes: 7
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {ref: '282dbe7ab2a63e0955e74d810fc25fcddce6e0c6', persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version-file: .nvmrc}
+      - name: Check unchanged production sources and download existing installer
+        shell: pwsh
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          $delta = @(git diff --name-only 80ee37735026af48a11cdfc0522df596fb9df568 HEAD)
+          if ($delta.Count -ne 1 -or $delta[0] -ne 'scripts/verify-windows-shell.mjs') { throw 'Production source differs from existing candidate' }
+          gh run download 35173544598 --repo theradengai/localview --name LocalView-Windows-x64 --dir "$env:RUNNER_TEMP/installer"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          $installer=Join-Path $env:RUNNER_TEMP 'installer/LocalView_0.2.0-beta.8_x64-setup.exe'
+          if ((Get-FileHash $installer).Hash.ToLower() -ne 'ede796d0d3d89e825fc75dca9e84a415411ec9b052d7ce8352f30e04dddf1e9d') { throw 'Installer mismatch' }
+      - name: Verify both Explorer entry points and install lifecycle
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/menu-final-check" | Out-Null
+          ./scripts/verify-windows-install.ps1 -Installer "$env:RUNNER_TEMP/installer/LocalView_0.2.0-beta.8_x64-setup.exe" -Evidence "$env:RUNNER_TEMP/menu-final-check" *>&1 | Tee-Object "$env:RUNNER_TEMP/menu-final-check/stages.log"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: folder-menu-final-check
+          path: ${{ runner.temp }}/menu-final-check/
+          retention-days: 3
