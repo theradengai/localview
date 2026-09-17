@@ -1,0 +1,25 @@
+name: Record native LocalView launch materials
+on:
+  push:
+    branches: [media/native-launch-20260917]
+    paths: [.github/workflows/native-launch-capture.yml, scripts/media/**]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build isolated accessibility driver
+        run: swiftc scripts/media/ax.swift -o "$RUNNER_TEMP/localview-media-ax"
+      - name: Capture actual released application with disposable documents
+        run: python3 scripts/media/capture.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: localview-native-launch-media
+          path: ${{ runner.temp }}/localview-launch-media/output/
+          retention-days: 7
