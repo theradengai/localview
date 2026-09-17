@@ -6,7 +6,7 @@ A lightweight document workspace for **macOS and Windows**. Open a file or folde
 
 **No indexing. No import step.** Your files stay ordinary files, in their original folders.
 
-[简体中文](README.zh-CN.md) · [Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
+[简体中文](README.zh-CN.md) · [Windows Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.8) · [macOS Beta](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.6) · [Report a bug](https://github.com/theradengai/localview/issues/new/choose) · [MIT license](LICENSE)
 
 ![LocalView: preview, edit, split view, tasks and HTML](docs/images/localview-demo.gif)
 
@@ -42,9 +42,9 @@ Drag a card by its handle, or move it with the details panel's column selector. 
 
 ## Download
 
-**Windows x64: 0.2.0-beta.7 · macOS: 0.2.0-beta.6.** These are prereleases, not stable releases. Both offer Simplified Chinese and English. Windows targets Windows 10/11 x64 with WebView2 and local drive-letter workspaces. Native ARM64 Windows, UNC/network workspaces and Linux packages are not included. [Windows guide and verification](docs/WINDOWS.md).
+**Windows x64: 0.2.0-beta.8 · macOS: 0.2.0-beta.6.** These are prereleases, not stable releases. Both offer Simplified Chinese and English. Windows targets Windows 10/11 x64 with WebView2 and local drive-letter workspaces. Native ARM64 Windows, UNC/network workspaces and Linux packages are not included. [Windows guide and verification](docs/WINDOWS.md).
 
-**[Windows x64 installer](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/LocalView_0.2.0-beta.7_x64-setup.exe)** · [Windows checksums](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.7/SHA256SUMS.txt)
+**[Windows x64 installer](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.8/LocalView_0.2.0-beta.8_x64-setup.exe)** · [Windows checksums](https://github.com/theradengai/localview/releases/download/v0.2.0-beta.8/SHA256SUMS.txt)
 
 Install for the current user. If WebView2 is missing, the installer downloads its bootstrapper and needs a network connection. The Beta is **unsigned**: Windows may show a publisher/SmartScreen warning. Verify the source and checksum; do not disable system-wide security protection.
 
@@ -111,3 +111,7 @@ Near-term priorities: reliable file operations, smoother Markdown/table editing,
 ## License
 
 LocalView's original source is available under the [MIT License](LICENSE). Third-party components retain their own licenses; their notices and source links are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and included in the app bundle.
+
+### Open folders from Explorer / 从资源管理器打开
+
+Windows Beta 8: right-click a local folder or its empty background, then **Open with LocalView / 用 LocalView 打开**. Windows 11 may require **Show more options / 显示更多选项**. Menu text follows the installer language. Default applications stay unchanged; uninstall removes this installation’s menu entries. [Details / 说明](docs/WINDOWS.md#explorer-folder-menu--资源管理器右键).

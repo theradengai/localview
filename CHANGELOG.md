@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0-beta.8 — Windows Explorer folder menus
+
+- Add current-user Open with LocalView to folders and folder backgrounds without changing file defaults.
+- Quote executable and folder paths; retain native workspace validation.
+- Remove only owned menu registrations on uninstall.
+- Test actual installed Shell invocation with Unicode, spaces and ampersands.
+- Windows-only installer release; macOS Beta 6 remains unchanged.
+
+
 ## 0.2.0-beta.7 — 2026-09-16 (Windows prerelease)
 
 - Add a Windows x64 desktop build and current-user NSIS installer; preserve existing macOS Beta 6 packages.

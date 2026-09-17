@@ -6,12 +6,12 @@ LocalView Windows x64 从 **0.2.0-beta.7** 起提供安装包。直接打开本�
 
 ### 安装与打开
 
-从 [GitHub Release](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.7) 下载 `LocalView_0.2.0-beta.7_x64-setup.exe`。首版目标环境为 Windows 10/11 x64 + Microsoft WebView2，安装范围为当前用户。若系统缺少 WebView2，安装程序需要联网下载 Microsoft 的引导程序；已有 Runtime 时，本地文档使用不要求联网。
+从 [GitHub Release](https://github.com/theradengai/localview/releases/tag/v0.2.0-beta.8) 下载 `LocalView_0.2.0-beta.8_x64-setup.exe`。首版目标环境为 Windows 10/11 x64 + Microsoft WebView2，安装范围为当前用户。若系统缺少 WebView2，安装程序需要联网下载 Microsoft 的引导程序；已有 Runtime 时，本地文档使用不要求联网。
 
 Beta 安装包**尚未进行 Authenticode 代码签名**，Windows 可能显示未知发布者或 SmartScreen 提示。确认下载来自上述仓库，并对照同一 Release 的 `SHA256SUMS.txt`。校验值证明文件完整性，不等于发布者身份认证。不要关闭 Defender、SmartScreen 或系统级安全策略；受管电脑应遵守管理员策略。
 
 ```powershell
-Get-FileHash .\LocalView_0.2.0-beta.7_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\LocalView_0.2.0-beta.8_x64-setup.exe -Algorithm SHA256
 ```
 
 启动后点击“打开文件”或按 `Ctrl+O`，也可点击“打开文件夹”。标题栏可切换“跟随系统 / 简体中文 / English”。首版安装包不注册 Windows 文件关联，不更改已有默认应用；不要把 macOS Finder 的自动关联说明套用到 Windows。
@@ -67,3 +67,9 @@ npm run tauri:build -- -- --locked
 ```
 
 The installer is under `src-tauri/target/release/bundle/nsis/`. Native acceptance scripts run only on disposable GitHub Actions Windows accounts; never direct them at an installed user app, a private workspace, or an unrelated browser/debugging endpoint. The production application does not enable a remote-debugging port.
+
+## Explorer folder menu / 资源管理器右键
+
+Beta 8 adds **Open with LocalView / 用 LocalView 打开** to a folder and to the empty background inside a folder. On Windows 11, use **Show more options / 显示更多选项** when it is not in the compact menu. Registration is per-user, does not replace default applications, and is removed by the matching uninstaller. The menu language follows the installer language, independently of the in-app language picker. Existing local-drive and reparse-point limits still apply.
+
+安装 Beta 8 后，可右键点击本地文件夹，或右键点击文件夹内空白处，选择「用 LocalView 打开」。Windows 11 可能需要先点「显示更多选项」。无需建立索引或导入文件。只注册当前用户菜单，不修改默认应用；卸载时清理本安装拥有的菜单项。菜单语言跟随安装程序语言，不随应用内语言切换即时更新。Beta 7 的安装包不会自动增加这些入口。

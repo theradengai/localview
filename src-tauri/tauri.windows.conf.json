@@ -30,7 +30,8 @@
           "English",
           "SimpChinese"
         ],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "windows/context-menu.nsh"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
