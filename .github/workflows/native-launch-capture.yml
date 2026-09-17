@@ -16,10 +16,11 @@ jobs:
       - name: Prepare native-input recording driver
         run: |
           python3 scripts/media/refine.py
+          python3 scripts/media/finish.py
           python3 -m py_compile scripts/media/capture.py
           swiftc scripts/media/ax.swift -o "$RUNNER_TEMP/localview-media-ax"
           swiftc -swift-version 5 scripts/media/record.swift -o "$RUNNER_TEMP/localview-media-recorder"
-      - name: Record the released Mac app without hardware video encoding
+      - name: Record the released Mac app with synthetic files
         run: python3 scripts/media/capture.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
