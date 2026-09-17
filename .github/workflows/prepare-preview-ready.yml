@@ -1,0 +1,36 @@
+name: Fix preview readiness regression test
+on:
+  push:
+    branches: [ci/preview-ready-20260916]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: '1209ed838462e583612177547961504acf455bc2'
+          fetch-depth: 0
+      - name: Await the actual lazy-rendered control before clicking it
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 1209ed838462e583612177547961504acf455bc2
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/App.test.tsx'); text=p.read_text()
+          start=text.index("  it('protects external changes after a preview toggle and can reload the disk version'")
+          end=text.index("\n  it(", start+1)
+          block=text[start:end]
+          old="await user.click(screen.getByRole('checkbox'));"
+          assert block.count(old)==1
+          block=block.replace(old,"await user.click(await screen.findByRole('checkbox'));")
+          p.write_text(text[:start]+block+text[end:])
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/App.test.tsx
+          git commit -m 'test: await lazy preview checkbox before exercising external conflict protection'
+          git push origin HEAD:refs/heads/fix/preview-ready-20260916
