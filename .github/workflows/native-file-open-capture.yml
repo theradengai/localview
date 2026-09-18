@@ -1,0 +1,53 @@
+name: Record Finder file opening directly into preview
+on:
+  push:
+    branches: [media/split-open-preview-20260917]
+    paths: [.github/workflows/native-file-open-capture.yml, scripts/media/capture-file-open.py]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Confirm existing recording permissions without requesting or changing them
+        run: |
+          cat > "$RUNNER_TEMP/permissions.swift" <<'SWIFT'
+          import CoreGraphics
+          import ApplicationServices
+          guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else { fatalError("Required permissions are not already granted") }
+          print("Existing screen and accessibility permissions confirmed")
+          SWIFT
+          swift "$RUNNER_TEMP/permissions.swift"
+      - name: Prepare reviewed input and time-stamped recording drivers
+        run: |
+          python3 scripts/media/stabilize.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/media/ax.swift')
+          s = p.read_text()
+          needle = 'case "resize":'
+          assert s.count(needle) == 1
+          s = s.replace(needle, '''case "hover":
+           guard a.count>3,let e=find(a[3],a.count>4 ? a[4]:"") else {fail("Hover target missing")}
+           let f=frame(e);guard f[2]>0 && f[3]>0 else{fail("Empty hover frame")}
+           let event=CGEvent(mouseEventSource:nil,mouseType:.mouseMoved,mouseCursorPosition:CGPoint(x:f[0]+f[2]/2,y:f[1]+f[3]/2),mouseButton:.left)
+           event?.flags=[];event?.post(tap:.cghidEventTap)
+          ''' + needle)
+          p.write_text(s)
+          PY
+          python3 -m py_compile scripts/media/capture-file-open.py
+          swiftc scripts/media/ax.swift -o "$RUNNER_TEMP/localview-media-ax"
+          swiftc -swift-version 5 scripts/media/record.swift -o "$RUNNER_TEMP/localview-media-recorder"
+      - name: Use the real Finder Open With menu on a new sample file
+        run: python3 scripts/media/capture-file-open.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: localview-native-file-open
+          path: ${{ runner.temp }}/localview-launch-media/output/
+          retention-days: 7
+          if-no-files-found: warn
