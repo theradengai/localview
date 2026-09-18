@@ -1,0 +1,39 @@
+name: Record mouse-only folder selection
+on:
+  push:
+    branches: [media/mouse-folder-open-v5]
+    paths: [.github/workflows/native-folder-mouse-capture.yml, scripts/media/capture-folder-mouse.py]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Confirm existing capture permissions without changing settings
+        run: |
+          cat > "$RUNNER_TEMP/permissions.swift" <<'SWIFT'
+          import CoreGraphics
+          import ApplicationServices
+          guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else { fatalError("Required permissions are not already granted") }
+          print("Existing screen and accessibility permissions confirmed")
+          SWIFT
+          swift "$RUNNER_TEMP/permissions.swift"
+      - name: Compile existing bounded native recording tools
+        run: |
+          python3 scripts/media/stabilize.py
+          python3 -m py_compile scripts/media/capture-folder-mouse.py
+          swiftc scripts/media/ax.swift -o "$RUNNER_TEMP/localview-media-ax"
+          swiftc -swift-version 5 scripts/media/record.swift -o "$RUNNER_TEMP/localview-media-recorder"
+      - name: Click Desktop then select the folder and click Open
+        run: python3 scripts/media/capture-folder-mouse.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: localview-mouse-folder-open-v5
+          path: ${{ runner.temp }}/localview-launch-media/output/
+          retention-days: 7
+          if-no-files-found: error
